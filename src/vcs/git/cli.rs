@@ -239,7 +239,7 @@ impl VcsBackend for GitCliBackend {
     fn get_unstaged_diff(&self, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
         self.get_cli_diff(
             strings(["diff", "--no-ext-diff", "--binary", "--"]),
-            true,
+            self.include_untracked,
             GitContentSource::Index,
             GitContentSource::Workdir,
             highlighter,
@@ -1736,7 +1736,8 @@ mod tests {
         assert_eq!(
             summarize_files(cli_backend.get_unstaged_diff(&highlighter).unwrap()),
             summarize_files(
-                diff::get_unstaged_diff(&repo, DiffWhitespaceMode::Normal, &highlighter).unwrap()
+                diff::get_unstaged_diff(&repo, DiffWhitespaceMode::Normal, true, &highlighter)
+                    .unwrap()
             )
         );
         assert_eq!(

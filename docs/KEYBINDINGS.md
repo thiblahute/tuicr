@@ -115,6 +115,7 @@ considers files that pass the active filters.
 | `<leader>j` | Move focus down (files to comments when visible, otherwise diff) |
 | `<leader>e` | Toggle file list visibility |
 
+
 | `<leader>s` | Toggle commit selector visibility (also `:set commits!`) |
 | `Enter` | Select file (when file list is focused) |
 

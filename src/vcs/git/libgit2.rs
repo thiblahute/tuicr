@@ -120,7 +120,12 @@ impl VcsBackend for Libgit2Backend {
     }
 
     fn get_unstaged_diff(&self, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
-        diff::get_unstaged_diff(&self.repo, self.whitespace_mode, highlighter)
+        diff::get_unstaged_diff(
+            &self.repo,
+            self.whitespace_mode,
+            self.include_untracked,
+            highlighter,
+        )
     }
 
     fn list_changed_paths(&self, kind: ChangeKind) -> Result<Vec<PathBuf>> {

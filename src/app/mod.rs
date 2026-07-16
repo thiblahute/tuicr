@@ -1822,6 +1822,9 @@ pub struct AppStartupOptions<'a> {
     /// Include untracked files in the working-tree (`-w`) diff. `false` gives a
     /// `git diff HEAD`-style review of tracked changes only.
     pub include_untracked: bool,
+    /// Include staged changes in the working-tree (`-w`) diff. `false` reviews
+    /// only unstaged changes (like `git diff`).
+    pub include_staged: bool,
     /// Which commits are selected when a multi-commit review first opens.
     pub commit_selection: CommitSelectionStart,
     /// Direct PR target (`tuicr pr <target>`). Mutually exclusive with the

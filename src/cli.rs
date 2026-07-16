@@ -28,6 +28,10 @@ pub struct CliArgs {
     pub no_untracked: bool,
     /// Include untracked files in the working-tree diff (overrides config).
     pub untracked: bool,
+    /// Exclude staged changes from the working-tree diff (like `git diff`).
+    pub no_staged: bool,
+    /// Include staged changes in the working-tree diff (overrides config).
+    pub with_staged: bool,
     /// Filter diff to a specific file or directory path.
     pub path_filter: Option<String>,
     /// Open a single file or directory for annotation (no VCS required).
@@ -129,6 +133,24 @@ struct TuiOptions {
         conflicts_with_all = ["file_path", "all_files", "no_untracked"],
     )]
     untracked: bool,
+
+    /// Exclude staged changes from the working-tree diff, reviewing only
+    /// unstaged changes (like `git diff`). Pair with `-w`.
+    #[arg(
+        long = "no-staged",
+        action = ArgAction::SetTrue,
+        conflicts_with_all = ["file_path", "all_files", "staged"],
+    )]
+    no_staged: bool,
+
+    /// Include staged changes in the working-tree diff. Overrides the
+    /// `show_staged` config for this run.
+    #[arg(
+        long = "with-staged",
+        action = ArgAction::SetTrue,
+        conflicts_with_all = ["file_path", "all_files", "staged", "no_staged"],
+    )]
+    with_staged: bool,
 
     /// Open a file or directory for annotation (no VCS required).
     #[arg(
@@ -435,6 +457,8 @@ impl From<Cli> for CliArgs {
             staged: options.staged,
             no_untracked: options.no_untracked,
             untracked: options.untracked,
+            no_staged: options.no_staged,
+            with_staged: options.with_staged,
             path_filter: options.path_filter,
             file_path: options.file_path,
             all_files: options.all_files,
@@ -458,6 +482,8 @@ impl TuiOptions {
             || self.staged
             || self.no_untracked
             || self.untracked
+            || self.no_staged
+            || self.with_staged
             || self.path_filter.is_some()
             || self.file_path.is_some()
             || self.all_files
@@ -475,6 +501,8 @@ impl TuiOptions {
             staged: self.staged || later.staged,
             no_untracked: self.no_untracked || later.no_untracked,
             untracked: self.untracked || later.untracked,
+            no_staged: self.no_staged || later.no_staged,
+            with_staged: self.with_staged || later.with_staged,
             path_filter: later.path_filter.or(self.path_filter),
             file_path: later.file_path.or(self.file_path),
             all_files: self.all_files || later.all_files,
@@ -690,6 +718,27 @@ mod tests {
     fn should_default_no_untracked_to_false() {
         let parsed = parse_for_test(&["tuicr", "-w"]).expect("parse should succeed");
         assert!(!parsed.no_untracked);
+    }
+
+    #[test]
+    fn should_parse_no_staged_with_working_tree() {
+        let parsed = parse_for_test(&["tuicr", "-w", "--no-staged"]).expect("parse should succeed");
+        assert!(parsed.working_tree);
+        assert!(parsed.no_staged);
+    }
+
+    #[test]
+    fn should_reject_no_staged_combined_with_staged_mode() {
+        let err =
+            parse_for_test(&["tuicr", "--staged", "--no-staged"]).expect_err("parse should fail");
+        assert_eq!(err.kind(), ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn should_reject_with_staged_combined_with_no_staged() {
+        let err = parse_for_test(&["tuicr", "-w", "--with-staged", "--no-staged"])
+            .expect_err("parse should fail");
+        assert_eq!(err.kind(), ErrorKind::ArgumentConflict);
     }
 
     #[test]

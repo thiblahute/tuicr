@@ -304,15 +304,33 @@ impl App {
 
             Ok(app)
         } else if options.working_tree {
-            // Skip commit selector, go straight to working tree diff
-            let diff_files = Self::get_working_tree_diff_with_ignore(
-                vcs.as_ref(),
-                &vcs_info.root_path,
-                highlighter,
-                options.path_filter,
-            )?;
-            let session =
-                Self::load_or_create_session(&vcs_info, SessionDiffSource::StagedAndUnstaged);
+            // Skip commit selector, go straight to the working-tree diff. With
+            // staged changes excluded (`--no-staged` / `show_staged = false`)
+            // this narrows to unstaged changes only (like `git diff`).
+            let (diff_files, diff_source, session_source) = if options.include_staged {
+                (
+                    Self::get_working_tree_diff_with_ignore(
+                        vcs.as_ref(),
+                        &vcs_info.root_path,
+                        highlighter,
+                        options.path_filter,
+                    )?,
+                    DiffSource::StagedAndUnstaged,
+                    SessionDiffSource::StagedAndUnstaged,
+                )
+            } else {
+                (
+                    Self::get_unstaged_diff_with_ignore(
+                        vcs.as_ref(),
+                        &vcs_info.root_path,
+                        highlighter,
+                        options.path_filter,
+                    )?,
+                    DiffSource::Unstaged,
+                    SessionDiffSource::Unstaged,
+                )
+            };
+            let session = Self::load_or_create_session(&vcs_info, session_source);
 
             let app = Self::build(
                 vcs,
@@ -322,7 +340,7 @@ impl App {
                 output_to_stdout,
                 diff_files,
                 session,
-                DiffSource::StagedAndUnstaged,
+                diff_source,
                 InputMode::Normal,
                 Vec::new(),
                 options.path_filter,

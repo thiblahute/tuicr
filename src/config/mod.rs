@@ -141,6 +141,10 @@ pub struct AppConfig {
     /// to true. Set to false to review only tracked uncommitted changes (like
     /// `git diff HEAD`); override per-run with `--untracked` / `--no-untracked`.
     pub show_untracked: Option<bool>,
+    /// Whether the working-tree (`-w`) diff includes staged changes. Defaults
+    /// to true. Set to false to review only unstaged changes (like `git diff`);
+    /// override per-run with `--with-staged` / `--no-staged`.
+    pub show_staged: Option<bool>,
     pub wrap: Option<bool>,
     pub relative_line_numbers: Option<bool>,
     pub export_legend: Option<bool>,
@@ -213,6 +217,7 @@ const KNOWN_KEYS: &[&str] = &[
     "initial_commit_selection",
     "ignore_whitespace",
     "show_untracked",
+    "show_staged",
     "wrap",
     "relative_line_numbers",
     "export_legend",
@@ -458,6 +463,7 @@ fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
         ),
         ignore_whitespace: read_bool(table, "ignore_whitespace", &mut warnings),
         show_untracked: read_bool(table, "show_untracked", &mut warnings),
+        show_staged: read_bool(table, "show_staged", &mut warnings),
         wrap: read_bool(table, "wrap", &mut warnings),
         export_legend: read_bool(table, "export_legend", &mut warnings),
         cursor_line: read_bool(table, "cursor_line", &mut warnings),
@@ -1066,6 +1072,16 @@ mod tests {
         let outcome = parse_config("show_untracked = false\n");
         assert_eq!(
             outcome.config.as_ref().and_then(|cfg| cfg.show_untracked),
+            Some(false)
+        );
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_parse_show_staged_false() {
+        let outcome = parse_config("show_staged = false\n");
+        assert_eq!(
+            outcome.config.as_ref().and_then(|cfg| cfg.show_staged),
             Some(false)
         );
         assert!(outcome.warnings.is_empty());

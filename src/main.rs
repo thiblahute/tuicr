@@ -207,6 +207,18 @@ fn main() -> anyhow::Result<()> {
             .and_then(|cfg| cfg.show_untracked)
             .unwrap_or(true)
     };
+    // Same resolution for staged changes in the working-tree diff.
+    let include_staged = if cli_args.no_staged {
+        false
+    } else if cli_args.with_staged {
+        true
+    } else {
+        config_outcome
+            .config
+            .as_ref()
+            .and_then(|cfg| cfg.show_staged)
+            .unwrap_or(true)
+    };
 
     let mut app = match profile::time("startup.app_init", || {
         App::new(
@@ -221,6 +233,7 @@ fn main() -> anyhow::Result<()> {
                 working_tree: cli_args.working_tree,
                 staged: cli_args.staged,
                 include_untracked,
+                include_staged,
                 path_filter: cli_args.path_filter.as_deref(),
                 file_path: cli_args.file_path.as_deref(),
                 all_files: cli_args.all_files,
