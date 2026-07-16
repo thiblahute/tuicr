@@ -14,8 +14,8 @@ use crate::model::{DiffLine, FileStatus, LineOrigin, LineRange, LineSide};
 use crate::theme::Theme;
 use crate::ui::comment_panel;
 use crate::ui::diff_view::{
-    apply_horizontal_scroll, comment_box_row, comment_type_presentation, cursor_indicator,
-    cursor_indicator_spaced, diff_stat_title, hunk_header_text_and_style,
+    CommentBoxRow, apply_horizontal_scroll, comment_box_row, comment_type_presentation,
+    cursor_indicator, cursor_indicator_spaced, diff_stat_title, hunk_header_text_and_style,
     paint_cursor_line_highlight, paint_visual_selection_overlay, populate_row_to_annotation,
     render_expander_line, render_hidden_lines, scroll_comment_input_into_view, skip_comment_box,
 };
@@ -225,6 +225,16 @@ fn paint_sbs_active_side_caret(
     if !matches!(app.get_line_at_cursor(), Some((_, LineSide::New))) {
         return;
     }
+    // The commit-message entry renders full-width in the right column with no
+    // divider, so keep its caret in the far-left slot where the row builder
+    // placed it.
+    if app
+        .diff_files
+        .get(app.diff_state.current_file_idx)
+        .is_some_and(|f| f.is_commit_message)
+    {
+        return;
+    }
     let scroll_offset = app.diff_state.scroll_offset;
     let cursor_line = app.diff_state.cursor_line;
     if cursor_line < scroll_offset {
@@ -261,6 +271,131 @@ fn paint_sbs_active_side_caret(
         if let Some(fg) = style.fg {
             cell.set_fg(fg);
         }
+    }
+}
+
+/// A side comment box narrower than this (inner content columns) is not worth
+/// splitting; fall back to a full-width box.
+const MIN_SIDE_BOX_WIDTH: usize = 24;
+
+/// Column geometry for a side-scoped comment box (all relative to `inner.x`):
+/// `left_pad` spaces are inserted after the cursor indicator to shift the box
+/// under `side`'s pane, `format_width` is handed to `format_comment_*` so its
+/// content wraps to the pane, and `right_col` is where the box's own right
+/// border is drawn. Returns `None` (use a full-width box) when the pane is too
+/// narrow to be worth splitting.
+fn sbs_side_box_geometry(
+    side: LineSide,
+    lw: usize,
+    content_width: usize,
+    panel_width: usize,
+) -> Option<(u16, usize, u16)> {
+    let left_gutter = crate::app::sbs_left_gutter(lw) as usize;
+    // Column of the divider's leading space (` │ ` starts here).
+    let left_region_end = left_gutter + content_width;
+    let (left_pad, right_col) = match side {
+        // Left pane: no offset, right border just before the divider.
+        LineSide::Old => (0usize, left_region_end.saturating_sub(1)),
+        // Right pane: pad past the left pane and the ` │ ` divider; right
+        // border at the viewport edge.
+        LineSide::New => (left_region_end + 2, panel_width.saturating_sub(1)),
+    };
+    let box_left = 1 + left_pad; // the indicator occupies column 0
+    // One less than the box span so the filled top/bottom rule stops one cell
+    // short and leaves room for the corner glyph we stamp at `right_col`.
+    let format_width = right_col.checked_sub(box_left)?;
+    if format_width.saturating_sub(9) < MIN_SIDE_BOX_WIDTH {
+        return None;
+    }
+    Some((left_pad as u16, format_width, right_col as u16))
+}
+
+/// Push a side-scoped comment box: shift it under `side`'s pane, draw its own
+/// right border (so the shared full-width overlay skips it), and record its
+/// rows in `side_box_rows`. Returns the next `line_idx`.
+fn push_side_comment_box<'a>(
+    ctx: &SideBySideContext,
+    lines: &mut Vec<Line<'a>>,
+    box_lines: Vec<Line<'a>>,
+    left_pad: u16,
+    right_col: u16,
+    mut line_idx: usize,
+) -> usize {
+    for line in box_lines {
+        let kind = comment_box_row(&line);
+        let border_fg = line.spans.first().and_then(|s| s.style.fg);
+        let mut spans = line.spans;
+        if left_pad > 0 {
+            spans.insert(
+                0,
+                Span::styled(" ".repeat(left_pad as usize), Style::default()),
+            );
+        }
+        let indicator = cursor_indicator(line_idx, ctx.current_line_idx);
+        spans.insert(
+            0,
+            Span::styled(indicator, styles::current_line_indicator_style(ctx.theme)),
+        );
+
+        // Draw the box's own right border at `right_col`.
+        if let Some(kind) = kind {
+            let (fill_ch, glyph) = match kind {
+                CommentBoxRow::Top => ('─', '╮'),
+                CommentBoxRow::Divider => ('─', '┤'),
+                CommentBoxRow::Bottom => ('─', '╯'),
+                CommentBoxRow::Middle => (' ', '│'),
+            };
+            let style = Style::default().fg(border_fg.unwrap_or(ctx.theme.fg_primary));
+            let cur_w: usize = spans.iter().map(|s| s.content.width()).sum();
+            let right = right_col as usize;
+            if cur_w <= right {
+                let fill = right - cur_w;
+                if fill > 0 {
+                    spans.push(Span::styled(fill_ch.to_string().repeat(fill), style));
+                }
+                spans.push(Span::styled(glyph.to_string(), style));
+            }
+        }
+
+        lines.push(Line::from(spans));
+        ctx.side_box_rows.borrow_mut().insert(line_idx);
+        line_idx += 1;
+    }
+    line_idx
+}
+
+/// Push comment-box rows, sizing them to the active side's pane when
+/// `side_geom` is `Some`, or full-width (with the connector bar) otherwise.
+fn push_comment_box_lines<'a>(
+    ctx: &SideBySideContext,
+    lines: &mut Vec<Line<'a>>,
+    box_lines: Vec<Line<'a>>,
+    side_geom: Option<(u16, usize, u16)>,
+    box_top_row: usize,
+    line_range: Option<LineRange>,
+    line_idx: usize,
+) -> usize {
+    if let Some((left_pad, _, right_col)) = side_geom {
+        // Self-contained side box; skip the connector bar (it would sit under
+        // the wrong pane).
+        push_side_comment_box(ctx, lines, box_lines, left_pad, right_col, line_idx)
+    } else {
+        let mut line_idx = line_idx;
+        for mut line in box_lines {
+            let indicator = cursor_indicator(line_idx, ctx.current_line_idx);
+            line.spans.insert(
+                0,
+                Span::styled(indicator, styles::current_line_indicator_style(ctx.theme)),
+            );
+            lines.push(line);
+            line_idx += 1;
+        }
+        crate::ui::diff_view::push_comment_bar(
+            &mut ctx.comment_bars.borrow_mut(),
+            box_top_row,
+            line_range,
+        );
+        line_idx
     }
 }
 
@@ -302,6 +437,10 @@ struct SideBySideContext<'a> {
     // intermediate function needing a `&mut Vec` parameter threaded through.
     comment_bars: std::cell::RefCell<Vec<crate::ui::diff_view::CommentBarAnchor>>,
     sbs_meta: std::cell::RefCell<std::collections::HashMap<usize, SbsRowMeta>>,
+    // Logical rows of side-scoped comment boxes: these draw their own right
+    // border (offset under one pane), so the shared right-border overlay must
+    // skip them.
+    side_box_rows: std::cell::RefCell<std::collections::HashSet<usize>>,
     // Only fully build spans for diff lines whose `line_idx` falls in this
     // half-open range; off-screen rows push `Line::default()` placeholders.
     visible_start: usize,
@@ -390,6 +529,7 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
         current_file_idx: app.diff_state.current_file_idx,
         comment_bars: std::cell::RefCell::new(Vec::new()),
         sbs_meta: std::cell::RefCell::new(std::collections::HashMap::new()),
+        side_box_rows: std::cell::RefCell::new(std::collections::HashSet::new()),
         visible_start,
         visible_end,
         search_style: styles::search_match_style(&app.theme),
@@ -1013,6 +1153,10 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
         let mut m = ctx.sbs_meta.borrow_mut();
         std::mem::take(&mut *m)
     };
+    let side_box_rows = {
+        let mut s = ctx.side_box_rows.borrow_mut();
+        std::mem::take(&mut *s)
+    };
     drop(ctx);
     app.comment_input_annotation_offset = annotation_offset;
 
@@ -1135,7 +1279,13 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
             .into_iter()
             .enumerate()
             .map(|(i, line)| {
-                if scroll_x == 0 || comment_box_row(&line).is_some() {
+                // Side-scoped and inline-input boxes strip the indent
+                // `comment_box_row` keys on, so ask the row model too: a
+                // panned comment box drags the text cursor off its glyph.
+                let row = scroll_offset + i;
+                let own_box = side_box_rows.contains(&row)
+                    || comment_input_box_range.is_some_and(|(s, e)| row >= s && row <= e);
+                if scroll_x == 0 || own_box || comment_box_row(&line).is_some() {
                     line
                 } else {
                     sbs_meta
@@ -1159,6 +1309,7 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
         theme: &app.theme,
         comment_bars: &comment_bars,
         fixed_gutters: true,
+        self_bordered_rows: &side_box_rows,
     };
 
     // Section-marker row tint (hunk headers + expand/hidden stubs).
@@ -2033,6 +2184,15 @@ fn add_comments_to_line(
         && ctx.comment_line == Some((line_num, side));
     let mut cursor_info_out: Option<SideBySideCursorInfo> = None;
 
+    // Size the comment box to the active side's pane (full width when the pane
+    // is too narrow to split). `left_pad` shifts the box under that pane.
+    let side_geom =
+        sbs_side_box_geometry(side, ctx.lineno_width, ctx.content_width, ctx.panel_width);
+    let box_width = side_geom
+        .map(|(_, w, _)| w)
+        .unwrap_or_else(|| ctx.panel_width.saturating_sub(1));
+    let left_pad: u16 = side_geom.map(|(p, _, _)| p).unwrap_or(0);
+
     if let Some(comments) = line_comments.get(&line_num) {
         for comment in comments {
             let comment_side = comment.side.unwrap_or(LineSide::New);
@@ -2056,7 +2216,7 @@ fn add_comments_to_line(
                         ctx.comment_cursor,
                         line_range,
                         true,
-                        ctx.panel_width.saturating_sub(1),
+                        box_width,
                         ctx.app
                             .comment_vim_mode_label()
                             .as_ref()
@@ -2069,28 +2229,19 @@ fn add_comments_to_line(
                     let annotations_replaced = ctx.app.comment_rows(comment, ctx.panel_width);
                     cursor_info_out = Some((
                         line_idx + cursor_info.line_offset,
-                        1 + cursor_info.column,
+                        1 + left_pad + cursor_info.column,
                         line_idx,
                         box_end,
                         annotations_replaced,
                     ));
-
-                    for mut input_line in input_lines {
-                        let indicator = cursor_indicator(line_idx, ctx.current_line_idx);
-                        input_line.spans.insert(
-                            0,
-                            Span::styled(
-                                indicator,
-                                styles::current_line_indicator_style(ctx.theme),
-                            ),
-                        );
-                        lines.push(input_line);
-                        line_idx += 1;
-                    }
-                    crate::ui::diff_view::push_comment_bar(
-                        &mut ctx.comment_bars.borrow_mut(),
+                    line_idx = push_comment_box_lines(
+                        ctx,
+                        lines,
+                        input_lines,
+                        side_geom,
                         box_top_row,
                         crate::ui::diff_view::comment_bar_range(comment, line_range),
+                        line_idx,
                     );
                 } else {
                     let line_range = comment
@@ -2100,36 +2251,36 @@ fn add_comments_to_line(
                     let rows = ctx.app.comment_rows(comment, ctx.panel_width);
                     // The bar is recorded either way: it is painted above the
                     // box, so it can be on screen while the box itself is not.
+                    // Side boxes draw their own border and never get a bar.
                     if !ctx.box_visible(line_idx, rows) {
                         skip_comment_box(lines, &mut line_idx, rows);
+                        if side_geom.is_none() {
+                            crate::ui::diff_view::push_comment_bar(
+                                &mut ctx.comment_bars.borrow_mut(),
+                                box_top_row,
+                                crate::ui::diff_view::comment_bar_range(comment, line_range),
+                            );
+                        }
                     } else {
                         let comment_lines = comment_panel::format_comment_lines(
                             ctx.theme,
                             comment_type_presentation(ctx.app, &comment.comment_type),
                             &comment.content,
                             line_range,
-                            ctx.panel_width.saturating_sub(1),
+                            box_width,
                             comment_panel::CommentBadge::for_comment(comment, &ctx.app.username),
                             ctx.app.thread_display(comment),
                         );
-                        for mut comment_line in comment_lines {
-                            let indicator = cursor_indicator(line_idx, ctx.current_line_idx);
-                            comment_line.spans.insert(
-                                0,
-                                Span::styled(
-                                    indicator,
-                                    styles::current_line_indicator_style(ctx.theme),
-                                ),
-                            );
-                            lines.push(comment_line);
-                            line_idx += 1;
-                        }
+                        line_idx = push_comment_box_lines(
+                            ctx,
+                            lines,
+                            comment_lines,
+                            side_geom,
+                            box_top_row,
+                            crate::ui::diff_view::comment_bar_range(comment, line_range),
+                            line_idx,
+                        );
                     }
-                    crate::ui::diff_view::push_comment_bar(
-                        &mut ctx.comment_bars.borrow_mut(),
-                        box_top_row,
-                        crate::ui::diff_view::comment_bar_range(comment, line_range),
-                    );
                 }
             }
         }
@@ -2147,7 +2298,7 @@ fn add_comments_to_line(
             ctx.comment_cursor,
             line_range,
             false,
-            ctx.panel_width.saturating_sub(1),
+            box_width,
             ctx.app
                 .comment_vim_mode_label()
                 .as_ref()
@@ -2159,25 +2310,19 @@ fn add_comments_to_line(
         let box_end = line_idx + input_lines.len().saturating_sub(1);
         cursor_info_out = Some((
             line_idx + cursor_info.line_offset,
-            1 + cursor_info.column,
+            1 + left_pad + cursor_info.column,
             line_idx,
             box_end,
             0,
         ));
-
-        for mut input_line in input_lines {
-            let indicator = cursor_indicator(line_idx, ctx.current_line_idx);
-            input_line.spans.insert(
-                0,
-                Span::styled(indicator, styles::current_line_indicator_style(ctx.theme)),
-            );
-            lines.push(input_line);
-            line_idx += 1;
-        }
-        crate::ui::diff_view::push_comment_bar(
-            &mut ctx.comment_bars.borrow_mut(),
+        line_idx = push_comment_box_lines(
+            ctx,
+            lines,
+            input_lines,
+            side_geom,
             box_top_row,
             (!ctx.app.composing_reply()).then_some(line_range).flatten(),
+            line_idx,
         );
     }
 
@@ -2611,6 +2756,88 @@ mod remote_comments_side_by_side_snapshot_tests {
             rows_with_l, 1,
             "wrap-off should produce exactly one row of L, got {rows_with_l}"
         );
+    }
+
+    fn add_side_comment(app: &mut App, line: u32, side: LineSide, text: &str) {
+        app.session.add_diff_file(&app.diff_files[0]);
+        let pb = PathBuf::from("src/lib.rs");
+        app.session
+            .get_file_mut(&pb)
+            .expect("file in session")
+            .add_line_comment(
+                line,
+                crate::model::Comment::new(
+                    text.to_string(),
+                    crate::model::CommentType::from_id("note"),
+                    Some(side),
+                ),
+            );
+    }
+
+    // Geometry mirrors the divider tests: bordered block (inner.x = 1), single
+    // digit line numbers (lw = 1), inner width 158 for a 160-wide buffer.
+    fn sbs_divider_col() -> usize {
+        let lw = 1usize;
+        let inner_w = 158usize;
+        let content_width = (inner_w - crate::app::sbs_overhead(lw) as usize) / 2;
+        1 + crate::app::sbs_left_gutter(lw) as usize + content_width + 1
+    }
+
+    #[test]
+    fn new_side_comment_box_stays_in_right_pane() {
+        let mut app = make_pr_app();
+        app.diff_files = vec![diff_file_with_pair("old text", "new text")];
+        app.cursor_side = LineSide::New;
+        add_side_comment(&mut app, 1, LineSide::New, "RIGHTSIDECOMMENT");
+        app.rebuild_annotations();
+
+        let buf = draw_sbs(&mut app, 160, 20);
+        let divider = sbs_divider_col();
+
+        let mut found = false;
+        for y in 0..buf.area.height {
+            let row: String = (0..buf.area.width).map(|x| char_at(&buf, x, y)).collect();
+            if !row.contains("RIGHTSIDECOMMENT") {
+                continue;
+            }
+            found = true;
+            let left: String = (1..divider).map(|x| char_at(&buf, x as u16, y)).collect();
+            assert!(
+                left.trim().is_empty(),
+                "new-side comment must not bleed into the left pane on row {y}: {left:?}"
+            );
+        }
+        assert!(found, "new-side comment text was not rendered");
+    }
+
+    #[test]
+    fn old_side_comment_box_stays_in_left_pane() {
+        let mut app = make_pr_app();
+        app.diff_files = vec![diff_file_with_pair("old text", "new text")];
+        app.cursor_side = LineSide::Old;
+        add_side_comment(&mut app, 1, LineSide::Old, "LEFTSIDECOMMENT");
+        app.rebuild_annotations();
+
+        let buf = draw_sbs(&mut app, 160, 20);
+        let divider = sbs_divider_col();
+
+        let mut found = false;
+        for y in 0..buf.area.height {
+            let row: String = (0..buf.area.width).map(|x| char_at(&buf, x, y)).collect();
+            if !row.contains("LEFTSIDECOMMENT") {
+                continue;
+            }
+            found = true;
+            // Exclude the panel's right frame border (last column).
+            let right: String = (divider..(buf.area.width as usize - 1))
+                .map(|x| char_at(&buf, x as u16, y))
+                .collect();
+            assert!(
+                right.trim().is_empty(),
+                "old-side comment must not bleed into the right pane on row {y}: {right:?}"
+            );
+        }
+        assert!(found, "old-side comment text was not rendered");
     }
 
     #[test]

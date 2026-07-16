@@ -238,7 +238,10 @@ impl App {
     }
 
     pub fn scroll_left(&mut self, cols: usize) {
-        if self.diff_state.wrap_lines {
+        // Side-by-side has no horizontal scroll (the keys switch side); keeping
+        // scroll_x at 0 also keeps the per-side comment boxes aligned. This also
+        // catches mouse/trackpad horizontal scroll, which calls here directly.
+        if self.diff_state.wrap_lines || self.horizontal_keys_switch_side() {
             return;
         }
         self.diff_state.scroll_x = self.diff_state.scroll_x.saturating_sub(cols);
@@ -283,7 +286,8 @@ impl App {
     }
 
     pub fn scroll_right(&mut self, cols: usize) {
-        if self.diff_state.wrap_lines {
+        // See scroll_left: no horizontal scroll in side-by-side view.
+        if self.diff_state.wrap_lines || self.horizontal_keys_switch_side() {
             return;
         }
         let viewport_width = if self.diff_view_mode == DiffViewMode::SideBySide {

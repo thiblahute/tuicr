@@ -778,6 +778,10 @@ pub(super) struct DiffOverlayPaint<'a> {
     pub comment_bars: &'a [CommentBarAnchor],
     /// Side-by-side scrolls within each content cell, leaving its gutters fixed.
     pub fixed_gutters: bool,
+    /// Logical rows whose right border is drawn by the row builder itself
+    /// (side-scoped comment boxes in side-by-side view). The shared right-edge
+    /// painter must not extend these to the viewport width.
+    pub self_bordered_rows: &'a std::collections::HashSet<usize>,
 }
 
 /// Records that an inline comment box at `box_top_row` (logical line index
@@ -853,6 +857,12 @@ pub(super) fn paint_comment_box_right_border(frame: &mut Frame, ctx: &DiffOverla
             break;
         }
         let rows = visual_rows_for_line(ctx.row_heights, idx);
+        // Side-scoped comment boxes draw their own right border; don't extend
+        // them to the viewport edge.
+        if ctx.self_bordered_rows.contains(&(ctx.scroll_offset + idx)) {
+            visual_row += rows;
+            continue;
+        }
         if let Some(pos) = comment_box_row(line) {
             let fg = line
                 .spans

@@ -1291,6 +1291,8 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
         |_idx, line| unified_line_bg_style(line, &app.theme),
     );
 
+    // Unified view never self-borders comment boxes.
+    let no_self_bordered_rows = std::collections::HashSet::new();
     let overlay_ctx = crate::ui::diff_view::DiffOverlayPaint {
         inner,
         visible_lines_unscrolled: &visible_lines_unscrolled_for_bg,
@@ -1303,6 +1305,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
         theme: &app.theme,
         comment_bars: &comment_bars,
         fixed_gutters: false,
+        self_bordered_rows: &no_self_bordered_rows,
     };
 
     // Section-marker row tint (hunk headers + expand/hidden stubs). Painted
