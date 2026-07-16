@@ -1901,6 +1901,7 @@ mod tests {
             diff_whitespace_mode: mode.clone(),
             staged: false,
             include_untracked: true,
+            include_staged: true,
             commit_selection: CommitSelectionStart::All,
             pr_target: None,
             repo_url_override: None,

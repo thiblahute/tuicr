@@ -131,23 +131,25 @@ pub fn list_changed_paths(repo: &Repository, kind: ChangeKind) -> Result<Vec<Pat
 pub fn get_unstaged_diff(
     repo: &Repository,
     whitespace_mode: &DiffWhitespaceMode,
+    include_untracked: bool,
     highlighter: &SyntaxHighlighter,
 ) -> Result<Vec<DiffFile>> {
     materialize_diff(whitespace_mode, |comparison| {
-        get_unstaged_diff_once(repo, comparison, highlighter)
+        get_unstaged_diff_once(repo, comparison, include_untracked, highlighter)
     })
 }
 
 fn get_unstaged_diff_once(
     repo: &Repository,
     comparison: WhitespaceComparison,
+    include_untracked: bool,
     highlighter: &SyntaxHighlighter,
 ) -> Result<Vec<DiffFile>> {
     let index = repo.index()?;
     let mut opts = diff_options(comparison);
-    opts.include_untracked(true);
-    opts.show_untracked_content(true);
-    opts.recurse_untracked_dirs(true);
+    opts.include_untracked(include_untracked);
+    opts.show_untracked_content(include_untracked);
+    opts.recurse_untracked_dirs(include_untracked);
 
     let diff = repo.diff_index_to_workdir(Some(&index), Some(&mut opts))?;
     let mut files = parse_diff(&diff, highlighter)?;
@@ -528,6 +530,37 @@ mod tests {
     }
 
     #[test]
+    fn unstaged_diff_excludes_untracked_when_disabled() {
+        let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+        let repo = Repository::init(temp_dir.path()).expect("failed to init repo");
+        create_initial_commit(&repo, "tracked.txt", "one\n");
+
+        fs::write(temp_dir.path().join("tracked.txt"), "one\ntwo\n").expect("write tracked");
+        fs::write(temp_dir.path().join("untracked.txt"), "new\n").expect("write untracked");
+
+        let paths = |include_untracked: bool| -> Vec<String> {
+            get_unstaged_diff(
+                &repo,
+                &DiffWhitespaceMode::Normal,
+                include_untracked,
+                &SyntaxHighlighter::default(),
+            )
+            .expect("diff")
+            .iter()
+            .map(|f| f.display_path().to_string_lossy().into_owned())
+            .collect()
+        };
+
+        assert!(paths(true).iter().any(|p| p.contains("untracked.txt")));
+        let without = paths(false);
+        assert!(without.iter().any(|p| p.contains("tracked.txt")));
+        assert!(
+            !without.iter().any(|p| p.contains("untracked.txt")),
+            "untracked file must be excluded from the unstaged diff: {without:?}"
+        );
+    }
+
+    #[test]
     fn should_expand_tabs_to_spaces_in_git_hunks() {
         let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
         let repo = Repository::init(temp_dir.path()).expect("failed to init repo");
@@ -614,7 +647,7 @@ mod tests {
 
         let highlighter = SyntaxHighlighter::default();
 
-        let unstaged = get_unstaged_diff(&repo, &DiffWhitespaceMode::Normal, &highlighter)
+        let unstaged = get_unstaged_diff(&repo, &DiffWhitespaceMode::Normal, true, &highlighter)
             .expect("unstaged diff failed");
         assert_eq!(unstaged.len(), 1);
         assert!(matches!(
@@ -632,7 +665,7 @@ mod tests {
             .expect("staged diff failed");
         assert_eq!(staged.len(), 1);
         assert!(matches!(
-            get_unstaged_diff(&repo, &DiffWhitespaceMode::Normal, &highlighter),
+            get_unstaged_diff(&repo, &DiffWhitespaceMode::Normal, true, &highlighter),
             Err(TuicrError::NoChanges)
         ));
     }
