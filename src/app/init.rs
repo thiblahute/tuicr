@@ -331,6 +331,32 @@ impl App {
             .with_vcs_open_options(options.vcs_open_options());
 
             Ok(app)
+        } else if options.staged {
+            // Skip the selector; review only staged changes (git diff --staged).
+            let diff_files = Self::get_staged_diff_with_ignore(
+                vcs.as_ref(),
+                &vcs_info.root_path,
+                highlighter,
+                options.path_filter,
+            )?;
+            let session = Self::load_or_create_session(&vcs_info, SessionDiffSource::Staged);
+
+            let app = Self::build(
+                vcs,
+                vcs_info,
+                theme,
+                comment_type_configs,
+                output_to_stdout,
+                diff_files,
+                session,
+                DiffSource::Staged,
+                InputMode::Normal,
+                Vec::new(),
+                options.path_filter,
+                options.repo_url_override.clone(),
+            )?;
+
+            Ok(app)
         } else {
             let change_status = Self::get_change_status_with_ignore(
                 vcs.as_ref(),

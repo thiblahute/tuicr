@@ -22,6 +22,8 @@ pub struct CliArgs {
     pub revisions: Option<String>,
     /// Skip commit selector and review uncommitted changes directly.
     pub working_tree: bool,
+    /// Review only staged changes (like `git diff --staged`).
+    pub staged: bool,
     /// Exclude untracked files from the working-tree diff (like `git diff`).
     pub no_untracked: bool,
     /// Include untracked files in the working-tree diff (overrides config).
@@ -100,6 +102,15 @@ struct TuiOptions {
         conflicts_with_all = ["file_path", "all_files"],
     )]
     working_tree: bool,
+
+    /// Review only staged changes (`git diff --staged`), skipping the commit
+    /// selector.
+    #[arg(
+        long = "staged",
+        action = ArgAction::SetTrue,
+        conflicts_with_all = ["file_path", "all_files", "working_tree", "revisions"],
+    )]
+    staged: bool,
 
     /// Exclude untracked files from the working-tree diff, reviewing only
     /// tracked uncommitted changes (like `git diff HEAD`). Pair with `-w`.
@@ -421,6 +432,7 @@ impl From<Cli> for CliArgs {
             no_update_check: options.no_update_check,
             revisions: options.revisions,
             working_tree: options.working_tree,
+            staged: options.staged,
             no_untracked: options.no_untracked,
             untracked: options.untracked,
             path_filter: options.path_filter,
@@ -443,6 +455,7 @@ impl TuiOptions {
             || self.no_update_check
             || self.revisions.is_some()
             || self.working_tree
+            || self.staged
             || self.no_untracked
             || self.untracked
             || self.path_filter.is_some()
@@ -459,6 +472,7 @@ impl TuiOptions {
             no_update_check: self.no_update_check || later.no_update_check,
             revisions: later.revisions.or(self.revisions),
             working_tree: self.working_tree || later.working_tree,
+            staged: self.staged || later.staged,
             no_untracked: self.no_untracked || later.no_untracked,
             untracked: self.untracked || later.untracked,
             path_filter: later.path_filter.or(self.path_filter),
@@ -643,6 +657,25 @@ mod tests {
     fn should_default_working_tree_to_false() {
         let parsed = parse_for_test(&["tuicr"]).expect("parse should succeed");
         assert!(!parsed.working_tree);
+    }
+
+    #[test]
+    fn should_parse_staged_flag() {
+        let parsed = parse_for_test(&["tuicr", "--staged"]).expect("parse should succeed");
+        assert!(parsed.staged);
+    }
+
+    #[test]
+    fn should_reject_staged_combined_with_working_tree() {
+        let err = parse_for_test(&["tuicr", "--staged", "-w"]).expect_err("parse should fail");
+        assert_eq!(err.kind(), ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn should_reject_staged_combined_with_revisions() {
+        let err = parse_for_test(&["tuicr", "--staged", "-r", "HEAD~1.."])
+            .expect_err("parse should fail");
+        assert_eq!(err.kind(), ErrorKind::ArgumentConflict);
     }
 
     #[test]

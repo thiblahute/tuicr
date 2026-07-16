@@ -219,6 +219,7 @@ fn main() -> anyhow::Result<()> {
             AppStartupOptions {
                 revisions: cli_args.revisions.as_deref(),
                 working_tree: cli_args.working_tree,
+                staged: cli_args.staged,
                 include_untracked,
                 path_filter: cli_args.path_filter.as_deref(),
                 file_path: cli_args.file_path.as_deref(),

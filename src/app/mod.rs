@@ -1817,6 +1817,8 @@ pub struct AppStartupOptions<'a> {
     pub show_pr_comments: bool,
     pub git_backend_preference: GitBackendPreference,
     pub diff_whitespace_mode: DiffWhitespaceMode,
+    /// Review only staged changes (`git diff --staged`), skipping the selector.
+    pub staged: bool,
     /// Include untracked files in the working-tree (`-w`) diff. `false` gives a
     /// `git diff HEAD`-style review of tracked changes only.
     pub include_untracked: bool,

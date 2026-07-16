@@ -79,6 +79,7 @@ tuicr                       # Pick from a commit selector
 tuicr tui                   # Same TUI, explicit subcommand
 tuicr -w                    # Uncommitted changes (skip selector)
 tuicr -w --no-untracked     # Tracked uncommitted changes only (like `git diff HEAD`)
+tuicr --staged              # Staged changes only (like `git diff --staged`)
 tuicr -r main..HEAD         # Commit range
 tuicr pr 125                # GitHub PR, or Bitbucket PR
 tuicr mr 125                # GitLab MR
