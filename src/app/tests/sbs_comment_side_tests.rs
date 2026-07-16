@@ -242,3 +242,30 @@ fn horizontal_keys_scroll_in_unified_and_leave_side_unchanged() {
     assert_eq!(app.diff_state.scroll_x, 4);
     assert_eq!(app.cursor_side, LineSide::New);
 }
+
+#[test]
+fn side_at_x_maps_click_column_to_pane() {
+    use ratatui::layout::Rect;
+    let mut app = build_app();
+    let inner = Rect::new(0, 0, 80, 20);
+    let w = app.lineno_width();
+    let half = (80 - crate::app::sbs_overhead(w)) / 2;
+    let divider = crate::app::sbs_left_gutter(w) + half;
+
+    app.diff_view_mode = DiffViewMode::SideBySide;
+    assert_eq!(
+        app.side_at_x(inner, divider - 1, LineSide::New),
+        LineSide::Old
+    );
+    assert_eq!(
+        app.side_at_x(inner, divider + 1, LineSide::Old),
+        LineSide::New
+    );
+
+    // Unified view has one pane, so it keeps the annotation's default side.
+    app.diff_view_mode = DiffViewMode::Unified;
+    assert_eq!(
+        app.side_at_x(inner, divider - 1, LineSide::New),
+        LineSide::New
+    );
+}
