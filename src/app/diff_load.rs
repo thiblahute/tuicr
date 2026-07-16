@@ -1899,6 +1899,7 @@ mod tests {
             pr_comments_visibility: None,
             git_backend_preference: GitBackendPreference::Cli,
             diff_whitespace_mode: mode.clone(),
+            staged: false,
             include_untracked: true,
             commit_selection: CommitSelectionStart::All,
             pr_target: None,
