@@ -1648,8 +1648,34 @@ fn render_context_line_side_by_side(
     }
     line_idx += 1;
 
-    // Add comments if any
+    // Add comments if any. A context line exists on both sides, so a comment
+    // can be attached to either — render the old (left) side first, then new.
     let mut cursor_info_out: Option<SideBySideCursorInfo> = None;
+    if let Some(old_ln) = diff_line.old_lineno {
+        let (new_line_idx, cursor_info) = add_comments_to_line(
+            old_ln,
+            line_comments,
+            LineSide::Old,
+            ctx,
+            file_idx,
+            line_idx,
+            lines,
+        );
+        line_idx = new_line_idx;
+        if cursor_info.is_some() {
+            cursor_info_out = cursor_info;
+        }
+        if let Some(file) = ctx.app.diff_files.get(file_idx) {
+            line_idx = add_remote_threads_to_line(
+                old_ln,
+                LineSide::Old,
+                ctx,
+                file.display_path(),
+                line_idx,
+                lines,
+            );
+        }
+    }
     if let Some(new_ln) = diff_line.new_lineno {
         let (new_line_idx, cursor_info) = add_comments_to_line(
             new_ln,
@@ -1661,7 +1687,9 @@ fn render_context_line_side_by_side(
             lines,
         );
         line_idx = new_line_idx;
-        cursor_info_out = cursor_info;
+        if cursor_info.is_some() {
+            cursor_info_out = cursor_info;
+        }
         if let Some(file) = ctx.app.diff_files.get(file_idx) {
             line_idx = add_remote_threads_to_line(
                 new_ln,
@@ -2809,6 +2837,62 @@ mod remote_comments_side_by_side_snapshot_tests {
         let inner_w = 158usize;
         let content_width = (inner_w - crate::app::sbs_overhead(lw) as usize) / 2;
         1 + crate::app::sbs_left_gutter(lw) as usize + content_width + 1
+    }
+
+    fn diff_file_with_context(text: &str) -> DiffFile {
+        let lines = vec![DiffLine {
+            origin: LineOrigin::Context,
+            content: text.to_string(),
+            old_lineno: Some(1),
+            new_lineno: Some(1),
+            highlighted_spans: None,
+        }];
+        let hunks = vec![DiffHunk {
+            header: "@@ -1,1 +1,1 @@".to_string(),
+            lines,
+            old_start: 1,
+            old_count: 1,
+            new_start: 1,
+            new_count: 1,
+        }];
+        let content_hash = DiffFile::compute_content_hash(&hunks);
+        DiffFile {
+            old_path: Some(PathBuf::from("src/lib.rs")),
+            new_path: Some(PathBuf::from("src/lib.rs")),
+            status: FileStatus::Modified,
+            hunks,
+            is_binary: false,
+            is_too_large: false,
+            is_commit_message: false,
+            content_hash,
+        }
+    }
+
+    #[test]
+    fn can_comment_on_old_side_of_context_line() {
+        // Regression: an old-side comment on an unchanged (context) line
+        // rendered no box (only the new side was handled), leaving comment mode
+        // stuck. It must now render the input box.
+        let mut app = make_pr_app();
+        app.diff_files = vec![diff_file_with_context("unchanged line")];
+        app.rebuild_annotations();
+        app.cursor_side = LineSide::Old;
+        app.enter_comment_mode(false, Some((1, LineSide::Old)));
+        app.comment_buffer = "OLDCONTEXTNOTE".to_string();
+        app.comment_cursor = app.comment_buffer.len();
+
+        let buf = draw_sbs(&mut app, 160, 20);
+
+        let rendered = (0..buf.area.height).any(|y| {
+            (0..buf.area.width)
+                .map(|x| char_at(&buf, x, y))
+                .collect::<String>()
+                .contains("OLDCONTEXTNOTE")
+        });
+        assert!(
+            rendered,
+            "old-side context comment input box did not render"
+        );
     }
 
     #[test]
