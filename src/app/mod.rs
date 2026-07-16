@@ -1903,6 +1903,9 @@ pub struct AppStartupOptions<'a> {
     pub pr_comments_visibility: Option<crate::forge::remote_comments::PrCommentsVisibility>,
     pub git_backend_preference: GitBackendPreference,
     pub diff_whitespace_mode: DiffWhitespaceMode,
+    /// Include untracked files in the working-tree (`-w`) diff. `false` gives a
+    /// `git diff HEAD`-style review of tracked changes only.
+    pub include_untracked: bool,
     /// Which commits are selected when a multi-commit review first opens.
     pub commit_selection: CommitSelectionStart,
     /// Direct PR target (`tuicr pr <target>`). Mutually exclusive with the

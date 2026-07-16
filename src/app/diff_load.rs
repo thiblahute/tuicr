@@ -1799,6 +1799,7 @@ mod tests {
             crate::vcs::git::diff::get_working_tree_diff(
                 &self.repo,
                 &self.whitespace_mode,
+                true,
                 highlighter,
             )
         }
@@ -1898,6 +1899,7 @@ mod tests {
             pr_comments_visibility: None,
             git_backend_preference: GitBackendPreference::Cli,
             diff_whitespace_mode: mode.clone(),
+            include_untracked: true,
             commit_selection: CommitSelectionStart::All,
             pr_target: None,
             repo_url_override: None,

@@ -13,16 +13,18 @@ use crate::vcs::{enhance_with_full_file_highlight, tabify};
 pub fn get_working_tree_diff(
     repo: &Repository,
     whitespace_mode: &DiffWhitespaceMode,
+    include_untracked: bool,
     highlighter: &SyntaxHighlighter,
 ) -> Result<Vec<DiffFile>> {
     materialize_diff(whitespace_mode, |comparison| {
-        get_working_tree_diff_once(repo, comparison, highlighter)
+        get_working_tree_diff_once(repo, comparison, include_untracked, highlighter)
     })
 }
 
 fn get_working_tree_diff_once(
     repo: &Repository,
     comparison: WhitespaceComparison,
+    include_untracked: bool,
     highlighter: &SyntaxHighlighter,
 ) -> Result<Vec<DiffFile>> {
     // Unborn HEAD (fresh `git init` / `git clone` of an empty remote) has no
@@ -31,9 +33,11 @@ fn get_working_tree_diff_once(
     let head = repo.head().ok().and_then(|h| h.peel_to_tree().ok());
 
     let mut opts = diff_options(comparison);
-    opts.include_untracked(true);
-    opts.show_untracked_content(true);
-    opts.recurse_untracked_dirs(true);
+    // When untracked files are excluded this is a `git diff HEAD`-style review
+    // of tracked changes only.
+    opts.include_untracked(include_untracked);
+    opts.show_untracked_content(include_untracked);
+    opts.recurse_untracked_dirs(include_untracked);
 
     let diff = repo.diff_tree_to_workdir_with_index(head.as_ref(), Some(&mut opts))?;
     let mut files = parse_diff(&diff, highlighter)?;
@@ -486,6 +490,44 @@ mod tests {
     }
 
     #[test]
+    fn working_tree_diff_excludes_untracked_when_disabled() {
+        let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+        let repo = Repository::init(temp_dir.path()).expect("failed to init repo");
+        create_initial_commit(&repo, "tracked.txt", "one\n");
+
+        // A tracked change plus a brand-new untracked file.
+        fs::write(temp_dir.path().join("tracked.txt"), "one\ntwo\n").expect("write tracked");
+        fs::write(temp_dir.path().join("untracked.txt"), "new\n").expect("write untracked");
+
+        let paths = |include_untracked: bool| -> Vec<String> {
+            get_working_tree_diff(
+                &repo,
+                &DiffWhitespaceMode::Normal,
+                include_untracked,
+                &SyntaxHighlighter::default(),
+            )
+            .expect("diff")
+            .iter()
+            .map(|f| f.display_path().to_string_lossy().into_owned())
+            .collect()
+        };
+
+        let with = paths(true);
+        assert!(with.iter().any(|p| p.contains("tracked.txt")));
+        assert!(
+            with.iter().any(|p| p.contains("untracked.txt")),
+            "untracked file should appear when included: {with:?}"
+        );
+
+        let without = paths(false);
+        assert!(without.iter().any(|p| p.contains("tracked.txt")));
+        assert!(
+            !without.iter().any(|p| p.contains("untracked.txt")),
+            "untracked file must be excluded (git diff HEAD style): {without:?}"
+        );
+    }
+
+    #[test]
     fn should_expand_tabs_to_spaces_in_git_hunks() {
         let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
         let repo = Repository::init(temp_dir.path()).expect("failed to init repo");
@@ -505,6 +547,7 @@ mod tests {
         let files = get_working_tree_diff(
             &repo,
             &DiffWhitespaceMode::Normal,
+            true,
             &SyntaxHighlighter::default(),
         )
         .expect("failed to get diff");
@@ -533,6 +576,7 @@ mod tests {
         let files = get_working_tree_diff(
             &repo,
             &DiffWhitespaceMode::Normal,
+            true,
             &SyntaxHighlighter::default(),
         )
         .expect("failed to get diff");
@@ -608,6 +652,7 @@ mod tests {
         let files = get_working_tree_diff(
             &repo,
             &DiffWhitespaceMode::Normal,
+            true,
             &SyntaxHighlighter::default(),
         )
         .expect("unborn HEAD should produce a diff against an empty tree");
@@ -631,6 +676,7 @@ mod tests {
         let files = get_working_tree_diff(
             &repo,
             &DiffWhitespaceMode::IgnoreAll,
+            true,
             &SyntaxHighlighter::default(),
         )
         .expect("whitespace-only edit may surface as a no-op diff file");
@@ -643,6 +689,7 @@ mod tests {
         let files = get_working_tree_diff(
             &repo,
             &DiffWhitespaceMode::IgnoreAll,
+            true,
             &SyntaxHighlighter::default(),
         )
         .expect("non-whitespace edit should still produce a diff");
@@ -668,6 +715,7 @@ mod tests {
         let files = get_working_tree_diff(
             &repo,
             &DiffWhitespaceMode::IgnoreAll,
+            true,
             &SyntaxHighlighter::default(),
         )
         .expect("mode-only edit should still produce a diff");
@@ -1063,7 +1111,7 @@ mod tests {
         index.add_path(Path::new("app.py")).unwrap();
         index.write().unwrap();
 
-        let files = get_working_tree_diff(&repo, &auto_mode(), &SyntaxHighlighter::default())
+        let files = get_working_tree_diff(&repo, &auto_mode(), true, &SyntaxHighlighter::default())
             .expect("unborn HEAD auto diff");
         assert_visible(&files, "data.json", "unborn");
         assert_visible(&files, "app.py", "unborn");
