@@ -177,6 +177,11 @@ pub trait VcsBackend: Send {
     /// Get the working tree diff (staged + unstaged changes)
     fn get_working_tree_diff(&self, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>>;
 
+    /// Whether the working-tree diff includes untracked files. Set `false` for
+    /// a `git diff HEAD`-style review of tracked changes only. Default no-op;
+    /// git backends honor it.
+    fn set_include_untracked(&mut self, _include: bool) {}
+
     /// Get the staged diff (index vs HEAD)
     fn get_staged_diff(&self, _highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
         Err(crate::error::TuicrError::UnsupportedOperation(

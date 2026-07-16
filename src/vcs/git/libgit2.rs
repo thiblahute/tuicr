@@ -16,6 +16,8 @@ pub struct Libgit2Backend {
     repo: Repository,
     info: VcsInfo,
     whitespace_mode: DiffWhitespaceMode,
+    /// Include untracked files in the working-tree diff (default true).
+    include_untracked: bool,
 }
 
 /// Declare libgit2 extensions tuicr understands so discovery doesn't refuse
@@ -86,6 +88,7 @@ impl Libgit2Backend {
             repo,
             info,
             whitespace_mode,
+            include_untracked: true,
         })
     }
 }
@@ -99,8 +102,17 @@ impl VcsBackend for Libgit2Backend {
         false
     }
 
+    fn set_include_untracked(&mut self, include: bool) {
+        self.include_untracked = include;
+    }
+
     fn get_working_tree_diff(&self, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
-        diff::get_working_tree_diff(&self.repo, self.whitespace_mode, highlighter)
+        diff::get_working_tree_diff(
+            &self.repo,
+            self.whitespace_mode,
+            self.include_untracked,
+            highlighter,
+        )
     }
 
     fn get_staged_diff(&self, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {

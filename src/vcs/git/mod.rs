@@ -268,6 +268,13 @@ impl VcsBackend for GitBackend {
         }
     }
 
+    fn set_include_untracked(&mut self, include: bool) {
+        match self {
+            Self::Libgit2(backend) => backend.set_include_untracked(include),
+            Self::Cli(backend) => backend.set_include_untracked(include),
+        }
+    }
+
     fn get_working_tree_diff(&self, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
         match self {
             Self::Libgit2(backend) => backend.get_working_tree_diff(highlighter),

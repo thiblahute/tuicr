@@ -42,6 +42,8 @@ pub struct GitCliBackend {
     untracked_cache: bool,
     fsmonitor: bool,
     whitespace_mode: DiffWhitespaceMode,
+    /// Include untracked files in the working-tree diff (default true).
+    include_untracked: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -81,6 +83,7 @@ impl GitCliBackend {
             untracked_cache,
             fsmonitor,
             whitespace_mode,
+            include_untracked: true,
         })
     }
 
@@ -203,10 +206,14 @@ impl VcsBackend for GitCliBackend {
         true
     }
 
+    fn set_include_untracked(&mut self, include: bool) {
+        self.include_untracked = include;
+    }
+
     fn get_working_tree_diff(&self, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
         self.get_cli_diff(
             strings(["diff", "--no-ext-diff", "--binary", "HEAD", "--"]),
-            true,
+            self.include_untracked,
             GitContentSource::Revision("HEAD"),
             GitContentSource::Workdir,
             highlighter,
@@ -1716,7 +1723,7 @@ mod tests {
         assert_eq!(
             summarize_files(cli_backend.get_working_tree_diff(&highlighter).unwrap()),
             summarize_files(
-                diff::get_working_tree_diff(&repo, DiffWhitespaceMode::Normal, &highlighter)
+                diff::get_working_tree_diff(&repo, DiffWhitespaceMode::Normal, true, &highlighter)
                     .unwrap()
             )
         );

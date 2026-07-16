@@ -132,9 +132,11 @@ impl App {
             return Ok(app);
         }
 
-        let vcs = crate::profile::time("startup.detect_vcs", || {
+        let mut vcs = crate::profile::time("startup.detect_vcs", || {
             detect_vcs(options.git_backend_preference, options.diff_whitespace_mode)
         })?;
+        // `--no-untracked`: review only tracked uncommitted changes (git diff).
+        vcs.set_include_untracked(options.include_untracked);
         let vcs_info = vcs.info().clone();
         let highlighter =
             crate::profile::time("startup.syntax_highlighter", || theme.syntax_highlighter());
