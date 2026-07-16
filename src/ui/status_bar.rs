@@ -151,11 +151,28 @@ pub fn render_header(frame: &mut Frame, app: &App, area: Rect) {
     let total_width = area.width as usize;
     let brand_width = brand.content.chars().count();
 
+    // When the bottom status bar is hidden, its mode indicator moves into the
+    // header (left, after the brand) and transient feedback (messages,
+    // spinners) takes the right slot over the source cluster while active.
+    let bar_hidden = !app.status_bar_visible();
+    let (mode_span, mode_width) = if bar_hidden {
+        let text = mode_label(app);
+        let width = text.chars().count();
+        (Some(Span::styled(text, styles::mode_style(theme))), width)
+    } else {
+        (None, 0)
+    };
+    let (msg_span, msg_width) = if bar_hidden {
+        status_right_span(app, theme)
+    } else {
+        (Span::raw(""), 0)
+    };
+    let show_msg = msg_width > 0;
+
     // When the diff is the only pane it has no frame/title row, so fold the
-    // current file name (left, after the brand) and its diff stats (right,
-    // after the source cluster) into this single header line.
+    // current file name (left) and its diff stats (right) into this line.
     let sole = app.is_diff_sole_pane();
-    let (stat_spans, stat_width): (Vec<Span>, usize) = if sole {
+    let (stat_spans, stat_width): (Vec<Span>, usize) = if sole && !show_msg {
         let line = crate::ui::diff_view::diff_stat_title(app);
         let w = line
             .spans
@@ -167,7 +184,11 @@ pub fn render_header(frame: &mut Frame, app: &App, area: Rect) {
         (Vec::new(), 0)
     };
 
-    let right_width = source_width + stat_width + update_width;
+    let right_width = if show_msg {
+        msg_width + update_width
+    } else {
+        source_width + stat_width + update_width
+    };
 
     let (file_span, file_width) = if sole {
         let label = if app.is_cursor_in_overview() || app.current_file_path().is_none() {
@@ -179,7 +200,7 @@ pub fn render_header(frame: &mut Frame, app: &App, area: Rect) {
         };
         // Leave a two-column minimum gap between the file name and the right
         // cluster; truncate the path (keeping the basename) to whatever fits.
-        let avail = total_width.saturating_sub(brand_width + right_width + 2);
+        let avail = total_width.saturating_sub(brand_width + mode_width + right_width + 2);
         let label = crate::ui::diff_view::truncate_path_smart(&label, avail);
         let text = format!(" {label} ");
         let width = text.chars().count();
@@ -196,15 +217,22 @@ pub fn render_header(frame: &mut Frame, app: &App, area: Rect) {
         (None, 0)
     };
 
-    let pad_width = total_width.saturating_sub(brand_width + file_width + right_width);
+    let pad_width = total_width.saturating_sub(brand_width + mode_width + file_width + right_width);
 
     let mut spans = vec![brand];
+    if let Some(mode_span) = mode_span {
+        spans.push(mode_span);
+    }
     if let Some(file_span) = file_span {
         spans.push(file_span);
     }
     spans.push(Span::raw(" ".repeat(pad_width)));
-    spans.push(source_span);
-    spans.extend(stat_spans);
+    if show_msg {
+        spans.push(msg_span);
+    } else {
+        spans.push(source_span);
+        spans.extend(stat_spans);
+    }
     if update_width > 0 {
         spans.push(update_span);
     }
@@ -290,124 +318,48 @@ fn header_source_chunk(app: &App) -> Option<String> {
     }
 }
 
-pub fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
-    let theme = &app.theme;
-
-    // In command/search mode, show the input on the left (vim-style)
-    let left_spans = if matches!(app.input_mode, InputMode::Command | InputMode::Search) {
-        let prefix = if app.input_mode == InputMode::Command {
-            ":"
-        } else {
-            "/"
-        };
-        let buffer = if app.input_mode == InputMode::Command {
-            &app.command_buffer
-        } else {
-            &app.search_buffer
-        };
-        let command_text = format!("{prefix}{buffer}");
-        vec![Span::styled(
-            command_text,
-            Style::default().fg(theme.fg_primary),
-        )]
-    } else {
-        let mode_str = match app.input_mode {
-            InputMode::Normal => {
-                if let Some(count) = app.pending_count {
-                    format!(" NORMAL {count} ")
-                } else {
-                    " NORMAL ".to_string()
-                }
+/// The mode indicator label (` NORMAL `, ` VISUAL L3-L5 `, …). Shared by the
+/// bottom status bar and, when it's hidden, the top header.
+fn mode_label(app: &App) -> String {
+    match app.input_mode {
+        InputMode::Normal => {
+            if let Some(count) = app.pending_count {
+                format!(" NORMAL {count} ")
+            } else {
+                " NORMAL ".to_string()
             }
-            InputMode::Command => " COMMAND ".to_string(),
-            InputMode::Search => " SEARCH ".to_string(),
-            InputMode::Comment => " COMMENT ".to_string(),
-            InputMode::Help => " HELP ".to_string(),
-            InputMode::MessageDetails => " ERROR ".to_string(),
-            InputMode::Summary => " SUMMARY ".to_string(),
-            InputMode::Confirm => " CONFIRM ".to_string(),
-            InputMode::CommitSelect => " SELECT ".to_string(),
-            InputMode::VisualSelect => {
-                if let Some((range, _)) = app.visual_selection_line_range() {
-                    if range.is_single() {
-                        format!(" VISUAL L{} ", range.start)
-                    } else {
-                        format!(" VISUAL L{}-L{} ", range.start, range.end)
-                    }
-                } else {
-                    " VISUAL ".to_string()
-                }
-            }
-            InputMode::SubmitResolver => " RESOLVE ".to_string(),
-            InputMode::SubmitConfirm => " SUBMIT ".to_string(),
-            InputMode::SubmitActionPicker => " SUBMIT ".to_string(),
-        };
-
-        let mode_span = Span::styled(mode_str, styles::mode_style(theme));
-
-        let hints: Cow<'static, str> = if app.message.is_some() {
-            Cow::Borrowed("")
-        } else if app.file_tree_prompt_editing() {
-            // File-tree prompts are a sub-state of Normal, so the mode chip
-            // still reads NORMAL; the hint is what tells the user Enter/Esc
-            // are the way out.
-            Cow::Borrowed("   \u{21b5} apply \u{00b7} esc cancel")
-        } else {
-            match app.input_mode {
-                InputMode::Normal if app.focused_panel == FocusedPanel::FileList => Cow::Borrowed(
-                    "   j/k move \u{00b7} \u{21b5} open \u{00b7} i/e filter \u{00b7} I/E clear \u{00b7} / search \u{00b7} r reviewed",
-                ),
-                InputMode::Normal => Cow::Borrowed(
-                    "   j/k scroll \u{00b7} {/} file \u{00b7} m/M comment \u{00b7} r file \u{00b7} R hunk \u{00b7} c comment \u{00b7} ? help",
-                ),
-                InputMode::Command => {
-                    Cow::Borrowed("   tab complete \u{00b7} \u{21b5} execute \u{00b7} esc cancel")
-                }
-                InputMode::Search => Cow::Borrowed("   \u{21b5} search \u{00b7} esc cancel"),
-                InputMode::Comment => Cow::Borrowed("   ctrl-s save \u{00b7} esc cancel"),
-                InputMode::Help => Cow::Borrowed("   / search · n/N match · q/?/esc close"),
-                InputMode::MessageDetails => Cow::Borrowed("   j/k scroll · q/esc close"),
-                InputMode::Summary => {
-                    Cow::Borrowed("   j/k select \u{00b7} \u{21b5} jump \u{00b7} q/esc close")
-                }
-                InputMode::Confirm => Cow::Borrowed("   y yes \u{00b7} n no"),
-                InputMode::CommitSelect => Cow::Borrowed(
-                    "   j/k navigate \u{00b7} space select \u{00b7} \u{21b5} confirm \u{00b7} esc back",
-                ),
-                InputMode::VisualSelect => Cow::Borrowed(
-                    "   j/k extend \u{00b7} c/\u{21b5} comment \u{00b7} y yank \u{00b7} esc/V cancel",
-                ),
-                InputMode::SubmitResolver => Cow::Borrowed(
-                    "   j/k move \u{00b7} \u{21b5} toggle \u{00b7} s submit \u{00b7} esc cancel",
-                ),
-                InputMode::SubmitConfirm => {
-                    Cow::Borrowed("   y submit \u{00b7} n cancel \u{00b7} esc cancel")
-                }
-                InputMode::SubmitActionPicker => {
-                    Cow::Borrowed("   j/k move \u{00b7} \u{21b5} submit \u{00b7} esc cancel")
-                }
-            }
-        };
-        let hints_span = Span::styled(hints, Style::default().fg(theme.fg_secondary));
-
-        let mut spans = vec![mode_span, hints_span];
-        if app.input_mode == InputMode::Normal
-            && app.message.is_none()
-            && let Some((current, total)) = app.search_match_position()
-        {
-            spans.push(Span::styled(
-                format!("   [{current}/{total}]"),
-                Style::default().fg(theme.fg_secondary),
-            ));
         }
-        spans
-    };
+        InputMode::Command => " COMMAND ".to_string(),
+        InputMode::Search => " SEARCH ".to_string(),
+        InputMode::Comment => " COMMENT ".to_string(),
+        InputMode::Help => " HELP ".to_string(),
+        InputMode::MessageDetails => " ERROR ".to_string(),
+        InputMode::Summary => " SUMMARY ".to_string(),
+        InputMode::Confirm => " CONFIRM ".to_string(),
+        InputMode::CommitSelect => " SELECT ".to_string(),
+        InputMode::VisualSelect => {
+            if let Some((range, _)) = app.visual_selection_line_range() {
+                if range.is_single() {
+                    format!(" VISUAL L{} ", range.start)
+                } else {
+                    format!(" VISUAL L{}-L{} ", range.start, range.end)
+                }
+            } else {
+                " VISUAL ".to_string()
+            }
+        }
+        InputMode::SubmitResolver => " RESOLVE ".to_string(),
+        InputMode::SubmitConfirm => " SUBMIT ".to_string(),
+        InputMode::SubmitActionPicker => " SUBMIT ".to_string(),
+    }
+}
 
-    // Right-aligned slot priority: active message > pr-flow spinners
-    // (submit/reload/range) > remote-comments loading hint > modified
-    // indicator. Surfaces the most important transient state without
-    // crowding the hints on the left.
-    let (right_span, right_width) = if app.message.is_some() {
+/// The right-aligned status span: active message > pr-flow spinners
+/// (submit/reload/range) > remote-comments loading hint > modified indicator,
+/// else empty. Shared by the bottom status bar and, when it's hidden, the top
+/// header, so transient feedback never disappears with the bar.
+fn status_right_span(app: &App, theme: &Theme) -> (Span<'static>, usize) {
+    if app.message.is_some() {
         build_message_span(app.message.as_ref(), theme)
     } else if let Some(submit) = app.pr_submit_state.as_ref() {
         use crate::forge::submit::SubmitEvent;
@@ -472,7 +424,91 @@ pub fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         )
     } else {
         (Span::raw(""), 0)
+    }
+}
+
+pub fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
+    let theme = &app.theme;
+
+    // In command/search mode, show the input on the left (vim-style)
+    let left_spans = if matches!(app.input_mode, InputMode::Command | InputMode::Search) {
+        let prefix = if app.input_mode == InputMode::Command {
+            ":"
+        } else {
+            "/"
+        };
+        let buffer = if app.input_mode == InputMode::Command {
+            &app.command_buffer
+        } else {
+            &app.search_buffer
+        };
+        let command_text = format!("{prefix}{buffer}");
+        vec![Span::styled(
+            command_text,
+            Style::default().fg(theme.fg_primary),
+        )]
+    } else {
+        let mode_span = Span::styled(mode_label(app), styles::mode_style(theme));
+
+        let hints: Cow<'static, str> = if app.message.is_some() {
+            Cow::Borrowed("")
+        } else if app.file_tree_prompt_editing() {
+            // File-tree prompts are a sub-state of Normal, so the mode chip
+            // still reads NORMAL; the hint is what tells the user Enter/Esc
+            // are the way out.
+            Cow::Borrowed("   \u{21b5} apply \u{00b7} esc cancel")
+        } else {
+            match app.input_mode {
+                InputMode::Normal if app.focused_panel == FocusedPanel::FileList => Cow::Borrowed(
+                    "   j/k move \u{00b7} \u{21b5} open \u{00b7} i/e filter \u{00b7} I/E clear \u{00b7} / search \u{00b7} r reviewed",
+                ),
+                InputMode::Normal => Cow::Borrowed(
+                    "   j/k scroll \u{00b7} {/} file \u{00b7} m/M comment \u{00b7} r file \u{00b7} R hunk \u{00b7} c comment \u{00b7} ? help",
+                ),
+                InputMode::Command => {
+                    Cow::Borrowed("   tab complete \u{00b7} \u{21b5} execute \u{00b7} esc cancel")
+                }
+                InputMode::Search => Cow::Borrowed("   \u{21b5} search \u{00b7} esc cancel"),
+                InputMode::Comment => Cow::Borrowed("   ctrl-s save \u{00b7} esc cancel"),
+                InputMode::Help => Cow::Borrowed("   / search · n/N match · q/?/esc close"),
+                InputMode::MessageDetails => Cow::Borrowed("   j/k scroll · q/esc close"),
+                InputMode::Summary => {
+                    Cow::Borrowed("   j/k select \u{00b7} \u{21b5} jump \u{00b7} q/esc close")
+                }
+                InputMode::Confirm => Cow::Borrowed("   y yes \u{00b7} n no"),
+                InputMode::CommitSelect => Cow::Borrowed(
+                    "   j/k navigate \u{00b7} space select \u{00b7} \u{21b5} confirm \u{00b7} esc back",
+                ),
+                InputMode::VisualSelect => Cow::Borrowed(
+                    "   j/k extend \u{00b7} c/\u{21b5} comment \u{00b7} y yank \u{00b7} esc/V cancel",
+                ),
+                InputMode::SubmitResolver => Cow::Borrowed(
+                    "   j/k move \u{00b7} \u{21b5} toggle \u{00b7} s submit \u{00b7} esc cancel",
+                ),
+                InputMode::SubmitConfirm => {
+                    Cow::Borrowed("   y submit \u{00b7} n cancel \u{00b7} esc cancel")
+                }
+                InputMode::SubmitActionPicker => {
+                    Cow::Borrowed("   j/k move \u{00b7} \u{21b5} submit \u{00b7} esc cancel")
+                }
+            }
+        };
+        let hints_span = Span::styled(hints, Style::default().fg(theme.fg_secondary));
+
+        let mut spans = vec![mode_span, hints_span];
+        if app.input_mode == InputMode::Normal
+            && app.message.is_none()
+            && let Some((current, total)) = app.search_match_position()
+        {
+            spans.push(Span::styled(
+                format!("   [{current}/{total}]"),
+                Style::default().fg(theme.fg_secondary),
+            ));
+        }
+        spans
     };
+
+    let (right_span, right_width) = status_right_span(app, theme);
     let total_width = area.width as usize;
     let spans = build_right_aligned_spans(left_spans, right_span, right_width, total_width);
 
@@ -939,6 +975,31 @@ mod header_snapshot_tests {
         let line = row_text(&buffer, 0);
         assert!(line.contains("PR Mode"), "got: {line:?}");
         assert!(!line.contains("read only"), "got: {line:?}");
+    }
+
+    #[test]
+    fn should_show_mode_in_header_when_status_bar_hidden() {
+        // given the status bar is hidden and we're in Normal mode
+        let mut app = build_pr_app(pr_source(false, false));
+        app.show_status_bar = false;
+        assert!(!app.status_bar_visible());
+        // when
+        let buffer = draw_header(&app);
+        // then the mode indicator has moved into the header
+        let line = row_text(&buffer, 0);
+        assert!(line.contains("NORMAL"), "got: {line:?}");
+    }
+
+    #[test]
+    fn should_not_show_mode_in_header_when_status_bar_visible() {
+        // given the default (status bar visible)
+        let app = build_pr_app(pr_source(false, false));
+        assert!(app.status_bar_visible());
+        // when
+        let buffer = draw_header(&app);
+        // then the mode stays in the (separate) status bar, not the header
+        let line = row_text(&buffer, 0);
+        assert!(!line.contains("NORMAL"), "got: {line:?}");
     }
 
     #[test]

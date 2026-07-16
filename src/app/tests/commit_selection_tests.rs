@@ -492,3 +492,23 @@ fn review_comments_header_hidden_while_empty() {
     app.is_single_file_view = true;
     assert!(!app.show_review_comments_header());
 }
+
+#[test]
+fn status_bar_visible_hides_in_normal_but_shows_for_command_input() {
+    let mut app = build_app(vec![normal_commit("a")]);
+
+    // Default: always visible.
+    app.show_status_bar = true;
+    app.input_mode = InputMode::Normal;
+    assert!(app.status_bar_visible());
+
+    // Hidden via config: gone in Normal, but forced while typing a command
+    // or search so the input line stays visible.
+    app.show_status_bar = false;
+    app.input_mode = InputMode::Normal;
+    assert!(!app.status_bar_visible());
+    app.input_mode = InputMode::Command;
+    assert!(app.status_bar_visible());
+    app.input_mode = InputMode::Search;
+    assert!(app.status_bar_visible());
+}
