@@ -194,6 +194,19 @@ fn main() -> anyhow::Result<()> {
         Some("oldest") => app::CommitSelectionStart::Oldest,
         _ => app::CommitSelectionStart::All,
     };
+    // Working-tree untracked visibility: an explicit CLI flag wins, otherwise
+    // the `show_untracked` config, otherwise the default (include).
+    let include_untracked = if cli_args.no_untracked {
+        false
+    } else if cli_args.untracked {
+        true
+    } else {
+        config_outcome
+            .config
+            .as_ref()
+            .and_then(|cfg| cfg.show_untracked)
+            .unwrap_or(true)
+    };
 
     let mut app = match profile::time("startup.app_init", || {
         App::new(
@@ -206,7 +219,7 @@ fn main() -> anyhow::Result<()> {
             AppStartupOptions {
                 revisions: cli_args.revisions.as_deref(),
                 working_tree: cli_args.working_tree,
-                include_untracked: !cli_args.no_untracked,
+                include_untracked,
                 path_filter: cli_args.path_filter.as_deref(),
                 file_path: cli_args.file_path.as_deref(),
                 all_files: cli_args.all_files,

@@ -24,6 +24,8 @@ pub struct CliArgs {
     pub working_tree: bool,
     /// Exclude untracked files from the working-tree diff (like `git diff`).
     pub no_untracked: bool,
+    /// Include untracked files in the working-tree diff (overrides config).
+    pub untracked: bool,
     /// Filter diff to a specific file or directory path.
     pub path_filter: Option<String>,
     /// Open a single file or directory for annotation (no VCS required).
@@ -107,6 +109,15 @@ struct TuiOptions {
         conflicts_with_all = ["file_path", "all_files"],
     )]
     no_untracked: bool,
+
+    /// Include untracked files in the working-tree diff. Overrides the
+    /// `show_untracked` config for this run.
+    #[arg(
+        long = "untracked",
+        action = ArgAction::SetTrue,
+        conflicts_with_all = ["file_path", "all_files", "no_untracked"],
+    )]
+    untracked: bool,
 
     /// Open a file or directory for annotation (no VCS required).
     #[arg(
@@ -411,6 +422,7 @@ impl From<Cli> for CliArgs {
             revisions: options.revisions,
             working_tree: options.working_tree,
             no_untracked: options.no_untracked,
+            untracked: options.untracked,
             path_filter: options.path_filter,
             file_path: options.file_path,
             all_files: options.all_files,
@@ -432,6 +444,7 @@ impl TuiOptions {
             || self.revisions.is_some()
             || self.working_tree
             || self.no_untracked
+            || self.untracked
             || self.path_filter.is_some()
             || self.file_path.is_some()
             || self.all_files
@@ -447,6 +460,7 @@ impl TuiOptions {
             revisions: later.revisions.or(self.revisions),
             working_tree: self.working_tree || later.working_tree,
             no_untracked: self.no_untracked || later.no_untracked,
+            untracked: self.untracked || later.untracked,
             path_filter: later.path_filter.or(self.path_filter),
             file_path: later.file_path.or(self.file_path),
             all_files: self.all_files || later.all_files,
@@ -643,6 +657,20 @@ mod tests {
     fn should_default_no_untracked_to_false() {
         let parsed = parse_for_test(&["tuicr", "-w"]).expect("parse should succeed");
         assert!(!parsed.no_untracked);
+    }
+
+    #[test]
+    fn should_parse_untracked_override_flag() {
+        let parsed = parse_for_test(&["tuicr", "-w", "--untracked"]).expect("parse should succeed");
+        assert!(parsed.untracked);
+        assert!(!parsed.no_untracked);
+    }
+
+    #[test]
+    fn should_reject_untracked_combined_with_no_untracked() {
+        let err = parse_for_test(&["tuicr", "-w", "--untracked", "--no-untracked"])
+            .expect_err("parse should fail");
+        assert_eq!(err.kind(), ErrorKind::ArgumentConflict);
     }
 
     #[test]
