@@ -278,6 +278,11 @@ fn paint_sbs_active_side_caret(
 /// splitting; fall back to a full-width box.
 const MIN_SIDE_BOX_WIDTH: usize = 24;
 
+/// The leading indent (`BORDER_PREFIX`'s 4 spaces) stripped from side-box rows
+/// so the box aligns with the pane's line-number column.
+const SIDE_BOX_INDENT_STRIP: &str = "    ";
+const SIDE_BOX_INDENT_WIDTH: usize = 4;
+
 /// Column geometry for a side-scoped comment box (all relative to `inner.x`):
 /// `left_pad` spaces are inserted after the cursor indicator to shift the box
 /// under `side`'s pane, `format_width` is handed to `format_comment_*` so its
@@ -325,6 +330,14 @@ fn push_side_comment_box<'a>(
         let kind = comment_box_row(&line);
         let border_fg = line.spans.first().and_then(|s| s.style.fg);
         let mut spans = line.spans;
+        // Drop the 4-space `BORDER_PREFIX` indent (it reserves room for the
+        // connector bar, which side boxes don't draw) so the box border aligns
+        // with the pane's line-number column instead of sitting further right.
+        if let Some(first) = spans.first_mut()
+            && let Some(rest) = first.content.strip_prefix(SIDE_BOX_INDENT_STRIP)
+        {
+            first.content = rest.to_string().into();
+        }
         if left_pad > 0 {
             spans.insert(
                 0,
@@ -2185,13 +2198,28 @@ fn add_comments_to_line(
     let mut cursor_info_out: Option<SideBySideCursorInfo> = None;
 
     // Size the comment box to the active side's pane (full width when the pane
-    // is too narrow to split). `left_pad` shifts the box under that pane.
-    let side_geom =
-        sbs_side_box_geometry(side, ctx.lineno_width, ctx.content_width, ctx.panel_width);
+    // is too narrow to split). `left_pad` shifts the box under that pane. The
+    // commit-message entry renders full-width with no divider, so its comments
+    // stay full-width (on the left) rather than being sized to a side.
+    let is_commit_message = ctx
+        .app
+        .diff_files
+        .get(file_idx)
+        .is_some_and(|f| f.is_commit_message);
+    let side_geom = if is_commit_message {
+        None
+    } else {
+        sbs_side_box_geometry(side, ctx.lineno_width, ctx.content_width, ctx.panel_width)
+    };
     let box_width = side_geom
         .map(|(_, w, _)| w)
         .unwrap_or_else(|| ctx.panel_width.saturating_sub(1));
     let left_pad: u16 = side_geom.map(|(p, _, _)| p).unwrap_or(0);
+    // Side boxes strip the 4-space indent, so the text cursor shifts left too.
+    // `cursor_info.column` already includes the 7-col border prefix, so the
+    // full sum stays positive.
+    let indent_strip = side_geom.map(|_| SIDE_BOX_INDENT_WIDTH).unwrap_or(0);
+    let cursor_col = |col: u16| (1 + left_pad as usize + col as usize - indent_strip) as u16;
 
     if let Some(comments) = line_comments.get(&line_num) {
         for comment in comments {
@@ -2229,7 +2257,7 @@ fn add_comments_to_line(
                     let annotations_replaced = ctx.app.comment_rows(comment, ctx.panel_width);
                     cursor_info_out = Some((
                         line_idx + cursor_info.line_offset,
-                        1 + left_pad + cursor_info.column,
+                        cursor_col(cursor_info.column),
                         line_idx,
                         box_end,
                         annotations_replaced,
@@ -2310,7 +2338,7 @@ fn add_comments_to_line(
         let box_end = line_idx + input_lines.len().saturating_sub(1);
         cursor_info_out = Some((
             line_idx + cursor_info.line_offset,
-            1 + left_pad + cursor_info.column,
+            cursor_col(cursor_info.column),
             line_idx,
             box_end,
             0,
