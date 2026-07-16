@@ -151,11 +151,28 @@ pub fn render_header(frame: &mut Frame, app: &App, area: Rect) {
     let total_width = area.width as usize;
     let brand_width = brand.content.chars().count();
 
+    // When the bottom status bar is hidden, its mode indicator moves into the
+    // header (left, after the brand) and transient feedback (messages,
+    // spinners) takes the right slot over the source cluster while active.
+    let bar_hidden = !app.status_bar_visible();
+    let (mode_span, mode_width) = if bar_hidden {
+        let text = mode_label(app);
+        let width = text.chars().count();
+        (Some(Span::styled(text, styles::mode_style(theme))), width)
+    } else {
+        (None, 0)
+    };
+    let (msg_span, msg_width) = if bar_hidden {
+        status_right_span(app, theme)
+    } else {
+        (Span::raw(""), 0)
+    };
+    let show_msg = msg_width > 0;
+
     // When the diff is the only pane it has no frame/title row, so fold the
-    // current file name (left, after the brand) and its diff stats (right,
-    // after the source cluster) into this single header line.
+    // current file name (left) and its diff stats (right) into this line.
     let sole = app.is_diff_sole_pane();
-    let (stat_spans, stat_width): (Vec<Span>, usize) = if sole {
+    let (stat_spans, stat_width): (Vec<Span>, usize) = if sole && !show_msg {
         let line = crate::ui::diff_view::diff_stat_title(app);
         let w = line
             .spans
@@ -167,7 +184,11 @@ pub fn render_header(frame: &mut Frame, app: &App, area: Rect) {
         (Vec::new(), 0)
     };
 
-    let right_width = source_width + stat_width + update_width;
+    let right_width = if show_msg {
+        msg_width + update_width
+    } else {
+        source_width + stat_width + update_width
+    };
 
     let (file_span, file_width) = if sole {
         let label = if app.is_cursor_in_overview() || app.current_file_path().is_none() {
@@ -179,7 +200,7 @@ pub fn render_header(frame: &mut Frame, app: &App, area: Rect) {
         };
         // Leave a two-column minimum gap between the file name and the right
         // cluster; truncate the path (keeping the basename) to whatever fits.
-        let avail = total_width.saturating_sub(brand_width + right_width + 2);
+        let avail = total_width.saturating_sub(brand_width + mode_width + right_width + 2);
         let label = crate::ui::diff_view::truncate_path_smart(&label, avail);
         let text = format!(" {label} ");
         let width = text.chars().count();
@@ -196,15 +217,22 @@ pub fn render_header(frame: &mut Frame, app: &App, area: Rect) {
         (None, 0)
     };
 
-    let pad_width = total_width.saturating_sub(brand_width + file_width + right_width);
+    let pad_width = total_width.saturating_sub(brand_width + mode_width + file_width + right_width);
 
     let mut spans = vec![brand];
+    if let Some(mode_span) = mode_span {
+        spans.push(mode_span);
+    }
     if let Some(file_span) = file_span {
         spans.push(file_span);
     }
     spans.push(Span::raw(" ".repeat(pad_width)));
-    spans.push(source_span);
-    spans.extend(stat_spans);
+    if show_msg {
+        spans.push(msg_span);
+    } else {
+        spans.push(source_span);
+        spans.extend(stat_spans);
+    }
     if update_width > 0 {
         spans.push(update_span);
     }
@@ -290,6 +318,116 @@ fn header_source_chunk(app: &App) -> Option<String> {
     }
 }
 
+/// The mode indicator label (` NORMAL `, ` VISUAL L3-L5 `, …). Shared by the
+/// bottom status bar and, when it's hidden, the top header.
+fn mode_label(app: &App) -> String {
+    match app.input_mode {
+        InputMode::Normal => {
+            if let Some(count) = app.pending_count {
+                format!(" NORMAL {count} ")
+            } else {
+                " NORMAL ".to_string()
+            }
+        }
+        InputMode::Command => " COMMAND ".to_string(),
+        InputMode::Search => " SEARCH ".to_string(),
+        InputMode::Comment => " COMMENT ".to_string(),
+        InputMode::Help => " HELP ".to_string(),
+        InputMode::MessageDetails => " ERROR ".to_string(),
+        InputMode::Summary => " SUMMARY ".to_string(),
+        InputMode::Confirm => " CONFIRM ".to_string(),
+        InputMode::CommitSelect => " SELECT ".to_string(),
+        InputMode::VisualSelect => {
+            if let Some((range, _)) = app.visual_selection_line_range() {
+                if range.is_single() {
+                    format!(" VISUAL L{} ", range.start)
+                } else {
+                    format!(" VISUAL L{}-L{} ", range.start, range.end)
+                }
+            } else {
+                " VISUAL ".to_string()
+            }
+        }
+        InputMode::SubmitResolver => " RESOLVE ".to_string(),
+        InputMode::SubmitConfirm => " SUBMIT ".to_string(),
+        InputMode::SubmitActionPicker => " SUBMIT ".to_string(),
+        InputMode::ThemePicker => " THEME ".to_string(),
+    }
+}
+
+/// The right-aligned status span: active message > pr-flow spinners
+/// (submit/reload/range) > remote-comments loading hint > modified indicator,
+/// else empty. Shared by the bottom status bar and, when it's hidden, the top
+/// header, so transient feedback never disappears with the bar.
+fn status_right_span(app: &App, theme: &Theme) -> (Span<'static>, usize) {
+    if app.message.is_some() {
+        build_message_span(app.message.as_ref(), theme)
+    } else if let Some(submit) = app.pr_submit_state.as_ref() {
+        use crate::forge::submit::SubmitEvent;
+        let glyph = crate::ui::selector::pr_open_spinner_glyph(submit.started_at.elapsed());
+        let label = match submit.event {
+            SubmitEvent::Draft => "Pushing pending review…",
+            _ => "Submitting review…",
+        };
+        let content = format!(" {glyph} {label} ");
+        let width = content.chars().count();
+        (
+            Span::styled(
+                content,
+                Style::default()
+                    .fg(theme.message_info_fg)
+                    .bg(theme.message_info_bg)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            width,
+        )
+    } else if let Some(reload) = app.pr_reload_state.as_ref() {
+        let glyph = crate::ui::selector::pr_open_spinner_glyph(reload.started_at.elapsed());
+        let content = format!(" {glyph} Reloading PR… ");
+        let width = content.chars().count();
+        (
+            Span::styled(
+                content,
+                Style::default()
+                    .fg(theme.message_info_fg)
+                    .bg(theme.message_info_bg)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            width,
+        )
+    } else if let Some(range) = app.pr_range_reload_state.as_ref() {
+        let glyph = crate::ui::selector::pr_open_spinner_glyph(range.started_at.elapsed());
+        let content = format!(" {glyph} Loading range diff… ");
+        let width = content.chars().count();
+        (
+            Span::styled(
+                content,
+                Style::default()
+                    .fg(theme.message_info_fg)
+                    .bg(theme.message_info_bg)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            width,
+        )
+    } else if app.forge_review_threads_loading {
+        let content = " loading remote comments\u{2026} ".to_string();
+        let width = content.chars().count();
+        (
+            Span::styled(content, Style::default().fg(theme.fg_dim)),
+            width,
+        )
+    } else if app.dirty {
+        let content = " \u{2022} modified ".to_string();
+        let width = content.chars().count();
+        (
+            Span::styled(content, Style::default().fg(theme.pending)),
+            width,
+        )
+    } else {
+        (Span::raw(""), 0)
+    }
+}
+
 pub fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     let theme = &app.theme;
 
@@ -311,40 +449,7 @@ pub fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             Style::default().fg(theme.fg_primary),
         )]
     } else {
-        let mode_str = match app.input_mode {
-            InputMode::Normal => {
-                if let Some(count) = app.pending_count {
-                    format!(" NORMAL {count} ")
-                } else {
-                    " NORMAL ".to_string()
-                }
-            }
-            InputMode::Command => " COMMAND ".to_string(),
-            InputMode::Search => " SEARCH ".to_string(),
-            InputMode::Comment => " COMMENT ".to_string(),
-            InputMode::Help => " HELP ".to_string(),
-            InputMode::MessageDetails => " ERROR ".to_string(),
-            InputMode::Summary => " SUMMARY ".to_string(),
-            InputMode::Confirm => " CONFIRM ".to_string(),
-            InputMode::CommitSelect => " SELECT ".to_string(),
-            InputMode::VisualSelect => {
-                if let Some((range, _)) = app.visual_selection_line_range() {
-                    if range.is_single() {
-                        format!(" VISUAL L{} ", range.start)
-                    } else {
-                        format!(" VISUAL L{}-L{} ", range.start, range.end)
-                    }
-                } else {
-                    " VISUAL ".to_string()
-                }
-            }
-            InputMode::SubmitResolver => " RESOLVE ".to_string(),
-            InputMode::SubmitConfirm => " SUBMIT ".to_string(),
-            InputMode::SubmitActionPicker => " SUBMIT ".to_string(),
-            InputMode::ThemePicker => " THEME ".to_string(),
-        };
-
-        let mode_span = Span::styled(mode_str, styles::mode_style(theme));
+        let mode_span = Span::styled(mode_label(app), styles::mode_style(theme));
 
         let hints: Cow<'static, str> = if app.message.is_some() {
             Cow::Borrowed("")
@@ -412,76 +517,7 @@ pub fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         spans
     };
 
-    // Right-aligned slot priority: active message > pr-flow spinners
-    // (submit/reload/range) > remote-comments loading hint > modified
-    // indicator. Surfaces the most important transient state without
-    // crowding the hints on the left.
-    let (right_span, right_width) = if app.message.is_some() {
-        build_message_span(app.message.as_ref(), theme)
-    } else if let Some(submit) = app.pr_submit_state.as_ref() {
-        use crate::forge::submit::SubmitEvent;
-        let glyph = crate::ui::selector::pr_open_spinner_glyph(submit.started_at.elapsed());
-        let label = match submit.event {
-            SubmitEvent::Draft => "Pushing pending review…",
-            _ => "Submitting review…",
-        };
-        let content = format!(" {glyph} {label} ");
-        let width = content.chars().count();
-        (
-            Span::styled(
-                content,
-                Style::default()
-                    .fg(theme.message_info_fg)
-                    .bg(theme.message_info_bg)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            width,
-        )
-    } else if let Some(reload) = app.pr_reload_state.as_ref() {
-        let glyph = crate::ui::selector::pr_open_spinner_glyph(reload.started_at.elapsed());
-        let content = format!(" {glyph} Reloading PR… ");
-        let width = content.chars().count();
-        (
-            Span::styled(
-                content,
-                Style::default()
-                    .fg(theme.message_info_fg)
-                    .bg(theme.message_info_bg)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            width,
-        )
-    } else if let Some(range) = app.pr_range_reload_state.as_ref() {
-        let glyph = crate::ui::selector::pr_open_spinner_glyph(range.started_at.elapsed());
-        let content = format!(" {glyph} Loading range diff… ");
-        let width = content.chars().count();
-        (
-            Span::styled(
-                content,
-                Style::default()
-                    .fg(theme.message_info_fg)
-                    .bg(theme.message_info_bg)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            width,
-        )
-    } else if app.forge_review_threads_loading {
-        let content = " loading remote comments\u{2026} ".to_string();
-        let width = content.chars().count();
-        (
-            Span::styled(content, Style::default().fg(theme.fg_dim)),
-            width,
-        )
-    } else if app.dirty {
-        let content = " \u{2022} modified ".to_string();
-        let width = content.chars().count();
-        (
-            Span::styled(content, Style::default().fg(theme.pending)),
-            width,
-        )
-    } else {
-        (Span::raw(""), 0)
-    };
+    let (right_span, right_width) = status_right_span(app, theme);
     let total_width = area.width as usize;
     let spans = build_right_aligned_spans(left_spans, right_span, right_width, total_width);
 
@@ -948,6 +984,31 @@ mod header_snapshot_tests {
         let line = row_text(&buffer, 0);
         assert!(line.contains("PR Mode"), "got: {line:?}");
         assert!(!line.contains("read only"), "got: {line:?}");
+    }
+
+    #[test]
+    fn should_show_mode_in_header_when_status_bar_hidden() {
+        // given the status bar is hidden and we're in Normal mode
+        let mut app = build_pr_app(pr_source(false, false));
+        app.show_status_bar = false;
+        assert!(!app.status_bar_visible());
+        // when
+        let buffer = draw_header(&app);
+        // then the mode indicator has moved into the header
+        let line = row_text(&buffer, 0);
+        assert!(line.contains("NORMAL"), "got: {line:?}");
+    }
+
+    #[test]
+    fn should_not_show_mode_in_header_when_status_bar_visible() {
+        // given the default (status bar visible)
+        let app = build_pr_app(pr_source(false, false));
+        assert!(app.status_bar_visible());
+        // when
+        let buffer = draw_header(&app);
+        // then the mode stays in the (separate) status bar, not the header
+        let line = row_text(&buffer, 0);
+        assert!(!line.contains("NORMAL"), "got: {line:?}");
     }
 
     #[test]
