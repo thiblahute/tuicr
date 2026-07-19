@@ -1463,3 +1463,36 @@ fn should_not_show_eof_gap_for_deleted_files() {
     // and: total_lines must match annotations
     assert_eq!(app.total_lines(), app.line_annotations.len());
 }
+
+#[test]
+fn search_should_not_match_collapsed_expander_or_hidden_chrome() {
+    // File with a hunk at 1-5 and 100 total lines => an EOF gap rendered as a
+    // "... 95 lines hidden ..." row plus a "... ↓ expand ..." row.
+    let file = make_file_with_hunks("test.rs", vec![make_hunk(1, 5)]);
+    let mut app = build_app_with_files(vec![file], 100);
+    assert!(
+        app.line_annotations
+            .iter()
+            .any(|a| matches!(a, AnnotatedLine::HiddenLines { .. })),
+        "test setup should produce a HiddenLines row"
+    );
+
+    // The placeholder chrome words must not be searchable.
+    app.search_buffer = "hidden".to_string();
+    assert!(
+        !app.search_in_diff_from_cursor(),
+        "search must not match the '... N lines hidden ...' placeholder"
+    );
+    app.search_buffer = "expand".to_string();
+    assert!(
+        !app.search_in_diff_from_cursor(),
+        "search must not match the '... expand ...' placeholder"
+    );
+
+    // Control: real diff content is still searchable.
+    app.search_buffer = "hunk line".to_string();
+    assert!(
+        app.search_in_diff_from_cursor(),
+        "search must still match actual diff content"
+    );
+}

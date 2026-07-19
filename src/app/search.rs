@@ -353,24 +353,11 @@ impl App {
                 let comment = comments.get(*comment_idx)?;
                 Some(Cow::Borrowed(comment.content.as_str()))
             }
-            AnnotatedLine::Expander { gap_id, direction } => {
-                let arrow = match direction {
-                    ExpandDirection::Down => "↓",
-                    ExpandDirection::Up => "↑",
-                    ExpandDirection::Both => "↕",
-                };
-                let gap = self.gap_size(gap_id)?;
-                let top_len = self.expanded_top.get(gap_id).map_or(0, |v| v.len());
-                let bot_len = self.expanded_bottom.get(gap_id).map_or(0, |v| v.len());
-                let remaining = (gap as usize).saturating_sub(top_len + bot_len);
-                let count = remaining.min(GAP_EXPAND_BATCH);
-                Some(Cow::Owned(format!(
-                    "... {arrow} expand ({count} lines) ..."
-                )))
-            }
-            AnnotatedLine::HiddenLines { count, .. } => {
-                Some(Cow::Owned(format!("... {count} lines hidden ...")))
-            }
+            // Expander and hidden-lines rows are collapsed-region chrome, not
+            // content; their placeholder text ("... expand ...", "... N lines
+            // hidden ...") must not be searchable, and the collapsed content
+            // behind them isn't shown, so there's nothing to match there.
+            AnnotatedLine::Expander { .. } | AnnotatedLine::HiddenLines { .. } => None,
             AnnotatedLine::ExpandedContext {
                 gap_id,
                 line_idx: context_idx,
