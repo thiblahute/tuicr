@@ -20,6 +20,7 @@ fn ordered_returns_anchor_head_when_already_in_order() {
     let sel = VisualSelection {
         anchor: p(1, 0),
         head: p(4, 8),
+        kind: VisualKind::Char,
     };
     let (start, end) = sel.ordered();
     assert_eq!(start, p(1, 0));
@@ -31,6 +32,7 @@ fn ordered_swaps_when_head_before_anchor_by_idx() {
     let sel = VisualSelection {
         anchor: p(4, 0),
         head: p(1, 0),
+        kind: VisualKind::Char,
     };
     let (start, end) = sel.ordered();
     assert_eq!(start, p(1, 0));
@@ -42,6 +44,7 @@ fn ordered_breaks_ties_on_idx_by_char_offset() {
     let sel = VisualSelection {
         anchor: p(7, 20),
         head: p(7, 5),
+        kind: VisualKind::Char,
     };
     let (start, end) = sel.ordered();
     assert_eq!(start, p(7, 5));
