@@ -216,10 +216,19 @@ pub struct SelPoint {
     pub side: LineSide,
 }
 
+/// How a visual selection extends: character-precise (`v`, mouse drags) or
+/// whole lines (`V`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VisualKind {
+    Char,
+    Line,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VisualSelection {
     pub anchor: SelPoint,
     pub head: SelPoint,
+    pub kind: VisualKind,
 }
 
 impl VisualSelection {
@@ -227,6 +236,7 @@ impl VisualSelection {
         Self {
             anchor: point,
             head: point,
+            kind: VisualKind::Char,
         }
     }
 
@@ -1581,6 +1591,11 @@ pub struct DiffState {
     pub scroll_offset: usize,
     pub scroll_x: usize,
     pub cursor_line: usize,
+    /// Character column of the cursor within the current side's line text.
+    /// `h`/`l` move it by characters and `w`/`b` by words; `*`/`#` search the
+    /// word it sits on. Sticky across line moves like an editor column —
+    /// clamped to each line's length when used or drawn.
+    pub cursor_col: usize,
     pub current_file_idx: usize,
     pub viewport_height: usize,
     pub viewport_width: usize,
@@ -1617,6 +1632,7 @@ impl Default for DiffState {
             scroll_offset: 0,
             scroll_x: 0,
             cursor_line: 0,
+            cursor_col: 0,
             current_file_idx: 0,
             viewport_height: 0,
             viewport_width: 0,

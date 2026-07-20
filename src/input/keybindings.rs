@@ -7,6 +7,9 @@ pub enum Action {
     // Navigation
     CursorDown(usize),
     CursorUp(usize),
+    /// `h` / `l`: move the character cursor within the line.
+    CursorLeft(usize),
+    CursorRight(usize),
     HalfPageDown,
     HalfPageUp,
     PageDown,
@@ -48,9 +51,18 @@ pub enum Action {
     SearchNext,
     SearchPrev,
     ClearSearchHighlight,
+    /// `w` / `b`: move the word cursor to the next / previous word.
+    WordCursorNext,
+    WordCursorPrev,
+    /// `*` / `#`: search forward / backward for the word under the word cursor.
+    SearchWordForward,
+    SearchWordBackward,
 
     // Visual selection mode
+    /// `v`: word-wise visual selection anchored on the word cursor.
     EnterVisualMode,
+    /// `V`: line-wise visual selection.
+    EnterVisualLineMode,
     AddRangeComment,
 
     // Session
@@ -218,9 +230,12 @@ fn map_normal_mode(key: KeyEvent, leader_key: char) -> Action {
         (KeyCode::Enter, KeyModifiers::NONE) => Action::SelectFile,
         (KeyCode::Enter, KeyModifiers::SHIFT) => Action::SelectFileFull,
 
-        // Horizontal scrolling
-        (KeyCode::Char('h') | KeyCode::Left, KeyModifiers::NONE) => Action::ScrollLeft(4),
-        (KeyCode::Char('l') | KeyCode::Right, KeyModifiers::NONE) => Action::ScrollRight(4),
+        // Character cursor (vim-like); the arrows keep the horizontal
+        // scroll / side-switch behaviour.
+        (KeyCode::Char('h'), KeyModifiers::NONE) => Action::CursorLeft(1),
+        (KeyCode::Char('l'), KeyModifiers::NONE) => Action::CursorRight(1),
+        (KeyCode::Left, KeyModifiers::NONE) => Action::ScrollLeft(4),
+        (KeyCode::Right, KeyModifiers::NONE) => Action::ScrollRight(4),
 
         // Review actions
         (KeyCode::Char('r'), KeyModifiers::NONE) => Action::ToggleReviewed,
@@ -230,12 +245,17 @@ fn map_normal_mode(key: KeyEvent, leader_key: char) -> Action {
         (KeyCode::Char('i'), KeyModifiers::NONE) => Action::EditComment,
         (KeyCode::Char('A'), _) => Action::EditCommentAtEnd,
         (KeyCode::Char('d'), KeyModifiers::NONE) => Action::PendingDCommand,
-        (KeyCode::Char('v') | KeyCode::Char('V'), _) => Action::EnterVisualMode,
+        (KeyCode::Char('v'), KeyModifiers::NONE) => Action::EnterVisualMode,
+        (KeyCode::Char('V'), _) => Action::EnterVisualLineMode,
         (KeyCode::Char('y'), KeyModifiers::NONE) => Action::ExportToClipboard,
         (KeyCode::Char('Y'), _) => Action::CopyCommentAtCursor,
         (KeyCode::Char('e'), KeyModifiers::NONE) => Action::EditFile,
         (KeyCode::Char('n'), KeyModifiers::NONE) => Action::SearchNext,
         (KeyCode::Char('N'), _) => Action::SearchPrev,
+        (KeyCode::Char('w'), KeyModifiers::NONE) => Action::WordCursorNext,
+        (KeyCode::Char('b'), KeyModifiers::NONE) => Action::WordCursorPrev,
+        (KeyCode::Char('*'), _) => Action::SearchWordForward,
+        (KeyCode::Char('#'), _) => Action::SearchWordBackward,
 
         // Mode changes (use _ for shifted characters like : and ?)
         (KeyCode::Char(':'), _) => Action::EnterCommandMode,
@@ -494,6 +514,11 @@ pub fn map_file_tree_mode(key: KeyEvent, leader_key: char) -> Action {
         (KeyCode::Char('I'), _) => Action::FileTreeClearInclude,
         (KeyCode::Char('E'), _) => Action::FileTreeClearExclude,
         (KeyCode::Char('/'), _) => Action::FileTreeSearch,
+        // The tree pans horizontally with `h`/`l`. In the diff those now move
+        // the character cursor, so the tree claims them rather than falling
+        // through to the normal-mode map.
+        (KeyCode::Char('h'), KeyModifiers::NONE) => Action::ScrollLeft(4),
+        (KeyCode::Char('l'), KeyModifiers::NONE) => Action::ScrollRight(4),
         _ => map_normal_mode(key, leader_key),
     }
 }
@@ -537,6 +562,10 @@ fn map_visual_mode(key: KeyEvent) -> Action {
         // Extend selection
         (KeyCode::Char('j') | KeyCode::Down, KeyModifiers::NONE) => Action::CursorDown(1),
         (KeyCode::Char('k') | KeyCode::Up, KeyModifiers::NONE) => Action::CursorUp(1),
+        (KeyCode::Char('h') | KeyCode::Left, KeyModifiers::NONE) => Action::CursorLeft(1),
+        (KeyCode::Char('l') | KeyCode::Right, KeyModifiers::NONE) => Action::CursorRight(1),
+        (KeyCode::Char('w'), KeyModifiers::NONE) => Action::WordCursorNext,
+        (KeyCode::Char('b'), KeyModifiers::NONE) => Action::WordCursorPrev,
         (KeyCode::Char('c'), KeyModifiers::NONE) => Action::AddRangeComment,
         (KeyCode::Enter, KeyModifiers::NONE) => Action::AddRangeComment,
         (KeyCode::Char('y'), KeyModifiers::NONE) => Action::ExportToClipboard,
@@ -776,6 +805,74 @@ mod tests {
         );
         assert_eq!(map_summary_mode(key(KeyCode::Enter)), Action::SubmitInput);
         assert_eq!(map_summary_mode(key_shift('G')), Action::GoToBottom);
+    }
+
+    #[test]
+    fn should_map_h_l_to_cursor_moves_and_arrows_to_scroll_in_normal_mode() {
+        assert_eq!(
+            map_normal_mode(key(KeyCode::Char('h')), DEFAULT_LEADER_KEY),
+            Action::CursorLeft(1)
+        );
+        assert_eq!(
+            map_normal_mode(key(KeyCode::Char('l')), DEFAULT_LEADER_KEY),
+            Action::CursorRight(1)
+        );
+        assert_eq!(
+            map_normal_mode(key(KeyCode::Left), DEFAULT_LEADER_KEY),
+            Action::ScrollLeft(4)
+        );
+        assert_eq!(
+            map_normal_mode(key(KeyCode::Right), DEFAULT_LEADER_KEY),
+            Action::ScrollRight(4)
+        );
+        assert_eq!(
+            map_visual_mode(key(KeyCode::Char('h'))),
+            Action::CursorLeft(1)
+        );
+        assert_eq!(
+            map_visual_mode(key(KeyCode::Char('l'))),
+            Action::CursorRight(1)
+        );
+    }
+
+    #[test]
+    fn should_map_word_cursor_and_word_search_keys_in_normal_mode() {
+        assert_eq!(
+            map_normal_mode(key(KeyCode::Char('w')), DEFAULT_LEADER_KEY),
+            Action::WordCursorNext
+        );
+        assert_eq!(
+            map_normal_mode(key(KeyCode::Char('b')), DEFAULT_LEADER_KEY),
+            Action::WordCursorPrev
+        );
+        assert_eq!(
+            map_normal_mode(key_shift('*'), DEFAULT_LEADER_KEY),
+            Action::SearchWordForward
+        );
+        assert_eq!(
+            map_normal_mode(key_shift('#'), DEFAULT_LEADER_KEY),
+            Action::SearchWordBackward
+        );
+    }
+
+    #[test]
+    fn should_map_v_to_word_visual_and_shift_v_to_line_visual() {
+        assert_eq!(
+            map_normal_mode(key(KeyCode::Char('v')), DEFAULT_LEADER_KEY),
+            Action::EnterVisualMode
+        );
+        assert_eq!(
+            map_normal_mode(key_shift('V'), DEFAULT_LEADER_KEY),
+            Action::EnterVisualLineMode
+        );
+        assert_eq!(
+            map_visual_mode(key(KeyCode::Char('w'))),
+            Action::WordCursorNext
+        );
+        assert_eq!(
+            map_visual_mode(key(KeyCode::Char('b'))),
+            Action::WordCursorPrev
+        );
     }
 
     #[test]

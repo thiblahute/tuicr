@@ -285,6 +285,7 @@ pub fn handle_mouse_event(app: &mut App, event: MouseEvent) {
             app.visual_selection = Some(VisualSelection {
                 anchor: sel.anchor,
                 head,
+                kind: sel.kind,
             });
             if moved {
                 app.mouse_drag_active = true;
@@ -1457,6 +1458,10 @@ pub fn handle_visual_action(app: &mut App, action: Action) {
             app.cursor_up(n);
             app.extend_visual_to_cursor();
         }
+        Action::CursorLeft(n) => app.extend_visual_by_char(false, n),
+        Action::CursorRight(n) => app.extend_visual_by_char(true, n),
+        Action::WordCursorNext => app.extend_visual_by_word(true),
+        Action::WordCursorPrev => app.extend_visual_by_word(false),
         Action::AddRangeComment => {
             if app.visual_selection_line_range().is_some() {
                 app.enter_comment_from_visual();
@@ -1514,6 +1519,10 @@ pub fn handle_file_list_action(app: &mut App, action: Action) {
         Action::CursorUp(n) => app.file_list_up(n),
         Action::ScrollLeft(n) => app.file_list_state.scroll_left(n),
         Action::ScrollRight(n) => app.file_list_state.scroll_right(n),
+        // h/l carry the diff view's char-cursor step (1); keep the panel's
+        // old 4-column scroll feel here.
+        Action::CursorLeft(n) => app.file_list_state.scroll_left(n * 4),
+        Action::CursorRight(n) => app.file_list_state.scroll_right(n * 4),
         Action::MouseScrollDown(n) => app.file_list_viewport_scroll_down(n),
         Action::MouseScrollUp(n) => app.file_list_viewport_scroll_up(n),
         Action::SelectFile | Action::ToggleExpand => {
@@ -1572,6 +1581,8 @@ pub fn handle_comment_navigator_action(app: &mut App, action: Action) {
         }
         Action::ScrollLeft(n) => app.comment_navigator_state.scroll_left(n),
         Action::ScrollRight(n) => app.comment_navigator_state.scroll_right(n),
+        Action::CursorLeft(n) => app.comment_navigator_state.scroll_left(n * 4),
+        Action::CursorRight(n) => app.comment_navigator_state.scroll_right(n * 4),
         Action::MouseScrollDown(n) => app.comment_navigator_viewport_scroll_down(n),
         Action::MouseScrollUp(n) => app.comment_navigator_viewport_scroll_up(n),
         Action::SelectFile => {
@@ -1605,6 +1616,8 @@ pub fn handle_diff_action(app: &mut App, action: Action) {
     match action {
         Action::CursorDown(n) => app.cursor_down(n),
         Action::CursorUp(n) => app.cursor_up(n),
+        Action::CursorLeft(n) => app.move_cursor_char(false, n),
+        Action::CursorRight(n) => app.move_cursor_char(true, n),
         Action::ScrollViewDown(n) => app.scroll_view_down(n),
         Action::ScrollViewUp(n) => app.scroll_view_up(n),
         Action::ScrollLeft(n) => app.scroll_left(n),
@@ -1781,7 +1794,22 @@ fn handle_shared_normal_action(app: &mut App, action: Action) {
             app.search_prev_in_diff();
         }
         Action::ClearSearchHighlight => app.clear_search_highlight(),
+        Action::WordCursorNext => app.move_word_cursor(true),
+        Action::WordCursorPrev => app.move_word_cursor(false),
+        Action::SearchWordForward => {
+            app.search_word_under_cursor(true);
+        }
+        Action::SearchWordBackward => {
+            app.search_word_under_cursor(false);
+        }
         Action::EnterVisualMode => {
+            if app.get_line_at_cursor().is_some() {
+                app.enter_visual_char_mode_at_cursor();
+            } else {
+                app.set_message("Move cursor to a diff line to start visual selection");
+            }
+        }
+        Action::EnterVisualLineMode => {
             if app.get_line_at_cursor().is_some() {
                 app.enter_visual_mode_at_cursor();
             } else {

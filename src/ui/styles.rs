@@ -167,6 +167,14 @@ pub fn search_match_style(theme: &Theme) -> Style {
     Style::default().bg(theme.search_match_bg)
 }
 
+/// Block cursor for the character under the diff cursor (`h`/`l`/`w`/`b`).
+/// A modifier-only patch (reverse video), so it reads as an editor cursor
+/// over the cursor-line, search-match, and selection backgrounds in any
+/// theme.
+pub fn diff_cursor_style() -> Style {
+    Style::default().add_modifier(Modifier::REVERSED)
+}
+
 pub fn help_indicator_style(theme: &Theme) -> Style {
     Style::default().fg(theme.help_indicator).bg(theme.panel_bg)
 }

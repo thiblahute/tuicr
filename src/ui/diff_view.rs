@@ -541,6 +541,94 @@ fn paint_annotation_group(
     }
 }
 
+/// The drawn characters of one buffer row between two columns, as
+/// `(x, width, char)`. Reading final cell positions back out of the buffer
+/// keeps the caller aligned through word-wrap, horizontal scroll, and
+/// multibyte glyphs without re-deriving the layout analytically.
+fn collect_row_chars(
+    buf: &ratatui::buffer::Buffer,
+    row: u16,
+    col_start: u16,
+    col_end: u16,
+) -> Vec<(u16, u16, char)> {
+    let mut out = Vec::new();
+    for x in col_start..col_end {
+        let Some(cell) = buf.cell((x, row)) else {
+            break;
+        };
+        let sym = cell.symbol();
+        // The trailing cell of a wide glyph carries an empty symbol; skip it —
+        // the glyph's full width is recorded on its leading cell.
+        if sym.is_empty() {
+            continue;
+        }
+        if let Some(ch) = sym.chars().next() {
+            let w = UnicodeWidthStr::width(sym).max(1) as u16;
+            out.push((x, w, ch));
+        }
+    }
+    out
+}
+
+/// Paint the block cursor over the character under the diff cursor, in the
+/// pane the cursor targets. Counts drawn cells across the line's rendered
+/// rows (wrap continuation rows in unified view), offset by the horizontal
+/// scroll, so the glyph is located without re-deriving layout.
+pub(super) fn paint_diff_cursor(frame: &mut Frame, inner: Rect, app: &App) {
+    let Some((side, col)) = app.diff_cursor_target() else {
+        return;
+    };
+    // Chars scrolled off to the left aren't drawn; the cursor is off-screen.
+    let Some(target) = col.checked_sub(app.diff_state.scroll_x) else {
+        return;
+    };
+    let is_sbs = app.diff_view_mode == crate::app::DiffViewMode::SideBySide;
+    let inner_right = inner.x + inner.width;
+    let cursor_line = app.diff_state.cursor_line;
+
+    let mut seen = 0usize;
+    let mut cell = None;
+    {
+        let buf = frame.buffer_mut();
+        let rows = app.diff_row_to_annotation.len().min(inner.height as usize);
+        for rel in 0..rows {
+            if app.diff_row_to_annotation[rel] != cursor_line {
+                continue;
+            }
+            let row = inner.y + rel as u16;
+            let is_first = rel == 0 || app.diff_row_to_annotation[rel - 1] != cursor_line;
+            let geom = app.pane_geometry(inner, side);
+            let col_start = if is_sbs || is_first {
+                geom.content_x_start
+            } else {
+                inner.x
+            };
+            let col_end = geom.content_x_end.min(inner_right);
+            if col_end <= col_start {
+                continue;
+            }
+            let chars = collect_row_chars(buf, row, col_start, col_end);
+            if target < seen + chars.len() {
+                let (x, width, _) = chars[target - seen];
+                cell = Some(Rect {
+                    x,
+                    y: row,
+                    width,
+                    height: 1,
+                });
+                break;
+            }
+            seen += chars.len();
+        }
+    }
+
+    if let Some(rect) = cell {
+        frame
+            .buffer_mut()
+            .set_style(rect, styles::diff_cursor_style());
+    }
+}
+
 pub(super) fn is_line_highlighted(app: &App, viewport_idx: usize) -> bool {
     if !app.cursor_line_highlight {
         return false;

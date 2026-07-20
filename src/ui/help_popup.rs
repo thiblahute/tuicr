@@ -202,6 +202,20 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(vec![
             Span::styled(
+                "  w/b       ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Move cursor to next/prev word"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  */#       ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Search word under cursor fwd/back"),
+        ]),
+        Line::from(vec![
+            Span::styled(
                 "  Enter     ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
@@ -261,10 +275,10 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 "  h/l       ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
-            Span::raw("Scroll diff left/right (or ←/→)"),
+            Span::raw("Move cursor left/right (←/→ scroll)"),
         ]),
         Line::from(vec![
-            Span::styled("  h/← at 0 ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::styled("  ← at 0   ", Style::default().add_modifier(Modifier::BOLD)),
             Span::raw("Reveal + focus file list"),
         ]),
         Line::from(vec![
@@ -592,7 +606,7 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 "  v/V       ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
-            Span::raw("Enter visual mode for range comments"),
+            Span::raw("Visual select from cursor (v) or lines (V)"),
         ]),
         Line::from(""),
         Line::from(Span::styled(
@@ -606,6 +620,20 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::raw("Extend selection down/up"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  h/l       ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Extend selection by character"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  w/b       ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Extend selection by word fwd/back"),
         ]),
         Line::from(vec![
             Span::styled(

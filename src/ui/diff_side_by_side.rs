@@ -1347,6 +1347,8 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
         paint_visual_selection_overlay(frame, inner, app, sel, &app.theme);
     }
 
+    crate::ui::diff_view::paint_diff_cursor(frame, inner, app);
+
     // File-section header rules extended to the full viewport width.
     crate::ui::diff_view::paint_file_header_fill(frame, &overlay_ctx);
 

@@ -10,8 +10,8 @@ Full reference. Press `?` inside tuicr for an in-app version of this list.
 |-----|--------|
 | `j` / `↓` | Scroll down |
 | `k` / `↑` | Scroll up |
-| `h` / `←` | Scroll left |
-| `l` / `→` | Scroll right |
+| `h` / `l` | Move cursor left / right |
+| `←` / `→` | Scroll left / right (switch pane side in side-by-side) |
 | `Ctrl-d` / `Ctrl-u` | Half page down / up |
 | `Ctrl-f` / `Ctrl-b` | Full page down / up |
 | `g` / `G` | Go to first / last file |
@@ -23,6 +23,8 @@ Full reference. Press `?` inside tuicr for an in-app version of this list.
 | `/` | Search within diff (case-insensitive); matches on diff content are highlighted and the status bar shows the `[current/total]` position (headers, comments, and PR info are searchable but not highlighted) |
 | `n` / `N` | Next / previous search match (wraps around) |
 | `Esc` | Clear search-match highlighting; the pattern is kept so `n` / `N` still work |
+| `w` / `b` | Move cursor to next / previous word |
+| `*` / `#` | Search word under cursor forward / backward |
 | `Enter` | Expand or collapse hidden context between hunks |
 | `zt` | Scroll cursor to top of screen |
 | `zz` | Center cursor on screen |
@@ -141,7 +143,7 @@ Shown below the file tree when local comments or visible remote PR threads exist
 | `<leader>r` | Resolve / reopen the comment thread at the cursor (also `:resolve` / `:unresolve`) |
 | `<leader>R` | Show or collapse settled threads (also `:threads resolved` / `:threads open`) |
 | `Enter` | On a settled thread: show or collapse settled threads (does not unresolve) |
-| `v` / `V` | Enter visual mode for range comments |
+| `v` / `V` | Visual select from the cursor (`v`) or whole lines (`V`) |
 | `dd` | Delete comment at cursor |
 | `i` | Edit comment at cursor (vim: text cursor at start) |
 | `A` | Edit comment at cursor with text cursor at end (vim mode only) |
@@ -161,6 +163,8 @@ override `$EDITOR`.
 | Key | Action |
 |-----|--------|
 | `j` / `k` | Extend selection down / up |
+| `h` / `l` | Extend selection by character |
+| `w` / `b` | Extend selection by word forward / backward |
 | `c` / `Enter` | Create comment for selected range |
 | `Esc` / `v` / `V` | Cancel selection |
 

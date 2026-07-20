@@ -289,10 +289,11 @@ A first-session cheatsheet. Press `?` inside tuicr for the full reference.
 | `m` / `M` | Next / previous comment |
 | `/` | Search the diff, the file tree, or help — whichever is focused/open (case-insensitive) |
 | `n` / `N` | Next / previous search match (wraps); matches stay highlighted — `Esc` clears |
+| `*` / `#` | Search the word under the cursor |
 | `i` / `e` (file tree) | Filter files in / out by regex; narrows the tree **and** the diff |
 | `I` / `E` (file tree) | Clear the include / exclude filter |
 | `c` / `C` | Add line / file comment |
-| `v` / `V` | Visual mode (range comment) |
+| `v` / `V` | Visual select from cursor / whole lines (range comment) |
 | `r` | Toggle file reviewed |
 | `R` | Toggle hunk reviewed |
 | `e` | Open focused file in `$EDITOR` |

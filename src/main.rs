@@ -764,6 +764,8 @@ fn main() -> anyhow::Result<()> {
                                     match &mut action {
                                         Action::CursorDown(n)
                                         | Action::CursorUp(n)
+                                        | Action::CursorLeft(n)
+                                        | Action::CursorRight(n)
                                         | Action::ScrollLeft(n)
                                         | Action::ScrollRight(n)
                                         | Action::ScrollViewDown(n)

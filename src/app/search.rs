@@ -36,6 +36,58 @@ fn find_search_match(
     }
 }
 
+/// True for characters that form an identifier-like word — the unit `w`/`b`
+/// step over and `*`/`#` search for.
+pub(crate) fn is_word_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
+}
+
+/// `(start, end)` char ranges of the identifier-like words in `text`,
+/// left to right.
+pub(in crate::app) fn word_spans(text: &str) -> Vec<(usize, usize)> {
+    let mut spans = Vec::new();
+    let mut start = None;
+    let mut idx = 0;
+    for c in text.chars() {
+        if is_word_char(c) {
+            start.get_or_insert(idx);
+        } else if let Some(s) = start.take() {
+            spans.push((s, idx));
+        }
+        idx += 1;
+    }
+    if let Some(s) = start {
+        spans.push((s, idx));
+    }
+    spans
+}
+
+fn span_text(text: &str, span: (usize, usize)) -> String {
+    text.chars().skip(span.0).take(span.1 - span.0).collect()
+}
+
+/// The word the cursor column sits on, or failing that the next word after it
+/// (vim's `*` rule), or failing that the last word on the line (a sticky
+/// column carried over from a longer line clamps like an editor cursor).
+pub(in crate::app) fn word_at_or_after(text: &str, col: usize) -> Option<(usize, usize, String)> {
+    let spans = word_spans(text);
+    let &(start, end) = spans.iter().find(|&&(_, end)| col < end).or(spans.last())?;
+    Some((start, end, span_text(text, (start, end))))
+}
+
+/// Char index of the first case-insensitive occurrence of `pattern` in `text`.
+/// Folds each char to its first lowercase form, mirroring the render-side
+/// matcher, so indices stay aligned with the original text.
+fn find_char_ci(text: &str, pattern: &str) -> Option<usize> {
+    let lower1 = |c: char| c.to_lowercase().next().unwrap_or(c);
+    let hay: Vec<char> = text.chars().map(lower1).collect();
+    let pat: Vec<char> = pattern.chars().map(lower1).collect();
+    if pat.is_empty() || hay.len() < pat.len() {
+        return None;
+    }
+    (0..=hay.len() - pat.len()).find(|&i| hay[i..i + pat.len()] == pat[..])
+}
+
 impl HelpState {
     fn search(&mut self, pattern: &str, forward: bool, include_current: bool) -> bool {
         let start_idx = self.current_match_line.unwrap_or(self.scroll_offset);
@@ -139,6 +191,106 @@ impl App {
         self.cycle_search_match(false, false)
     }
 
+    /// The word under the cursor on the current line, as `(start, end, word)`
+    /// char range within the cursor side's content.
+    fn word_under_cursor(&self) -> Option<(usize, usize, String)> {
+        let content = self.content_for_side(self.diff_state.cursor_line, self.cursor_side)?;
+        word_at_or_after(content, self.diff_state.cursor_col)
+    }
+
+    /// `h` / `l`: move the cursor `n` characters left / right, clamped to the
+    /// current line.
+    pub fn move_cursor_char(&mut self, forward: bool, n: usize) {
+        let Some(content) = self.content_for_side(self.diff_state.cursor_line, self.cursor_side)
+        else {
+            return;
+        };
+        let len = content.chars().count();
+        if len == 0 {
+            self.diff_state.cursor_col = 0;
+            return;
+        }
+        let col = self.diff_state.cursor_col.min(len - 1);
+        self.diff_state.cursor_col = if forward {
+            (col + n).min(len - 1)
+        } else {
+            col.saturating_sub(n)
+        };
+    }
+
+    /// `w` / `b`: move the cursor to the next / previous word start within
+    /// the current side's text, crossing onto other lines when the current
+    /// one runs out.
+    pub fn move_word_cursor(&mut self, forward: bool) {
+        let side = self.cursor_side;
+        let cur = self.diff_state.cursor_line;
+        if let Some(content) = self.content_for_side(cur, side) {
+            let len = content.chars().count();
+            let col = self.diff_state.cursor_col.min(len.saturating_sub(1));
+            let spans = word_spans(content);
+            let next = if forward {
+                spans.iter().find(|&&(start, _)| start > col)
+            } else {
+                spans.iter().rev().find(|&&(start, _)| start < col)
+            };
+            if let Some(&(start, _)) = next {
+                self.diff_state.cursor_col = start;
+                return;
+            }
+        }
+
+        // Ran out of words on this line: continue on the next line that has
+        // any, like an editor's `w`/`b` crossing line boundaries.
+        let candidates: Box<dyn Iterator<Item = usize>> = if forward {
+            Box::new(cur + 1..self.total_lines())
+        } else {
+            Box::new((0..cur).rev())
+        };
+        for line_idx in candidates {
+            let Some(content) = self.content_for_side(line_idx, side) else {
+                continue;
+            };
+            let spans = word_spans(content);
+            let span = if forward { spans.first() } else { spans.last() };
+            if let Some(&(start, _)) = span {
+                self.diff_state.cursor_col = start;
+                self.diff_state.cursor_line = line_idx;
+                self.ensure_cursor_visible();
+                self.update_current_file_from_cursor();
+                return;
+            }
+        }
+        self.set_message("No more words");
+    }
+
+    /// `*` / `#`: search forward / backward for the word under the cursor.
+    /// Feeds the regular search state so `n`/`N` and the match highlighting
+    /// continue from it.
+    pub fn search_word_under_cursor(&mut self, forward: bool) -> bool {
+        let Some((start, _, word)) = self.word_under_cursor() else {
+            self.set_message("No word under cursor");
+            return false;
+        };
+        self.diff_state.cursor_col = start;
+        self.search_needle_lower = Some(fold_for_search(&word));
+        self.last_search_pattern = Some(word);
+        self.recompute_search_matches();
+        self.cycle_search_match(forward, false)
+    }
+
+    /// Where the block cursor sits for rendering: the side whose pane holds
+    /// it and the clamped char index within that side's content. `None` on
+    /// lines without diff content (headers, comments, spacing).
+    pub fn diff_cursor_target(&self) -> Option<(LineSide, usize)> {
+        let side = self.cursor_side;
+        let content = self.content_for_side(self.diff_state.cursor_line, side)?;
+        let len = content.chars().count();
+        if len == 0 {
+            return None;
+        }
+        Some((side, self.diff_state.cursor_col.min(len - 1)))
+    }
+
     fn cycle_search_match(&mut self, forward: bool, include_current: bool) -> bool {
         if self.search_matches_stale {
             self.recompute_search_matches();
@@ -189,6 +341,27 @@ impl App {
             return false;
         };
         self.diff_state.cursor_line = line_idx;
+        // Land the cursor on the match like an editor. Try the current
+        // side's pane first; in side-by-side the match may sit in the other
+        // pane, so fall over to it (and move the caret side along).
+        if let Some(pattern) = self.last_search_pattern.clone() {
+            let other = match self.cursor_side {
+                LineSide::Old => LineSide::New,
+                LineSide::New => LineSide::Old,
+            };
+            for side in [self.cursor_side, other] {
+                if let Some(col) = self
+                    .content_for_side(line_idx, side)
+                    .and_then(|content| find_char_ci(content, &pattern))
+                {
+                    self.diff_state.cursor_col = col;
+                    if self.horizontal_keys_switch_side() {
+                        self.set_cursor_side(side);
+                    }
+                    break;
+                }
+            }
+        }
         self.ensure_cursor_visible();
         self.center_cursor();
         self.update_current_file_from_cursor();
@@ -415,6 +588,41 @@ impl App {
             | AnnotatedLine::Spacing
             | AnnotatedLine::ReviewedBanner { .. } => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod word_tests {
+    use super::{find_char_ci, word_at_or_after, word_spans};
+
+    #[test]
+    fn should_split_identifier_like_words() {
+        assert_eq!(
+            word_spans("let foo_bar = baz(42);"),
+            vec![(0, 3), (4, 11), (14, 17), (18, 20)]
+        );
+        assert_eq!(word_spans("  \t !!"), Vec::<(usize, usize)>::new());
+    }
+
+    #[test]
+    fn should_pick_word_at_cursor_or_next_one_like_vim_star() {
+        let text = "let foo = bar;";
+        // On a word: that word.
+        assert_eq!(word_at_or_after(text, 5), Some((4, 7, "foo".to_string())));
+        // On the space between words: the next word.
+        assert_eq!(word_at_or_after(text, 3), Some((4, 7, "foo".to_string())));
+        // Past every word (sticky column from a longer line): clamp to last.
+        assert_eq!(
+            word_at_or_after(text, 50),
+            Some((10, 13, "bar".to_string()))
+        );
+        assert_eq!(word_at_or_after("  ", 0), None);
+    }
+
+    #[test]
+    fn should_find_case_insensitive_char_index() {
+        assert_eq!(find_char_ci("let Foo = 1", "foo"), Some(4));
+        assert_eq!(find_char_ci("let Foo = 1", "missing"), None);
     }
 }
 

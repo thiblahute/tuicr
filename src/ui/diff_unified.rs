@@ -1331,6 +1331,8 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
         paint_visual_selection_overlay(frame, inner, app, sel, &app.theme);
     }
 
+    crate::ui::diff_view::paint_diff_cursor(frame, inner, app);
+
     // File-section header rules extended to the full viewport width.
     crate::ui::diff_view::paint_file_header_fill(frame, &overlay_ctx);
 
@@ -1500,7 +1502,7 @@ mod remote_comments_snapshot_tests {
     //! Render-snapshot tests for inline remote review threads in the
     //! unified diff. We drive `ui::render` against `TestBackend` and check
     //! for the provider badge text on the expected row.
-    use crate::app::{App, DiffSource, InputMode, PullRequestDiffSource};
+    use crate::app::{AnnotatedLine, App, DiffSource, InputMode, PullRequestDiffSource};
     use crate::error::Result as TuicrResult;
     use crate::error::TuicrError;
     use crate::forge::remote_comments::{
@@ -2204,6 +2206,183 @@ mod remote_comments_snapshot_tests {
             body.contains("LASTLINEMARKER"),
             "scrolling down should eventually reveal the last line; view got stuck:\n{body}"
         );
+    }
+
+    fn additions_file(contents: &[&str]) -> DiffFile {
+        let lines = contents
+            .iter()
+            .enumerate()
+            .map(|(i, content)| DiffLine {
+                origin: LineOrigin::Addition,
+                content: content.to_string(),
+                old_lineno: None,
+                new_lineno: Some(i as u32 + 1),
+                highlighted_spans: None,
+            })
+            .collect();
+        let hunks = vec![DiffHunk {
+            header: "@@ -0,0 +1,2 @@".to_string(),
+            lines,
+            old_start: 0,
+            old_count: 0,
+            new_start: 1,
+            new_count: contents.len() as u32,
+        }];
+        let content_hash = DiffFile::compute_content_hash(&hunks);
+        DiffFile {
+            old_path: Some(PathBuf::from("src/lib.rs")),
+            new_path: Some(PathBuf::from("src/lib.rs")),
+            status: FileStatus::Modified,
+            hunks,
+            is_binary: false,
+            is_too_large: false,
+            is_commit_message: false,
+            content_hash,
+        }
+    }
+
+    fn cursor_to_first_diff_line(app: &mut App) {
+        let idx = app
+            .line_annotations
+            .iter()
+            .position(|a| matches!(a, AnnotatedLine::DiffLine { .. }))
+            .expect("a diff line");
+        app.diff_state.cursor_line = idx;
+    }
+
+    fn reversed_cells(buffer: &Buffer) -> Vec<(u16, u16, String)> {
+        let mut cells = Vec::new();
+        for y in 0..buffer.area.height {
+            for x in 0..buffer.area.width {
+                let style = buffer[(x, y)].style();
+                if style
+                    .add_modifier
+                    .contains(ratatui::style::Modifier::REVERSED)
+                {
+                    cells.push((x, y, buffer[(x, y)].symbol().to_string()));
+                }
+            }
+        }
+        cells
+    }
+
+    #[test]
+    fn block_cursor_should_render_on_the_character_under_the_cursor() {
+        // `w` steps the cursor from col 0 onto the start of "bar"; the block
+        // cursor must sit exactly on that `b` cell.
+        let mut app = make_revision_app(vec![additions_file(&["foo bar foo"])]);
+        app.rebuild_annotations();
+        cursor_to_first_diff_line(&mut app);
+        app.move_word_cursor(true);
+        assert_eq!(
+            app.diff_cursor_target(),
+            Some((crate::model::LineSide::New, 4))
+        );
+
+        let backend = TestBackend::new(80, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| super::render_unified_diff(frame, &mut app, Rect::new(0, 0, 80, 20)))
+            .expect("draw");
+        let buffer = terminal.backend().buffer();
+
+        let cells = reversed_cells(buffer);
+        assert_eq!(cells.len(), 1, "exactly one cursor cell: {cells:?}");
+        assert_eq!(cells[0].2, "b", "cursor sits on bar's first char");
+        let row = cells[0].1;
+        let row_text: String = (0..buffer.area.width)
+            .map(|x| buffer[(x, row)].symbol().to_string())
+            .collect();
+        // Char-wise position: the row holds multi-byte glyphs (│ ▶ ▌), so a
+        // byte-based find would not match cell columns.
+        let row_chars: Vec<char> = row_text.chars().collect();
+        let bar_col = (0..row_chars.len() - 3)
+            .find(|&i| row_chars[i..i + 3] == ['b', 'a', 'r'])
+            .expect("row shows the line") as u16;
+        assert_eq!(
+            cells[0].0, bar_col,
+            "cursor cell must be bar's `b`: {row_text:?}"
+        );
+    }
+
+    #[test]
+    fn cursor_should_move_by_chars_and_words_across_lines() {
+        let mut app = make_revision_app(vec![additions_file(&["one two", "three"])]);
+        app.rebuild_annotations();
+        cursor_to_first_diff_line(&mut app);
+        let first_line = app.diff_state.cursor_line;
+
+        app.move_word_cursor(true); // "two"
+        assert_eq!(app.diff_state.cursor_col, 4);
+        app.move_cursor_char(true, 1);
+        assert_eq!(app.diff_state.cursor_col, 5);
+        app.move_cursor_char(true, 100); // clamps to the last char
+        assert_eq!(app.diff_state.cursor_col, 6);
+        app.move_cursor_char(false, 100);
+        assert_eq!(app.diff_state.cursor_col, 0);
+
+        app.move_word_cursor(true); // "two" again
+        app.move_word_cursor(true); // crosses onto the next line
+        assert_eq!(app.diff_state.cursor_line, first_line + 1);
+        assert_eq!(app.diff_state.cursor_col, 0);
+        app.move_word_cursor(false); // back across the boundary
+        assert_eq!(app.diff_state.cursor_line, first_line);
+        assert_eq!(app.diff_state.cursor_col, 4);
+    }
+
+    #[test]
+    fn star_should_search_the_word_under_the_cursor() {
+        let mut app = make_revision_app(vec![additions_file(&["alpha one", "two alpha"])]);
+        app.rebuild_annotations();
+        cursor_to_first_diff_line(&mut app);
+        let first_line = app.diff_state.cursor_line;
+
+        // Cursor starts on "alpha"'s first char.
+        assert!(app.search_word_under_cursor(true), "should find next alpha");
+
+        assert_eq!(app.last_search_pattern.as_deref(), Some("alpha"));
+        assert_eq!(app.diff_state.cursor_line, first_line + 1);
+        // The cursor lands on the match, like an editor.
+        assert_eq!(app.diff_state.cursor_col, 4);
+    }
+
+    #[test]
+    fn v_should_select_from_the_cursor_and_extend() {
+        let mut app = make_revision_app(vec![additions_file(&["alpha beta", "gamma"])]);
+        app.rebuild_annotations();
+        cursor_to_first_diff_line(&mut app);
+        let first = app.diff_state.cursor_line;
+
+        app.enter_visual_char_mode_at_cursor();
+        assert_eq!(app.input_mode, InputMode::VisualSelect);
+        let sel = app.visual_selection.expect("selection");
+        assert_eq!(sel.kind, crate::app::VisualKind::Char);
+        // One character selected: the one under the cursor.
+        assert_eq!(
+            (sel.anchor.annotation_idx, sel.anchor.char_offset),
+            (first, 0)
+        );
+        assert_eq!((sel.head.annotation_idx, sel.head.char_offset), (first, 1));
+
+        app.extend_visual_by_word(true); // head onto "beta"'s start
+        let sel = app.visual_selection.unwrap();
+        assert_eq!((sel.head.annotation_idx, sel.head.char_offset), (first, 6));
+
+        app.extend_visual_by_char(true, 1);
+        let sel = app.visual_selection.unwrap();
+        assert_eq!((sel.head.annotation_idx, sel.head.char_offset), (first, 7));
+
+        app.extend_visual_by_word(true); // crosses onto "gamma"
+        let sel = app.visual_selection.unwrap();
+        assert_eq!(
+            (sel.head.annotation_idx, sel.head.char_offset),
+            (first + 1, 0)
+        );
+        assert_eq!(app.diff_state.cursor_line, first + 1);
+
+        app.extend_visual_by_word(false); // back to "beta" on the first line
+        let sel = app.visual_selection.unwrap();
+        assert_eq!((sel.head.annotation_idx, sel.head.char_offset), (first, 6));
     }
 
     #[test]
