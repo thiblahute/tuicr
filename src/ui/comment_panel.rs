@@ -777,6 +777,35 @@ mod tests {
     }
 
     #[test]
+    fn should_label_reply_input_with_thread_author() {
+        // given
+        let theme = test_theme();
+
+        // when — reply mode: typeless presentation + reply_to author
+        let (lines, _) = format_comment_input_lines(
+            &theme,
+            CommentTypePresentation {
+                label: String::new(),
+                color: Color::Blue,
+            },
+            "",
+            0,
+            Some(LineRange::single(42)),
+            false,
+            80,
+            None,
+            true,
+            Some("alice"),
+        );
+
+        // then — the header reads "Reply to @alice" with no type hint
+        let header: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(header.contains("Reply to @alice"), "got: {header:?}");
+        assert!(!header.contains("Tab/S-Tab"), "got: {header:?}");
+        assert!(header.contains("Enter:send"), "got: {header:?}");
+    }
+
+    #[test]
     fn should_return_cursor_position_for_ascii_text() {
         // given
         let theme = test_theme();
