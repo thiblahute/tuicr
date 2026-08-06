@@ -1215,6 +1215,7 @@ fn should_yank_remote_comment_from_its_anchor_line_or_thread() {
                 body: "remote comment".into(),
                 created_at: None,
                 in_reply_to: None,
+                database_id: None,
                 url: "https://example.com/comment-1".into(),
             },
             RemoteReviewComment {
@@ -1223,6 +1224,7 @@ fn should_yank_remote_comment_from_its_anchor_line_or_thread() {
                 body: "remote reply".into(),
                 created_at: None,
                 in_reply_to: Some("comment-1".into()),
+                database_id: None,
                 url: "https://example.com/comment-2".into(),
             },
         ],
@@ -1288,6 +1290,7 @@ fn should_yank_rendered_remote_thread_when_hidden_thread_shares_its_anchor() {
         body: body.into(),
         created_at: None,
         in_reply_to: None,
+        database_id: None,
         url: format!("https://example.com/{id}"),
     };
     let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
@@ -1354,6 +1357,7 @@ fn should_yank_reply_from_multiline_review_level_thread_footer() {
                 body: "root comment".into(),
                 created_at: None,
                 in_reply_to: None,
+                database_id: None,
                 url: "https://example.com/root".into(),
             },
             RemoteReviewComment {
@@ -1362,6 +1366,7 @@ fn should_yank_reply_from_multiline_review_level_thread_footer() {
                 body: "first reply line\nsecond reply line".into(),
                 created_at: None,
                 in_reply_to: Some("root".into()),
+                database_id: None,
                 url: "https://example.com/reply".into(),
             },
         ],

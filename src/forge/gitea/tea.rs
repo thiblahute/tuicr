@@ -1301,6 +1301,7 @@ fn group_comments_into_threads(comments: Vec<GiteaPullReviewComment>) -> Vec<Rem
             body: comment.body,
             created_at: comment.created_at,
             in_reply_to: None,
+            database_id: Some(comment.id),
             url: comment.html_url,
         };
 

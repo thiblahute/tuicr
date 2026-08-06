@@ -289,6 +289,8 @@ impl GerritComment {
             body: self.message,
             created_at: at(&self.updated),
             in_reply_to: self.in_reply_to,
+            // Gerrit addresses comments by UUID; there is no numeric id.
+            database_id: None,
             url,
         }
     }

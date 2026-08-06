@@ -607,6 +607,31 @@ where
             state: if approved { "APPROVED" } else { "COMMENTED" }.to_string(),
         })
     }
+
+    fn reply_to_review_thread(
+        &self,
+        pr: &PullRequestDetails,
+        thread: &crate::forge::remote_comments::RemoteReviewThread,
+        body: &str,
+    ) -> Result<()> {
+        // A Bitbucket reply is a comment whose `parent` names the thread's
+        // root comment. Nested replies flatten onto the root when threads
+        // are rebuilt, so replying to the root keeps the discussion intact.
+        let parent_id = thread
+            .root()
+            .and_then(|root| root.database_id)
+            .ok_or_else(|| {
+                TuicrError::Forge(
+                    "Cannot reply: thread is missing its numeric comment id. Reload with :e and try again.".to_string(),
+                )
+            })?;
+        let payload = serde_json::json!({
+            "content": { "raw": body },
+            "parent": { "id": parent_id },
+        });
+        self.post_comment(pr, &payload)?;
+        Ok(())
+    }
 }
 
 /// Parse a pull request target string in Bitbucket format.

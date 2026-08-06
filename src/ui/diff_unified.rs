@@ -155,6 +155,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                     .as_ref()
                     .map(|(t, w)| (t.as_str(), *w)),
                 app.supports_keyboard_enhancement,
+                app.comment_reply_author().as_deref(),
             );
             comment_cursor_logical_line = Some(line_idx + cursor_info.line_offset);
             comment_cursor_column = 1 + cursor_info.column;
@@ -244,6 +245,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                 .as_ref()
                 .map(|(t, w)| (t.as_str(), *w)),
             app.supports_keyboard_enhancement,
+            app.comment_reply_author().as_deref(),
         );
         comment_cursor_logical_line = Some(line_idx + cursor_info.line_offset);
         comment_cursor_column = 1 + cursor_info.column;
@@ -351,6 +353,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                             .as_ref()
                             .map(|(t, w)| (t.as_str(), *w)),
                         app.supports_keyboard_enhancement,
+                        app.comment_reply_author().as_deref(),
                     );
                     // Track cursor position: logical line = current line_idx + cursor offset within input
                     comment_cursor_logical_line = Some(line_idx + cursor_info.line_offset);
@@ -419,6 +422,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                     .as_ref()
                     .map(|(t, w)| (t.as_str(), *w)),
                 app.supports_keyboard_enhancement,
+                app.comment_reply_author().as_deref(),
             );
             // Track cursor position
             comment_cursor_logical_line = Some(line_idx + cursor_info.line_offset);
@@ -733,6 +737,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                                                     .as_ref()
                                                     .map(|(t, w)| (t.as_str(), *w)),
                                                 app.supports_keyboard_enhancement,
+                                                app.comment_reply_author().as_deref(),
                                             );
                                         comment_cursor_logical_line =
                                             Some(line_idx + cursor_info.line_offset);
@@ -861,6 +866,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                                         .as_ref()
                                         .map(|(t, w)| (t.as_str(), *w)),
                                     app.supports_keyboard_enhancement,
+                                    app.comment_reply_author().as_deref(),
                                 );
                             comment_cursor_logical_line = Some(line_idx + cursor_info.line_offset);
                             comment_cursor_column = 1 + cursor_info.column;
@@ -921,6 +927,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                                                     .as_ref()
                                                     .map(|(t, w)| (t.as_str(), *w)),
                                                 app.supports_keyboard_enhancement,
+                                                app.comment_reply_author().as_deref(),
                                             );
                                         comment_cursor_logical_line =
                                             Some(line_idx + cursor_info.line_offset);
@@ -1048,6 +1055,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                                         .as_ref()
                                         .map(|(t, w)| (t.as_str(), *w)),
                                     app.supports_keyboard_enhancement,
+                                    app.comment_reply_author().as_deref(),
                                 );
                             comment_cursor_logical_line = Some(line_idx + cursor_info.line_offset);
                             comment_cursor_column = 1 + cursor_info.column;
@@ -1634,6 +1642,7 @@ mod remote_comments_snapshot_tests {
                 body: body.to_string(),
                 created_at: None,
                 in_reply_to: None,
+                database_id: None,
                 url: "https://example.com/x".to_string(),
             }],
         }
@@ -1979,6 +1988,7 @@ mod remote_comments_snapshot_tests {
                 body: "overall this looks fine".to_string(),
                 created_at: None,
                 in_reply_to: None,
+                database_id: None,
                 url: String::new(),
             }],
         }];
@@ -2012,6 +2022,7 @@ mod remote_comments_snapshot_tests {
                 body: "should be hidden".to_string(),
                 created_at: None,
                 in_reply_to: None,
+                database_id: None,
                 url: String::new(),
             }],
         }];
