@@ -1229,6 +1229,148 @@ impl App {
         self.spawn_pr_threads_fetch(&details, local_checkout);
     }
 
+    /// Kick off a background POST of `body` as a reply to the thread the
+    /// comment editor targets (`comment_reply_target`). Returns `true` when
+    /// the call was spawned — the caller closes the editor only then, so a
+    /// refused spawn (reply already in flight, thread gone) keeps the typed
+    /// text.
+    pub(in crate::app) fn spawn_thread_reply(&mut self, body: String) -> bool {
+        let Some(thread_idx) = self.comment_reply_target else {
+            return false;
+        };
+        let Some(thread) = self.forge_review_threads.get(thread_idx).cloned() else {
+            self.set_error("Cannot reply: thread is no longer loaded — reload with :e");
+            return false;
+        };
+        let DiffSource::PullRequest(pr) = &self.diff_source else {
+            self.set_warning("Replying only applies in PR mode");
+            return false;
+        };
+        if self.pr_reply_state.is_some() {
+            self.set_warning("A reply is already being posted — wait for it to finish");
+            return false;
+        }
+
+        let details = crate::forge::traits::PullRequestDetails {
+            repository: pr.key.repository.clone(),
+            number: pr.key.number,
+            title: pr.title.clone(),
+            url: pr.url.clone(),
+            state: pr.state.clone(),
+            is_draft: false,
+            author: None,
+            head_ref_name: pr.head_ref_name.clone(),
+            base_ref_name: pr.base_ref_name.clone(),
+            head_sha: pr.key.head_sha.clone(),
+            base_sha: pr.base_sha.clone(),
+            body: String::new(),
+            updated_at: None,
+            closed: pr.closed,
+            merged_at: None,
+            diff_start_sha: None,
+        };
+        let in_flight = ReplyInFlightState {
+            repository: details.repository.clone(),
+            pr_number: details.number,
+            thread_id: thread.id.clone(),
+            thread_author: thread.root().and_then(|c| c.author.clone()),
+            body: body.clone(),
+            started_at: Instant::now(),
+        };
+        let local_checkout = self
+            .forge_backend
+            .as_deref()
+            .and_then(|b| b.local_checkout_path());
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.pr_reply_rx = Some(rx);
+        self.pr_reply_state = Some(in_flight);
+
+        let repository = details.repository.clone();
+        let pr_number = details.number;
+        let show_pr_checks = self.show_pr_checks;
+        let show_pr_comments = self.show_pr_comments;
+        std::thread::spawn(move || {
+            let backend = create_forge_backend(
+                &repository,
+                local_checkout,
+                show_pr_checks,
+                show_pr_comments,
+            );
+            let result = backend
+                .reply_to_review_thread(&details, &thread, &body)
+                .map_err(|e| e.to_string());
+            let _ = tx.send(PrReplyEvent::Done {
+                repository,
+                pr_number,
+                result,
+            });
+        });
+        true
+    }
+
+    /// Pump a pending reply result. On success: publish a message and
+    /// refetch threads so the reply appears in its thread. On failure:
+    /// surface a sticky error and reopen the editor with the typed body so
+    /// nothing is lost.
+    pub fn poll_pr_reply_events(&mut self) {
+        let Some(rx) = self.pr_reply_rx.as_ref() else {
+            return;
+        };
+        let event = match rx.try_recv() {
+            Ok(e) => e,
+            Err(_) => return,
+        };
+        self.pr_reply_rx = None;
+        let in_flight = self.pr_reply_state.take();
+        let PrReplyEvent::Done {
+            repository,
+            pr_number,
+            result,
+        } = event;
+        let Some(in_flight) = in_flight else {
+            return;
+        };
+
+        // A different PR opened mid-post: the reply still landed (or failed)
+        // on the old PR, but this session has moved on — report only.
+        let same_pr = matches!(
+            &self.diff_source,
+            DiffSource::PullRequest(pr)
+                if pr.key.repository == repository && pr.key.number == pr_number
+        );
+
+        match result {
+            Ok(()) => {
+                let who = in_flight
+                    .thread_author
+                    .as_deref()
+                    .map(|a| format!(" to @{a}"))
+                    .unwrap_or_default();
+                self.set_message(format!("Reply posted{who}"));
+                if same_pr {
+                    self.refetch_pr_threads();
+                }
+            }
+            Err(e) => {
+                self.set_error(format!("Failed to post reply: {e}"));
+                // Restore the editor with the typed body — unless the user
+                // has started composing something else in the meantime.
+                if same_pr && self.input_mode == InputMode::Normal {
+                    let thread_idx = self
+                        .forge_review_threads
+                        .iter()
+                        .position(|t| t.id == in_flight.thread_id);
+                    if let Some(idx) = thread_idx {
+                        self.enter_reply_mode(idx);
+                        self.comment_buffer = in_flight.body;
+                        self.comment_cursor = self.comment_buffer.len();
+                    }
+                }
+            }
+        }
+    }
+
     /// Open a PR using the provided forge backend, synchronously. Exists
     /// as a seam for tests that want to drive the open without spinning
     /// up a background thread + mpsc round-trip. Production paths go

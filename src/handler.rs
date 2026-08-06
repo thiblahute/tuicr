@@ -1559,7 +1559,7 @@ fn edit_comment_at_cursor(app: &mut App, cursor_at_end: bool) {
     } else if !app.enter_edit_mode(cursor_at_end) {
         if app.cursor_on_remote_thread() {
             let forge = app.forge_display_name();
-            app.set_message(format!("{forge} comment — read only in tuicr"));
+            app.set_message(format!("{forge} comment is read-only — press c to reply"));
         } else {
             app.set_message("No comment at cursor");
         }
@@ -1710,11 +1710,17 @@ fn handle_shared_normal_action(app: &mut App, action: Action) {
         Action::EnterCommandMode => app.enter_command_mode(),
         Action::EnterSearchMode => app.enter_search_mode(),
         Action::AddLineComment => {
-            let line = app.get_line_at_cursor();
-            if line.is_some() {
-                app.enter_comment_mode(false, line);
+            if let Some(thread_idx) = app.remote_thread_at_cursor() {
+                // `c` on a remote review thread replies to it instead of
+                // opening a fresh line comment.
+                app.enter_reply_mode(thread_idx);
             } else {
-                app.set_message("Move cursor to a diff line to add a line comment");
+                let line = app.get_line_at_cursor();
+                if line.is_some() {
+                    app.enter_comment_mode(false, line);
+                } else {
+                    app.set_message("Move cursor to a diff line to add a line comment");
+                }
             }
         }
         Action::AddFileComment => app.enter_comment_mode(true, None),

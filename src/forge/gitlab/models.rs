@@ -256,6 +256,7 @@ impl GlabDiscussion {
                     body: note.body,
                     created_at: note.created_at,
                     in_reply_to: None,
+                    database_id: Some(note.id),
                     url: String::new(),
                 })
                 .collect::<Vec<_>>();
@@ -310,6 +311,7 @@ impl GlabDiscussion {
                 body: note.body,
                 created_at: note.created_at,
                 in_reply_to: None,
+                database_id: Some(note.id),
                 url: String::new(),
             })
             .collect();

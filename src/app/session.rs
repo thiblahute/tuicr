@@ -174,6 +174,7 @@ impl App {
             || self.pr_range_reload_rx.is_some()
             || self.pr_threads_rx.is_some()
             || self.pr_submit_rx.is_some()
+            || self.pr_reply_rx.is_some()
     }
 
     pub fn reload_persisted_session_if_changed(&mut self, force: bool) -> Result<usize> {

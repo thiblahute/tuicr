@@ -2616,6 +2616,7 @@ fn sample_thread(line: u32, body: &str, resolved: bool, outdated: bool) -> Remot
             body: body.to_string(),
             created_at: None,
             in_reply_to: None,
+            database_id: None,
             url: "https://example.com/c".to_string(),
         }],
     }

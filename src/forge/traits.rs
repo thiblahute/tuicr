@@ -552,6 +552,21 @@ pub trait ForgeBackend {
         pr: &PullRequestDetails,
         request: CreateReviewRequest<'_>,
     ) -> Result<GhCreateReviewResponse>;
+
+    /// Post a reply to an existing review thread. `thread` must be one of
+    /// the threads returned by [`Self::list_review_threads`] for the same
+    /// PR. Replies publish on the forge immediately — they are not queued
+    /// into a local draft review. Default: unsupported.
+    fn reply_to_review_thread(
+        &self,
+        _pr: &PullRequestDetails,
+        _thread: &RemoteReviewThread,
+        _body: &str,
+    ) -> Result<()> {
+        Err(crate::error::TuicrError::UnsupportedOperation(
+            "Replying to review threads is not supported on this forge".to_string(),
+        ))
+    }
 }
 
 #[cfg(test)]

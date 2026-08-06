@@ -34,6 +34,7 @@
 //!                 "nodes": [
 //!                   {
 //!                     "id": "PRRC_kw...",
+//!                     "databaseId": 987654321,
 //!                     "body": "Can this be simplified?",
 //!                     "author": { "login": "alice" },
 //!                     "createdAt": "2026-05-12T18:30:00Z",
@@ -66,6 +67,10 @@ struct GhAuthor {
 #[serde(rename_all = "camelCase")]
 struct GhReviewComment {
     id: String,
+    /// Numeric REST id (`databaseId`). The reply endpoint addresses
+    /// comments by this number, not the GraphQL node id.
+    #[serde(default)]
+    database_id: Option<u64>,
     #[serde(default)]
     body: String,
     #[serde(default)]
@@ -227,6 +232,7 @@ fn convert_comment(raw: GhReviewComment) -> RemoteReviewComment {
         body: raw.body,
         created_at: raw.created_at,
         in_reply_to: raw.reply_to.map(|r| r.id),
+        database_id: raw.database_id,
         url: raw.url.unwrap_or_default(),
     }
 }
@@ -254,6 +260,7 @@ pub(crate) fn build_query(after_cursor: Option<&str>) -> String {
           comments(first: 100) {{
             nodes {{
               id
+              databaseId
               body
               author {{ login }}
               createdAt
@@ -298,6 +305,7 @@ mod tests {
                                     "nodes": [
                                         {
                                             "id": "PRRC_1",
+                                            "databaseId": 987654321,
                                             "body": "Can this be simplified?",
                                             "author": { "login": "alice" },
                                             "createdAt": "2026-05-12T18:30:00Z",
@@ -504,6 +512,22 @@ mod tests {
         assert_eq!(thread.comments.len(), 1);
         assert_eq!(thread.comments[0].author.as_deref(), Some("alice"));
         assert_eq!(thread.comments[0].body, "Can this be simplified?");
+        assert_eq!(thread.comments[0].database_id, Some(987654321));
+    }
+
+    #[test]
+    fn should_tolerate_missing_database_id() {
+        // given — MULTI_COMMENT_THREAD_JSON comments carry no databaseId
+        let parsed = parse_graphql_page(MULTI_COMMENT_THREAD_JSON).unwrap();
+        // then
+        assert_eq!(parsed.threads[0].comments[0].database_id, None);
+    }
+
+    #[test]
+    fn should_request_database_id_in_query() {
+        // The REST reply endpoint needs the numeric comment id; the query
+        // must ask GraphQL for it alongside the node id.
+        assert!(build_query(None).contains("databaseId"));
     }
 
     #[test]

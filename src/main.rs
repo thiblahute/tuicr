@@ -429,6 +429,7 @@ fn main() -> anyhow::Result<()> {
         app.poll_pr_range_reload_events();
         app.poll_pr_threads_events();
         app.poll_pr_submit_events();
+        app.poll_pr_reply_events();
         needs_redraw |= app.poll_editor_launches();
         needs_redraw |= app.poll_persisted_session_changes();
         needs_redraw |= app.poll_diff_watch_changes();

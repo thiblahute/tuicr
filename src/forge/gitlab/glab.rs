@@ -785,6 +785,38 @@ where
             state: state.to_string(),
         })
     }
+
+    fn reply_to_review_thread(
+        &self,
+        pr: &PullRequestDetails,
+        thread: &RemoteReviewThread,
+        body: &str,
+    ) -> Result<()> {
+        // GitLab threads are discussions; `thread.id` carries the discussion
+        // id straight from `list_review_threads`, and adding a note to the
+        // discussion is the reply.
+        let project = gl_project_path(&pr.repository.owner, &pr.repository.name);
+        let endpoint = format!(
+            "projects/{}/merge_requests/{}/discussions/{}/notes",
+            project, pr.number, thread.id,
+        );
+        let body_json = serde_json::to_string(&serde_json::json!({ "body": body }))?;
+        let mut args = vec![
+            "api".to_string(),
+            endpoint,
+            "--method".to_string(),
+            "POST".to_string(),
+            "--header".to_string(),
+            "Content-Type: application/json".to_string(),
+            "--input".to_string(),
+            "-".to_string(),
+        ];
+        args.extend(Self::api_hostname_args(&pr.repository));
+        self.runner
+            .run_with_stdin(&args, &body_json)
+            .map_err(|err| map_create_notes_error(err, &pr.repository.host))?;
+        Ok(())
+    }
 }
 
 impl<R> GitLabGlabBackend<R>
@@ -1948,6 +1980,48 @@ mod tests {
             graphql_args.iter().any(|a| a == "iid=42"),
             "expected iid=42, got {graphql_args:?}"
         );
+    }
+
+    #[test]
+    fn should_post_reply_as_note_on_the_discussion() {
+        let repo = ForgeRepository::gitlab("gitlab.com", "owner", "repo");
+        let pr = make_pr_details(repo.clone());
+        let thread = crate::forge::remote_comments::RemoteReviewThread {
+            id: "abc123discussion".to_string(),
+            path: "src/lib.rs".to_string(),
+            line: Some(15),
+            side: crate::forge::remote_comments::RemoteCommentSide::Right,
+            is_resolved: false,
+            is_outdated: false,
+            comments: vec![crate::forge::remote_comments::RemoteReviewComment {
+                id: "1001".to_string(),
+                author: Some("alice".to_string()),
+                body: "Root".to_string(),
+                created_at: None,
+                in_reply_to: None,
+                database_id: Some(1001),
+                url: String::new(),
+            }],
+        };
+        let runner = RecordingRunner::new_with_responses(vec![r#"{"id":1002}"#.to_string()]);
+        let backend = GitLabGlabBackend::with_runner(Some(repo), runner);
+
+        backend
+            .reply_to_review_thread(&pr, &thread, "Done in abc123.")
+            .unwrap();
+
+        let calls = backend.runner.calls.borrow();
+        assert_eq!(calls.len(), 1);
+        let (args, stdin) = &calls[0];
+        assert!(
+            args.iter().any(|a| a
+                == "projects/owner%2Frepo/merge_requests/42/discussions/abc123discussion/notes"),
+            "expected discussion notes endpoint, got {args:?}"
+        );
+        assert!(args.iter().any(|a| a == "POST"));
+        let payload: serde_json::Value =
+            serde_json::from_str(stdin.as_deref().expect("reply posts via stdin")).unwrap();
+        assert_eq!(payload["body"], "Done in abc123.");
     }
 
     #[test]

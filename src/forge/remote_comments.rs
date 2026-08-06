@@ -1,9 +1,11 @@
 //! Remote review comment/thread models.
 //!
 //! These types carry existing GitHub review discussions into the App for
-//! read-only display, filtering, and export. They are deliberately
-//! source-of-truth-on-remote: we never mutate, reply to, or persist them
-//! locally past the in-memory cache.
+//! display, filtering, and export. They are deliberately
+//! source-of-truth-on-remote: we never mutate or persist them locally past
+//! the in-memory cache. Replies post straight to the forge
+//! (`ForgeBackend::reply_to_review_thread`) and land here only via the
+//! thread refetch that follows.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -43,6 +45,12 @@ pub struct RemoteReviewComment {
     pub created_at: Option<DateTime<Utc>>,
     /// For reply comments, the ID of the parent comment.
     pub in_reply_to: Option<String>,
+    /// Forge-assigned numeric comment ID, when the forge exposes one.
+    /// GitHub's REST reply endpoint addresses comments by this number (the
+    /// GraphQL `databaseId`) and Bitbucket replies name their parent by it;
+    /// GitLab replies key off the thread's discussion ID instead.
+    #[serde(default)]
+    pub database_id: Option<u64>,
     /// Permalink to the comment on the forge.
     pub url: String,
 }
@@ -280,6 +288,7 @@ mod tests {
                 body: "Root body".to_string(),
                 created_at: None,
                 in_reply_to: None,
+                database_id: None,
                 url: format!("https://example.com/{id}"),
             }],
         }

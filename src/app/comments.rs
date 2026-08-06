@@ -565,10 +565,16 @@ impl App {
     /// distinct condition so the handler can produce a clearer message than
     /// the generic "no comment at cursor".
     pub fn cursor_on_remote_thread(&self) -> bool {
-        matches!(
-            self.line_annotations.get(self.diff_state.cursor_line),
-            Some(AnnotatedLine::RemoteThreadLine { .. })
-        )
+        self.remote_thread_at_cursor().is_some()
+    }
+
+    /// Index into `forge_review_threads` of the thread rendered at the
+    /// cursor row, if the cursor sits on one.
+    pub fn remote_thread_at_cursor(&self) -> Option<usize> {
+        match self.line_annotations.get(self.diff_state.cursor_line) {
+            Some(AnnotatedLine::RemoteThreadLine { thread_idx }) => Some(*thread_idx),
+            _ => None,
+        }
     }
 
     fn find_comment_at_cursor(&self) -> Option<CommentLocation> {
@@ -924,6 +930,7 @@ impl App {
         self.comment_is_review_level = false;
         self.comment_is_file_level = file_level;
         self.comment_line = line;
+        self.comment_reply_target = None;
     }
 
     pub fn enter_review_comment_mode(&mut self) {
@@ -937,6 +944,52 @@ impl App {
         self.comment_line = None;
         self.comment_line_range = None;
         self.editing_comment_id = None;
+        self.comment_reply_target = None;
+    }
+
+    /// Open the comment editor as a reply to the remote review thread at
+    /// `thread_idx`. The editor anchors where the thread renders: at the
+    /// thread's diff line for inline threads, at review scope for
+    /// review-level (unanchored) threads. Saving posts the reply straight
+    /// to the forge (`spawn_thread_reply`) — replies are never stored as
+    /// local drafts.
+    pub fn enter_reply_mode(&mut self, thread_idx: usize) {
+        let Some(thread) = self.forge_review_threads.get(thread_idx) else {
+            self.set_message("No remote thread at cursor");
+            return;
+        };
+        let side = match thread.side {
+            crate::forge::remote_comments::RemoteCommentSide::Right => LineSide::New,
+            crate::forge::remote_comments::RemoteCommentSide::Left => LineSide::Old,
+        };
+        let line = thread.line.map(|l| (l, side));
+        self.input_mode = InputMode::Comment;
+        self.diff_state.scroll_x = 0;
+        self.comment_buffer.clear();
+        self.comment_cursor = 0;
+        // Replies carry no tuicr comment type — the body posts verbatim.
+        self.comment_type = CommentType::None;
+        self.comment_is_review_level = line.is_none();
+        self.comment_is_file_level = false;
+        self.comment_line = line;
+        self.comment_line_range = None;
+        self.editing_comment_id = None;
+        self.comment_reply_target = Some(thread_idx);
+    }
+
+    /// Author of the root comment of the thread a reply is being composed
+    /// for. `None` when the editor is not in reply mode. Used by the
+    /// renderers to label the input box.
+    pub fn comment_reply_author(&self) -> Option<String> {
+        let thread = self
+            .comment_reply_target
+            .and_then(|idx| self.forge_review_threads.get(idx))?;
+        Some(
+            thread
+                .root()
+                .and_then(|c| c.author.clone())
+                .unwrap_or_else(|| "thread".to_string()),
+        )
     }
 
     pub fn exit_comment_mode(&mut self) {
@@ -949,6 +1002,7 @@ impl App {
         self.comment_is_review_level = false;
         self.editing_comment_id = None;
         self.comment_line_range = None;
+        self.comment_reply_target = None;
     }
 
     pub fn save_comment(&mut self) {
@@ -958,6 +1012,16 @@ impl App {
         }
 
         let content = self.comment_buffer.trim().to_string();
+
+        // Replies bypass the session entirely: post to the forge in the
+        // background and let the thread refetch bring the reply back.
+        // On spawn failure the editor stays open so the text isn't lost.
+        if self.comment_reply_target.is_some() {
+            if self.spawn_thread_reply(content) {
+                self.exit_comment_mode();
+            }
+            return;
+        }
 
         let mut message = "Error: Could not save comment".to_string();
         let mut autosave_error = None;
@@ -1074,6 +1138,10 @@ impl App {
     }
 
     pub fn cycle_comment_type(&mut self) {
+        if self.comment_reply_target.is_some() {
+            self.set_message("Replies have no comment type");
+            return;
+        }
         if self.comment_types.is_empty() {
             return;
         }
@@ -1095,6 +1163,10 @@ impl App {
     }
 
     pub fn cycle_comment_type_reverse(&mut self) {
+        if self.comment_reply_target.is_some() {
+            self.set_message("Replies have no comment type");
+            return;
+        }
         if self.comment_types.is_empty() {
             return;
         }

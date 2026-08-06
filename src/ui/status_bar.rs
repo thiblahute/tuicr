@@ -361,6 +361,20 @@ fn mode_label(app: &App) -> String {
 fn status_right_span(app: &App, theme: &Theme) -> (Span<'static>, usize) {
     if app.message.is_some() {
         build_message_span(app.message.as_ref(), theme)
+    } else if let Some(reply) = app.pr_reply_state.as_ref() {
+        let glyph = crate::ui::selector::pr_open_spinner_glyph(reply.started_at.elapsed());
+        let content = format!(" {glyph} Posting reply… ");
+        let width = content.chars().count();
+        (
+            Span::styled(
+                content,
+                Style::default()
+                    .fg(theme.message_info_fg)
+                    .bg(theme.message_info_bg)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            width,
+        )
     } else if let Some(submit) = app.pr_submit_state.as_ref() {
         use crate::forge::submit::SubmitEvent;
         let glyph = crate::ui::selector::pr_open_spinner_glyph(submit.started_at.elapsed());

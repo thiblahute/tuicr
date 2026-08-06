@@ -404,6 +404,7 @@ impl BbComment {
             body: self.content.raw,
             created_at: self.created_on,
             in_reply_to: self.parent.map(|parent| parent.id.to_string()),
+            database_id: Some(self.id),
             url: self.links.html_href(),
         }
     }

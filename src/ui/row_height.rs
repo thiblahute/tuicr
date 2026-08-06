@@ -638,6 +638,7 @@ mod tests {
                 body: "a long inline review comment ".repeat(12),
                 created_at: None,
                 in_reply_to: None,
+                database_id: None,
                 url: "https://example.com/comment".to_string(),
             }],
         }];

@@ -120,6 +120,7 @@ pub fn format_comment_input_lines(
     width: usize,
     vim_mode: Option<(&str, bool)>,
     supports_keyboard_enhancement: bool,
+    reply_to: Option<&str>,
 ) -> (Vec<Line<'static>>, CommentCursorInfo) {
     let type_style = styles::comment_type_style(theme, comment_type.color);
     let border_style = styles::comment_border_style(theme, comment_type.color);
@@ -127,7 +128,13 @@ pub fn format_comment_input_lines(
         .fg(theme.cursor_color)
         .add_modifier(Modifier::UNDERLINED);
 
-    let action = if is_editing { "Edit" } else { "Add" };
+    let action = if reply_to.is_some() {
+        "Reply to"
+    } else if is_editing {
+        "Edit"
+    } else {
+        "Add"
+    };
     let line_info = match line_range {
         Some(range) if range.is_single() => format!("L{} ", range.start),
         Some(range) => format!("L{}-L{} ", range.start, range.end),
@@ -157,14 +164,19 @@ pub fn format_comment_input_lines(
 
     // Top border with type label and hints. In vim mode the hints describe the
     // modal bindings and a `[MODE]` tag is shown after the type label.
-    let hint = match vim_mode {
-        Some(_) => "(i:insert  Alt-Enter:save  Esc:normal  :w save  :q discard)".to_string(),
-        None => format!("(Tab/S-Tab:type Enter:save {newline_hint}:newline Esc:cancel)"),
+    // Replies have no type, so their hint drops the Tab type-cycling part.
+    let hint = match (vim_mode, reply_to) {
+        (Some(_), _) => "(i:insert  Alt-Enter:save  Esc:normal  :w save  :q discard)".to_string(),
+        (None, Some(_)) => format!("(Enter:send {newline_hint}:newline Esc:cancel)"),
+        (None, None) => format!("(Tab/S-Tab:type Enter:save {newline_hint}:newline Esc:cancel)"),
     };
     let mut header_spans = vec![
         Span::styled(top_prefix, border_style),
         Span::styled(format!("{action} "), styles::dim_style(theme)),
     ];
+    if let Some(author) = reply_to {
+        header_spans.push(Span::styled(format!("@{author} "), type_style));
+    }
     // `None` has an empty label — show no `[TYPE]` badge while composing.
     if !comment_type.label.is_empty() {
         header_spans.push(Span::styled(
@@ -755,6 +767,7 @@ mod tests {
             80,
             None,
             true,
+            None,
         );
 
         // then
@@ -784,6 +797,7 @@ mod tests {
             80,
             None,
             true,
+            None,
         );
 
         // then
@@ -812,6 +826,7 @@ mod tests {
             80,
             None,
             true,
+            None,
         );
 
         // then
@@ -841,6 +856,7 @@ mod tests {
             80,
             None,
             true,
+            None,
         );
 
         // then
@@ -869,6 +885,7 @@ mod tests {
             80,
             None,
             true,
+            None,
         );
 
         // then
@@ -898,6 +915,7 @@ mod tests {
             80,
             None,
             true,
+            None,
         );
 
         // then
@@ -922,6 +940,7 @@ mod tests {
             80,
             None,
             true,
+            None,
         );
         let header = lines[0]
             .spans
@@ -948,6 +967,7 @@ mod tests {
             80,
             None,
             false,
+            None,
         );
         let header = lines[0]
             .spans
@@ -994,6 +1014,7 @@ mod tests {
             80,
             None,
             true,
+            None,
         )
         .0
     }
@@ -1069,6 +1090,7 @@ mod tests {
                 body: "body".to_string(),
                 created_at: None,
                 in_reply_to: None,
+                database_id: None,
                 url: String::new(),
             }],
         };

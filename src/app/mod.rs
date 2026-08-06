@@ -966,6 +966,34 @@ pub enum PrSubmitEvent {
     },
 }
 
+/// Snapshot of an in-flight reply to a remote review thread. Captured by
+/// `spawn_thread_reply` so the status bar can show a spinner and, on
+/// failure, `poll_pr_reply_events` can reopen the editor with the typed
+/// body instead of losing it.
+#[derive(Debug, Clone)]
+pub struct ReplyInFlightState {
+    pub repository: crate::forge::traits::ForgeRepository,
+    pub pr_number: u64,
+    /// Thread node/discussion id the reply targets; used to re-find the
+    /// thread if indices shifted while the call was in flight.
+    pub thread_id: String,
+    /// Author of the thread root, for the success/failure message.
+    pub thread_author: Option<String>,
+    /// The reply body as sent — restored into the editor on failure.
+    pub body: String,
+    pub started_at: Instant,
+}
+
+/// Result delivered from the reply-to-thread background thread.
+#[derive(Debug)]
+pub enum PrReplyEvent {
+    Done {
+        repository: crate::forge::traits::ForgeRepository,
+        pr_number: u64,
+        result: std::result::Result<(), String>,
+    },
+}
+
 /// Result delivered from the remote-thread fetch background thread. The PR
 /// diff is rendered as soon as it parses; threads land asynchronously and
 /// trigger a repaint via `poll_pr_threads_events`.
@@ -1170,6 +1198,10 @@ pub struct App {
     pub comment_is_file_level: bool,
     pub comment_line: Option<(u32, LineSide)>,
     pub editing_comment_id: Option<String>,
+    /// When `Some`, the comment editor is composing a reply to the remote
+    /// review thread at this index in `forge_review_threads`. Saving posts
+    /// the reply straight to the forge instead of storing a local draft.
+    pub comment_reply_target: Option<usize>,
 
     pub visual_selection: Option<VisualSelection>,
     /// True once the active mouse drag has actually moved off the press cell.
@@ -1275,6 +1307,11 @@ pub struct App {
     /// Background-thread channel that delivers the create-review result.
     /// `Receiver` is only present while a submit is in flight.
     pub pr_submit_rx: Option<std::sync::mpsc::Receiver<PrSubmitEvent>>,
+    /// In-flight reply to a remote review thread. `Some` while the POST is
+    /// running; drives the status-bar spinner.
+    pub pr_reply_state: Option<ReplyInFlightState>,
+    /// Background-thread channel that delivers the reply result.
+    pub pr_reply_rx: Option<std::sync::mpsc::Receiver<PrReplyEvent>>,
     /// Latest known PR head SHA from the remote. PR 5 leaves this as the
     /// open-time head so the stale-head warning never fires; PR 6 may refresh
     /// it via a pre-submit `gh pr view` to power the warning.

@@ -586,6 +586,48 @@ where
 
         parse_create_review_response(&output)
     }
+
+    fn reply_to_review_thread(
+        &self,
+        pr: &PullRequestDetails,
+        thread: &crate::forge::remote_comments::RemoteReviewThread,
+        body: &str,
+    ) -> Result<()> {
+        // The REST reply endpoint addresses the thread by its root comment's
+        // numeric id; replies-to-replies flatten onto the root on GitHub
+        // anyway. The GraphQL node id on `thread.id` cannot be used here.
+        let comment_id = thread
+            .root()
+            .and_then(|root| root.database_id)
+            .ok_or_else(|| {
+                TuicrError::Forge(
+                    "Cannot reply: thread is missing its numeric comment id. Reload with :e and try again.".to_string(),
+                )
+            })?;
+
+        let payload_json = serde_json::to_string(&serde_json::json!({ "body": body }))?;
+        let endpoint = format!(
+            "repos/{}/{}/pulls/{}/comments/{}/replies",
+            pr.repository.owner, pr.repository.name, pr.number, comment_id,
+        );
+        let mut args = vec![
+            "api".to_string(),
+            endpoint,
+            "--method".to_string(),
+            "POST".to_string(),
+            "--input".to_string(),
+            "-".to_string(),
+        ];
+        if pr.repository.host != DEFAULT_GITHUB_HOST {
+            args.push("--hostname".to_string());
+            args.push(pr.repository.host.clone());
+        }
+
+        self.runner
+            .run_with_stdin(&args, &payload_json)
+            .map_err(|err| map_gh_error(err, &pr.repository.host))?;
+        Ok(())
+    }
 }
 
 impl<R> GitHubGhBackend<R>
@@ -2135,6 +2177,72 @@ Match host github-work
         let (args, _) = &stdin_calls[0];
         assert!(args.iter().any(|a| a == "--hostname"));
         assert!(args.iter().any(|a| a == "github.example.com"));
+    }
+
+    fn reply_thread(root_database_id: Option<u64>) -> RemoteReviewThread {
+        RemoteReviewThread {
+            id: "PRRT_1".to_string(),
+            path: "src/lib.rs".to_string(),
+            line: Some(42),
+            side: crate::forge::remote_comments::RemoteCommentSide::Right,
+            is_resolved: false,
+            is_outdated: false,
+            comments: vec![crate::forge::remote_comments::RemoteReviewComment {
+                id: "PRRC_1".to_string(),
+                author: Some("alice".to_string()),
+                body: "Root".to_string(),
+                created_at: None,
+                in_reply_to: None,
+                database_id: root_database_id,
+                url: "https://example.com/1".to_string(),
+            }],
+        }
+    }
+
+    #[test]
+    fn should_post_reply_to_root_comment_replies_endpoint() {
+        // given
+        let runner = FakeGhRunner::default();
+        *runner.stdin_response.borrow_mut() = Some("{}".to_string());
+        let backend = GitHubGhBackend::with_runner(Some(repo()), runner);
+        let details = backend
+            .get_pull_request(parse_pull_request_target("125").unwrap())
+            .unwrap();
+        // when
+        backend
+            .reply_to_review_thread(&details, &reply_thread(Some(987654321)), "Done in abc123.")
+            .unwrap();
+        // then — POST to the root comment's numeric-id replies endpoint
+        let stdin_calls = backend.runner.stdin_calls.borrow();
+        assert_eq!(stdin_calls.len(), 1);
+        let (args, stdin) = &stdin_calls[0];
+        assert_eq!(args[0], "api");
+        assert_eq!(
+            args[1],
+            "repos/agavra/tuicr/pulls/125/comments/987654321/replies"
+        );
+        assert!(args.iter().any(|a| a == "--method"));
+        assert!(args.iter().any(|a| a == "POST"));
+        assert!(args.iter().any(|a| a == "--input"));
+        let payload: serde_json::Value = serde_json::from_str(stdin).unwrap();
+        assert_eq!(payload["body"], "Done in abc123.");
+    }
+
+    #[test]
+    fn should_error_on_reply_when_thread_has_no_numeric_comment_id() {
+        // given — a thread whose root predates the databaseId fetch
+        let runner = FakeGhRunner::default();
+        let backend = GitHubGhBackend::with_runner(Some(repo()), runner);
+        let details = backend
+            .get_pull_request(parse_pull_request_target("125").unwrap())
+            .unwrap();
+        // when
+        let err = backend
+            .reply_to_review_thread(&details, &reply_thread(None), "hi")
+            .unwrap_err();
+        // then — no network call, actionable message
+        assert!(err.to_string().contains("numeric comment id"));
+        assert!(backend.runner.stdin_calls.borrow().is_empty());
     }
 
     #[test]
