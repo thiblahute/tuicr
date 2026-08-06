@@ -268,6 +268,12 @@ Forge selection is host-driven: `parse_any_remote_url` tries Bitbucket (`bitbuck
 - `resolve_diff_base_sha` — best-effort refinement of the reported PR base to the displayed diff's merge base; see the `base_sha` gotcha below.
 - `fetch_file_lines` — remote context expansion in the diff view.
 - `create_review` — POST a review with inline comments via `CreateReviewRequest`.
+- `reply_to_review_thread` — POST a reply to an existing thread; publishes immediately (no draft
+  stage). GitHub uses the REST replies endpoint keyed by the root comment's `databaseId`
+  (fetched in the threads GraphQL query as `RemoteReviewComment::database_id`); GitLab adds a
+  note to the discussion (`thread.id`); Bitbucket posts a comment with `parent` = root id.
+  Entered with `c` on a thread row; replies are never stored in the local session — success
+  refetches threads, failure reopens the editor with the typed body.
 
 ### Async pattern
 
