@@ -379,11 +379,13 @@ fn push_side_comment_box<'a>(
 
 /// Push comment-box rows, sizing them to the active side's pane when
 /// `side_geom` is `Some`, or full-width (with the connector bar) otherwise.
+#[allow(clippy::too_many_arguments)]
 fn push_comment_box_lines<'a>(
     ctx: &SideBySideContext,
     lines: &mut Vec<Line<'a>>,
     box_lines: Vec<Line<'a>>,
     side_geom: Option<(u16, usize, u16)>,
+    is_commit_message: bool,
     box_top_row: usize,
     line_range: Option<LineRange>,
     line_idx: usize,
@@ -395,6 +397,16 @@ fn push_comment_box_lines<'a>(
     } else {
         let mut line_idx = line_idx;
         for mut line in box_lines {
+            // The commit message renders full-width near the left edge, so the
+            // box hangs flush-left too: drop the 4-space indent that otherwise
+            // reserves room for the connector bar (which we skip below, exactly
+            // as side boxes do).
+            if is_commit_message
+                && let Some(first) = line.spans.first_mut()
+                && let Some(rest) = first.content.strip_prefix(SIDE_BOX_INDENT_STRIP)
+            {
+                first.content = rest.to_string().into();
+            }
             let indicator = cursor_indicator(line_idx, ctx.current_line_idx);
             line.spans.insert(
                 0,
@@ -403,11 +415,16 @@ fn push_comment_box_lines<'a>(
             lines.push(line);
             line_idx += 1;
         }
-        crate::ui::diff_view::push_comment_bar(
-            &mut ctx.comment_bars.borrow_mut(),
-            box_top_row,
-            line_range,
-        );
+        // A full-width box sitting directly under the commit-message line needs
+        // no connector bar — and the bar's fixed gutter column would land on the
+        // prose and hide a character.
+        if !is_commit_message {
+            crate::ui::diff_view::push_comment_bar(
+                &mut ctx.comment_bars.borrow_mut(),
+                box_top_row,
+                line_range,
+            );
+        }
         line_idx
     }
 }
@@ -2247,10 +2264,14 @@ fn add_comments_to_line(
         .map(|(_, w, _)| w)
         .unwrap_or_else(|| ctx.panel_width.saturating_sub(1));
     let left_pad: u16 = side_geom.map(|(p, _, _)| p).unwrap_or(0);
-    // Side boxes strip the 4-space indent, so the text cursor shifts left too.
-    // `cursor_info.column` already includes the 7-col border prefix, so the
-    // full sum stays positive.
-    let indent_strip = side_geom.map(|_| SIDE_BOX_INDENT_WIDTH).unwrap_or(0);
+    // Side boxes — and the flush-left commit-message box — strip the 4-space
+    // indent, so the text cursor shifts left too. `cursor_info.column` already
+    // includes the 7-col border prefix, so the full sum stays positive.
+    let indent_strip = if side_geom.is_some() || is_commit_message {
+        SIDE_BOX_INDENT_WIDTH
+    } else {
+        0
+    };
     let cursor_col = |col: u16| (1 + left_pad as usize + col as usize - indent_strip) as u16;
 
     if let Some(comments) = line_comments.get(&line_num) {
@@ -2299,6 +2320,7 @@ fn add_comments_to_line(
                         lines,
                         input_lines,
                         side_geom,
+                        is_commit_message,
                         box_top_row,
                         crate::ui::diff_view::comment_bar_range(comment, line_range),
                         line_idx,
@@ -2311,10 +2333,11 @@ fn add_comments_to_line(
                     let rows = ctx.app.comment_rows(comment, ctx.panel_width);
                     // The bar is recorded either way: it is painted above the
                     // box, so it can be on screen while the box itself is not.
-                    // Side boxes draw their own border and never get a bar.
+                    // Side boxes and commit-message boxes draw no bar, so the
+                    // culled path must skip it exactly as the visible one does.
                     if !ctx.box_visible(line_idx, rows) {
                         skip_comment_box(lines, &mut line_idx, rows);
-                        if side_geom.is_none() {
+                        if side_geom.is_none() && !is_commit_message {
                             crate::ui::diff_view::push_comment_bar(
                                 &mut ctx.comment_bars.borrow_mut(),
                                 box_top_row,
@@ -2336,6 +2359,7 @@ fn add_comments_to_line(
                             lines,
                             comment_lines,
                             side_geom,
+                            is_commit_message,
                             box_top_row,
                             crate::ui::diff_view::comment_bar_range(comment, line_range),
                             line_idx,
@@ -2380,6 +2404,7 @@ fn add_comments_to_line(
             lines,
             input_lines,
             side_geom,
+            is_commit_message,
             box_top_row,
             (!ctx.app.composing_reply()).then_some(line_range).flatten(),
             line_idx,
@@ -3149,5 +3174,55 @@ mod remote_comments_side_by_side_snapshot_tests {
             checked, 1,
             "expected the commit message body to render exactly once, got {checked}"
         );
+    }
+
+    fn add_commit_message_comment(app: &mut App, line: u32, text: &str) {
+        app.session.add_diff_file(&app.diff_files[0]);
+        let pb = app.diff_files[0].display_path().clone();
+        app.session
+            .get_file_mut(&pb)
+            .expect("file in session")
+            .add_line_comment(
+                line,
+                crate::model::Comment::new(
+                    text.to_string(),
+                    crate::model::CommentType::from_id("note"),
+                    Some(LineSide::New),
+                ),
+            );
+    }
+
+    #[test]
+    fn comment_bar_does_not_cover_commit_message_text_in_side_by_side() {
+        // Regression: the connector bar is painted at a fixed gutter column
+        // (inner.x + 5). For the full-width commit message, whose prose renders
+        // near the left edge, that column landed on the 3rd character of the
+        // message and hid it. The commit-message comment box is flush-left with
+        // no connector bar, so the message text stays intact.
+        let mut app = make_pr_app();
+        app.diff_files = vec![commit_message_file("COMMITMSG summary line")];
+        add_commit_message_comment(&mut app, 1, "NOTEONMSG");
+        app.rebuild_annotations();
+
+        let buf = draw_sbs(&mut app, 160, 20);
+
+        let msg_intact = (0..buf.area.height).any(|y| {
+            (0..buf.area.width)
+                .map(|x| char_at(&buf, x, y))
+                .collect::<String>()
+                .contains("COMMITMSG summary line")
+        });
+        assert!(
+            msg_intact,
+            "commit message text must stay intact (not overwritten by a connector bar)"
+        );
+
+        let box_rendered = (0..buf.area.height).any(|y| {
+            (0..buf.area.width)
+                .map(|x| char_at(&buf, x, y))
+                .collect::<String>()
+                .contains("NOTEONMSG")
+        });
+        assert!(box_rendered, "the commit-message comment box should render");
     }
 }
