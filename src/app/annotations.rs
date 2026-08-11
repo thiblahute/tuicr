@@ -1,12 +1,19 @@
 use super::*;
 
-/// The three values every annotation builder needs to size a comment box:
-/// how wide the viewport is, which commits are selected, and whether settled
-/// threads are expanded. They always travel together — bundling them keeps the
-/// builders from drifting apart as the set grows.
+/// Everything an annotation builder needs to size a comment box: how wide the
+/// box will actually be formatted, which commits are selected, and whether
+/// settled threads are expanded. They always travel together — bundling them
+/// keeps the builders from drifting apart as the set grows.
 #[derive(Clone, Copy)]
 pub(in crate::app) struct CommentLayout<'a> {
     pub viewport_width: usize,
+    /// Width the renderer formats the current box at. Row counts must use
+    /// this, not `viewport_width`: a side-by-side pane box wraps narrower, and
+    /// a comment that wraps to more rows on screen than the model believes
+    /// puts every annotation below it out of step.
+    pub box_width: usize,
+    /// This file's per-side widths, `(old, new)`.
+    pub box_widths: (usize, usize),
     pub commit_set: Option<&'a std::collections::HashSet<String>>,
     pub show_resolved: bool,
     /// Roots whose visibility is flipped relative to `show_resolved`.
@@ -14,6 +21,20 @@ pub(in crate::app) struct CommentLayout<'a> {
 }
 
 impl CommentLayout<'_> {
+    /// The same layout, sized for one side's box.
+    fn for_box(self, box_width: usize) -> Self {
+        Self { box_width, ..self }
+    }
+
+    /// The same layout, carrying this file's per-side box widths.
+    fn for_file(self, box_widths: (usize, usize)) -> Self {
+        Self {
+            box_width: box_widths.1,
+            box_widths,
+            ..self
+        }
+    }
+
     /// Whether this comment's thread is expanded — globally or on its own.
     fn thread_shown(&self, comment: &crate::model::Comment) -> bool {
         let root = comment.in_reply_to.as_deref().unwrap_or(&comment.id);
@@ -102,8 +123,11 @@ impl App {
         // current inline selection are hidden. `None` => no selector, show all.
         let commit_set = self.selected_commit_set();
         let show_resolved = self.show_resolved_threads;
+        let full_width = self.diff_state.viewport_width.saturating_sub(1);
         let layout = CommentLayout {
             viewport_width: self.diff_state.viewport_width,
+            box_width: full_width,
+            box_widths: (full_width, full_width),
             commit_set: commit_set.as_ref(),
             show_resolved,
             overrides: &self.thread_display_overrides,
@@ -141,9 +165,9 @@ impl App {
             if !self.comment_visible(comment) {
                 continue;
             }
-            let comment_lines = Self::comment_display_lines_collapsed(
+            let comment_lines = Self::comment_display_lines_for_box(
                 comment,
-                self.diff_state.viewport_width,
+                self.diff_state.viewport_width.saturating_sub(1),
                 self.thread_collapsed(comment),
             );
             for _ in 0..comment_lines {
@@ -232,9 +256,9 @@ impl App {
                     {
                         continue;
                     }
-                    let comment_lines = Self::comment_display_lines_collapsed(
+                    let comment_lines = Self::comment_display_lines_for_box(
                         comment,
-                        self.diff_state.viewport_width,
+                        layout.viewport_width.saturating_sub(1),
                         layout.collapsed(comment),
                     );
                     for _ in 0..comment_lines {
@@ -258,6 +282,15 @@ impl App {
                     .map(|r| &r.line_comments)
                     .cloned()
                     .unwrap_or_default();
+
+                // Line-comment boxes are sized per side (side-by-side panes
+                // wrap narrower than the full viewport); the builders need
+                // the same widths the renderer will use or annotation rows
+                // drift from rendered rows.
+                let layout = layout.for_file((
+                    self.line_comment_box_width(LineSide::Old, file.is_commit_message),
+                    self.line_comment_box_width(LineSide::New, file.is_commit_message),
+                ));
 
                 for (hunk_idx, hunk) in file.hunks.iter().enumerate() {
                     // Calculate gap before this hunk
@@ -470,9 +503,9 @@ impl App {
                 continue;
             }
 
-            let comment_lines = Self::comment_display_lines_collapsed(
+            let comment_lines = Self::comment_display_lines_for_box(
                 comment,
-                layout.viewport_width,
+                layout.box_width,
                 layout.collapsed(comment),
             );
             for _ in 0..comment_lines {
@@ -583,7 +616,7 @@ impl App {
                     Some(old_ln),
                     line_comments,
                     LineSide::Old,
-                    layout,
+                    layout.for_box(layout.box_widths.0),
                 );
                 Self::push_remote_threads(
                     annotations,
@@ -603,7 +636,7 @@ impl App {
                     Some(new_ln),
                     line_comments,
                     LineSide::New,
-                    layout,
+                    layout.for_box(layout.box_widths.1),
                 );
                 Self::push_remote_threads(
                     annotations,
@@ -651,7 +684,7 @@ impl App {
                         diff_line.new_lineno,
                         line_comments,
                         LineSide::New,
-                        layout,
+                        layout.for_box(layout.box_widths.1),
                     );
                     if let Some(new_ln) = diff_line.new_lineno {
                         Self::push_remote_threads(
@@ -716,7 +749,7 @@ impl App {
                             old_lineno,
                             line_comments,
                             LineSide::Old,
-                            layout,
+                            layout.for_box(layout.box_widths.0),
                         );
                         if let Some(old_ln) = old_lineno {
                             Self::push_remote_threads(
@@ -734,7 +767,7 @@ impl App {
                             new_lineno,
                             line_comments,
                             LineSide::New,
-                            layout,
+                            layout.for_box(layout.box_widths.1),
                         );
                         if let Some(new_ln) = new_lineno {
                             Self::push_remote_threads(
@@ -766,7 +799,7 @@ impl App {
                         diff_line.new_lineno,
                         line_comments,
                         LineSide::New,
-                        layout,
+                        layout.for_box(layout.box_widths.1),
                     );
                     if let Some(new_ln) = diff_line.new_lineno {
                         Self::push_remote_threads(
