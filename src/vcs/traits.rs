@@ -177,6 +177,20 @@ pub trait VcsBackend: Send {
     /// Get the working tree diff (staged + unstaged changes)
     fn get_working_tree_diff(&self, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>>;
 
+    /// Diff the working tree against an arbitrary base revision, like
+    /// `git diff BASE`. A pure tree comparison: it does not depend on BASE
+    /// being an ancestor of the current head. Untracked handling follows
+    /// `set_include_untracked`. Returns error if not supported (default).
+    fn get_working_tree_diff_from(
+        &self,
+        _base: &str,
+        _highlighter: &SyntaxHighlighter,
+    ) -> Result<Vec<DiffFile>> {
+        Err(crate::error::TuicrError::UnsupportedOperation(
+            "Working tree diff against a base revision not supported for this VCS".into(),
+        ))
+    }
+
     /// Whether the working-tree diff includes untracked files. Set `false` for
     /// a `git diff HEAD`-style review of tracked changes only. Default no-op;
     /// git backends honor it.

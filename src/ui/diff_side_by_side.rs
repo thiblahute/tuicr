@@ -1081,6 +1081,8 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
                 DiffSource::WorkingTree
                     | DiffSource::Unstaged
                     | DiffSource::StagedAndUnstaged
+                    | DiffSource::WorkingTreeFrom(_)
+                    | DiffSource::RevisionDiff { .. }
                     | DiffSource::StagedUnstagedAndCommits(_)
                     | DiffSource::CommitRange(_)
                     | DiffSource::PullRequest(_)

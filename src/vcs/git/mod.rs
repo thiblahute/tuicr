@@ -282,6 +282,17 @@ impl VcsBackend for GitBackend {
         }
     }
 
+    fn get_working_tree_diff_from(
+        &self,
+        base: &str,
+        highlighter: &SyntaxHighlighter,
+    ) -> Result<Vec<DiffFile>> {
+        match self {
+            Self::Libgit2(backend) => backend.get_working_tree_diff_from(base, highlighter),
+            Self::Cli(backend) => backend.get_working_tree_diff_from(base, highlighter),
+        }
+    }
+
     fn get_staged_diff(&self, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
         match self {
             Self::Libgit2(backend) => backend.get_staged_diff(highlighter),

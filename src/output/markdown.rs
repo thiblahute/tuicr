@@ -209,6 +209,8 @@ fn review_scope_label(diff_source: &DiffSource) -> String {
     let scope = match diff_source {
         DiffSource::WorkingTree => "working tree changes".to_string(),
         DiffSource::StagedAndUnstaged => "staged + unstaged changes".to_string(),
+        DiffSource::WorkingTreeFrom(base) => format!("working tree vs {base}"),
+        DiffSource::RevisionDiff { revset, .. } => format!("diff of {revset}"),
         DiffSource::Staged => "staged changes".to_string(),
         DiffSource::Unstaged => "unstaged changes".to_string(),
         DiffSource::CommitRange(_) => "selected commit range".to_string(),
@@ -242,6 +244,10 @@ fn scope_banner(diff_source: &DiffSource) -> Option<String> {
         DiffSource::Staged => Some("Reviewing staged changes".to_string()),
         DiffSource::Unstaged => Some("Reviewing unstaged changes".to_string()),
         DiffSource::StagedAndUnstaged => Some("Reviewing staged + unstaged changes".to_string()),
+        DiffSource::WorkingTreeFrom(base) => {
+            Some(format!("Reviewing working tree changes against {base}"))
+        }
+        DiffSource::RevisionDiff { revset, .. } => Some(format!("Reviewing diff: {revset}")),
         DiffSource::CommitRange(commits) if commits.len() == 1 => Some(format!(
             "Reviewing commit: {}",
             &commits[0][..7.min(commits[0].len())]

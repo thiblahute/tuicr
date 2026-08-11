@@ -1089,6 +1089,8 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                 DiffSource::WorkingTree
                     | DiffSource::Unstaged
                     | DiffSource::StagedAndUnstaged
+                    | DiffSource::WorkingTreeFrom(_)
+                    | DiffSource::RevisionDiff { .. }
                     | DiffSource::StagedUnstagedAndCommits(_)
                     | DiffSource::CommitRange(_)
                     | DiffSource::PullRequest(_)

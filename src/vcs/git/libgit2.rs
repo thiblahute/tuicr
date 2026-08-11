@@ -115,6 +115,20 @@ impl VcsBackend for Libgit2Backend {
         )
     }
 
+    fn get_working_tree_diff_from(
+        &self,
+        base: &str,
+        highlighter: &SyntaxHighlighter,
+    ) -> Result<Vec<DiffFile>> {
+        diff::get_working_tree_diff_from(
+            &self.repo,
+            base,
+            self.whitespace_mode,
+            self.include_untracked,
+            highlighter,
+        )
+    }
+
     fn get_staged_diff(&self, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
         diff::get_staged_diff(&self.repo, self.whitespace_mode, highlighter)
     }

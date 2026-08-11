@@ -220,6 +220,21 @@ impl VcsBackend for GitCliBackend {
         )
     }
 
+    fn get_working_tree_diff_from(
+        &self,
+        base: &str,
+        highlighter: &SyntaxHighlighter,
+    ) -> Result<Vec<DiffFile>> {
+        let base = resolve_commit_id_cli(&self.root_path, base)?;
+        self.get_cli_diff(
+            strings(["diff", "--no-ext-diff", "--binary", &base, "--"]),
+            self.include_untracked,
+            GitContentSource::Revision(&base),
+            GitContentSource::Workdir,
+            highlighter,
+        )
+    }
+
     fn get_staged_diff(&self, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
         let old_source =
             if run_git_command(&self.root_path, &["rev-parse", "--verify", "HEAD"]).is_ok() {

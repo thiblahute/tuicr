@@ -223,6 +223,23 @@ impl VcsBackend for JjBackend {
         Ok(files)
     }
 
+    fn get_working_tree_diff_from(
+        &self,
+        base: &str,
+        highlighter: &SyntaxHighlighter,
+    ) -> Result<Vec<DiffFile>> {
+        let mut files = self.load_diff(&["diff", "--from", base], highlighter)?;
+        apply_container_full_file_highlight(
+            &self.info.root_path,
+            base,
+            None,
+            &mut files,
+            highlighter,
+            jj_show_batch,
+        )?;
+        Ok(files)
+    }
+
     fn fetch_context_lines(
         &self,
         file_path: &Path,

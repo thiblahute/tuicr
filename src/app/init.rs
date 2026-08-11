@@ -140,21 +140,98 @@ impl App {
         let vcs_info = vcs.info().clone();
         let highlighter =
             crate::profile::time("startup.syntax_highlighter", || theme.syntax_highlighter());
+        // `-w BASE`: flat diff, like `git diff`. A single revision diffs it
+        // against the working tree; an explicit range (`A..B`) diffs its
+        // resolved endpoints. Both are pure tree comparisons — no commit
+        // list — so a rebased or otherwise non-ancestor BASE still shows
+        // only the real delta.
+        if let Some(base) = options.working_tree_base {
+            let (diff_files, diff_source, session) = if is_revision_range(base) {
+                let revision_range = crate::profile::time_with(
+                    "startup.resolve_revision_range",
+                    || vcs.resolve_revision_range(base),
+                    |result| match result {
+                        Ok(range) => format!("commits={}", range.commit_ids.len()),
+                        Err(e) => format!("error={e}"),
+                    },
+                )?;
+                let diff_files = Self::get_commit_range_diff_with_ignore(
+                    vcs.as_ref(),
+                    &vcs_info.root_path,
+                    &revision_range,
+                    highlighter,
+                    options.path_filter,
+                )?;
+                let commit_ids = revision_range.commit_ids.to_vec();
+                let session = Self::load_or_create_commit_range_session(&vcs_info, &commit_ids);
+                (
+                    diff_files,
+                    DiffSource::RevisionDiff {
+                        revset: base.to_string(),
+                        range: Box::new(revision_range),
+                    },
+                    session,
+                )
+            } else {
+                let diff_files = Self::get_working_tree_diff_from_with_ignore(
+                    vcs.as_ref(),
+                    &vcs_info.root_path,
+                    base,
+                    highlighter,
+                    options.path_filter,
+                )?;
+                // Same review surface as a plain working-tree session; only
+                // the old side of the diff differs.
+                let session =
+                    Self::load_or_create_session(&vcs_info, SessionDiffSource::StagedAndUnstaged);
+                (
+                    diff_files,
+                    DiffSource::WorkingTreeFrom(base.to_string()),
+                    session,
+                )
+            };
+
+            let app = Self::build(
+                vcs,
+                vcs_info,
+                theme,
+                comment_type_configs,
+                output_to_stdout,
+                diff_files,
+                session,
+                diff_source,
+                InputMode::Normal,
+                Vec::new(),
+                options.path_filter,
+                options.repo_url_override.clone(),
+            )?;
+
+            return Ok(app);
+        }
         // Determine the diff source, files, and session based on input.
         // Four paths:
         //   1. -r + -w: combined commit range and uncommitted changes
         //   2. -r only: commit range
         //   3. -w only: working tree directly (skip commit selector)
         //   4. neither: commit selection UI
-        if let Some(revisions) = options.revisions {
-            let revision_range = crate::profile::time_with(
+        let revision_range = match options.revisions {
+            Some(revisions) => match crate::profile::time_with(
                 "startup.resolve_revision_range",
                 || vcs.resolve_revision_range(revisions),
                 |result| match result {
                     Ok(range) => format!("commits={}", range.commit_ids.len()),
                     Err(e) => format!("error={e}"),
                 },
-            )?;
+            ) {
+                // A range with no commits (e.g. `-r BASE.. -w` with BASE at
+                // HEAD) can still hold uncommitted changes; degrade to the
+                // plain working-tree paths below instead of failing.
+                Err(TuicrError::NoChanges) if options.working_tree => None,
+                result => Some(result?),
+            },
+            None => None,
+        };
+        if let Some(revision_range) = revision_range {
             let commit_ids = revision_range.commit_ids.to_vec();
 
             if options.working_tree {
@@ -1032,5 +1109,31 @@ impl App {
         // the receiver via `poll_pr_threads_events` once it begins.
         app.spawn_pr_threads_fetch(&details_for_threads, local_checkout_for_target);
         Ok(app)
+    }
+}
+
+/// Whether a positional BASE argument is an explicit revision range
+/// (`A..B`, `A...B`, or hg's `A::B`) rather than a single base revision.
+fn is_revision_range(base: &str) -> bool {
+    base.contains("..") || base.contains("::")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn should_treat_bare_revisions_as_flat_base() {
+        assert!(!is_revision_range("main"));
+        assert!(!is_revision_range("core-caps-review2"));
+        assert!(!is_revision_range("HEAD~3"));
+    }
+
+    #[test]
+    fn should_detect_explicit_ranges() {
+        assert!(is_revision_range("main..HEAD"));
+        assert!(is_revision_range("main.."));
+        assert!(is_revision_range("main...topic"));
+        assert!(is_revision_range("default::."));
     }
 }

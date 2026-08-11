@@ -22,6 +22,8 @@ pub struct CliArgs {
     pub revisions: Option<String>,
     /// Skip commit selector and review uncommitted changes directly.
     pub working_tree: bool,
+    /// Diff the working tree against this base revision (like `git diff BASE`).
+    pub working_tree_base: Option<String>,
     /// Review only staged changes (like `git diff --staged`).
     pub staged: bool,
     /// Exclude untracked files from the working-tree diff (like `git diff`).
@@ -61,6 +63,16 @@ pub struct CliArgs {
 struct Cli {
     #[command(flatten)]
     tui_options: TuiOptions,
+
+    /// Base revision to diff the working tree against, like `git diff BASE`.
+    /// Requires -w. An explicit range (`A..B`) shows the flat diff between
+    /// its endpoints instead, like `git diff A..B`.
+    #[arg(
+        value_name = "BASE",
+        requires = "working_tree",
+        conflicts_with = "revisions"
+    )]
+    working_tree_base: Option<String>,
 
     #[command(subcommand)]
     command: Option<Subcmd>,
@@ -214,6 +226,16 @@ enum Subcmd {
 struct TuiCommand {
     #[command(flatten)]
     options: TuiOptions,
+
+    /// Base revision to diff the working tree against, like `git diff BASE`.
+    /// Requires -w. An explicit range (`A..B`) shows the flat diff between
+    /// its endpoints instead, like `git diff A..B`.
+    #[arg(
+        value_name = "BASE",
+        requires = "working_tree",
+        conflicts_with = "revisions"
+    )]
+    working_tree_base: Option<String>,
 
     #[command(subcommand)]
     command: Option<TuiSubcmd>,
@@ -416,37 +438,54 @@ pub enum LineSideArg {
 
 impl From<Cli> for CliArgs {
     fn from(cli: Cli) -> Self {
-        let (options, pr_target, review_command, update_version, update_command) = match cli.command
-        {
-            Some(Subcmd::Tui(command)) => match command.command {
-                Some(TuiSubcmd::Pr(pr)) => (
-                    cli.tui_options.merge(command.options).merge(pr.options),
+        let (options, working_tree_base, pr_target, review_command, update_version, update_command) =
+            match cli.command {
+                Some(Subcmd::Tui(command)) => match command.command {
+                    Some(TuiSubcmd::Pr(pr)) => (
+                        cli.tui_options.merge(command.options).merge(pr.options),
+                        None,
+                        Some(pr.target),
+                        None,
+                        None,
+                        false,
+                    ),
+                    None => (
+                        cli.tui_options.merge(command.options),
+                        command.working_tree_base.or(cli.working_tree_base),
+                        None,
+                        None,
+                        None,
+                        false,
+                    ),
+                },
+                Some(Subcmd::Pr(pr)) => (
+                    cli.tui_options.merge(pr.options),
+                    None,
                     Some(pr.target),
                     None,
                     None,
                     false,
                 ),
+                Some(Subcmd::Review { command }) => (
+                    TuiOptions::default(),
+                    None,
+                    None,
+                    Some(command),
+                    None,
+                    false,
+                ),
+                Some(Subcmd::Update { version }) => {
+                    (TuiOptions::default(), None, None, None, version, true)
+                }
                 None => (
-                    cli.tui_options.merge(command.options),
+                    cli.tui_options,
+                    cli.working_tree_base,
                     None,
                     None,
                     None,
                     false,
                 ),
-            },
-            Some(Subcmd::Pr(pr)) => (
-                cli.tui_options.merge(pr.options),
-                Some(pr.target),
-                None,
-                None,
-                false,
-            ),
-            Some(Subcmd::Review { command }) => {
-                (TuiOptions::default(), None, Some(command), None, false)
-            }
-            Some(Subcmd::Update { version }) => (TuiOptions::default(), None, None, version, true),
-            None => (cli.tui_options, None, None, None, false),
-        };
+            };
         Self {
             theme: options.theme,
             appearance: options.appearance,
@@ -454,6 +493,7 @@ impl From<Cli> for CliArgs {
             no_update_check: options.no_update_check,
             revisions: options.revisions,
             working_tree: options.working_tree,
+            working_tree_base,
             staged: options.staged,
             no_untracked: options.no_untracked,
             untracked: options.untracked,
@@ -513,8 +553,14 @@ impl TuiOptions {
 
 impl Cli {
     fn try_into_args(self) -> std::result::Result<CliArgs, clap::Error> {
+        if self.base_combined_with_pr() {
+            return Err(clap::Error::raw(
+                clap::error::ErrorKind::ArgumentConflict,
+                "a BASE revision cannot be used with a pull request review",
+            ));
+        }
         match (
-            self.tui_options.has_any_explicit_value(),
+            self.tui_options.has_any_explicit_value() || self.working_tree_base.is_some(),
             self.non_tui_command_name(),
         ) {
             (true, Some(command_name)) => Err(clap::Error::raw(
@@ -533,6 +579,24 @@ impl Cli {
             Some(Subcmd::Update { .. }) => Some("update"),
             _ => None,
         }
+    }
+
+    fn base_combined_with_pr(&self) -> bool {
+        let tui_base_with_pr = matches!(
+            &self.command,
+            Some(Subcmd::Tui(command))
+                if command.working_tree_base.is_some() && command.command.is_some()
+        );
+        let top_base_with_pr = self.working_tree_base.is_some()
+            && matches!(
+                &self.command,
+                Some(Subcmd::Pr(_))
+                    | Some(Subcmd::Tui(TuiCommand {
+                        command: Some(_),
+                        ..
+                    }))
+            );
+        tui_base_with_pr || top_base_with_pr
     }
 }
 
@@ -673,6 +737,40 @@ mod tests {
     fn should_parse_working_tree_short_flag() {
         let parsed = parse_for_test(&["tuicr", "-w"]).expect("parse should succeed");
         assert!(parsed.working_tree);
+    }
+
+    #[test]
+    fn should_parse_working_tree_base() {
+        let parsed = parse_for_test(&["tuicr", "-w", "main"]).expect("parse should succeed");
+        assert!(parsed.working_tree);
+        assert_eq!(parsed.working_tree_base, Some("main".to_string()));
+    }
+
+    #[test]
+    fn should_parse_working_tree_base_via_tui_subcommand() {
+        let parsed = parse_for_test(&["tuicr", "tui", "-w", "main"]).expect("parse should succeed");
+        assert!(parsed.working_tree);
+        assert_eq!(parsed.working_tree_base, Some("main".to_string()));
+    }
+
+    #[test]
+    fn should_reject_base_without_working_tree() {
+        let err = parse_for_test(&["tuicr", "main"]).expect_err("parse should fail");
+        assert_eq!(err.kind(), ErrorKind::MissingRequiredArgument);
+    }
+
+    #[test]
+    fn should_reject_base_combined_with_revisions() {
+        let err = parse_for_test(&["tuicr", "-w", "-r", "main..", "main"])
+            .expect_err("parse should fail");
+        assert_eq!(err.kind(), ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn should_reject_base_combined_with_pr() {
+        let err =
+            parse_for_test(&["tuicr", "-w", "main", "pr", "123"]).expect_err("parse should fail");
+        assert_eq!(err.kind(), ErrorKind::ArgumentConflict);
     }
 
     #[test]

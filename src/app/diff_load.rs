@@ -166,6 +166,27 @@ impl App {
         Self::require_non_empty_diff_files(diff_files)
     }
 
+    pub(in crate::app) fn get_working_tree_diff_from_with_ignore(
+        vcs: &dyn VcsBackend,
+        repo_root: &Path,
+        base: &str,
+        highlighter: &SyntaxHighlighter,
+        path_filter: Option<&str>,
+    ) -> Result<Vec<DiffFile>> {
+        let diff_files = crate::profile::time_with(
+            "diff.load_working_tree_from",
+            || vcs.get_working_tree_diff_from(base, highlighter),
+            profile_diff_result,
+        )?;
+        let diff_files = Self::filter_ignored_diff_files(repo_root, diff_files);
+        let diff_files = if let Some(path) = path_filter {
+            Self::filter_by_path(diff_files, path)
+        } else {
+            diff_files
+        };
+        Self::require_non_empty_diff_files(diff_files)
+    }
+
     pub(in crate::app) fn get_staged_diff_with_ignore(
         vcs: &dyn VcsBackend,
         repo_root: &Path,
@@ -735,6 +756,20 @@ impl App {
             DiffSource::StagedAndUnstaged | DiffSource::WorkingTree => {
                 Self::get_working_tree_diff_with_ignore(vcs, root_path, highlighter, path_filter)
             }
+            DiffSource::WorkingTreeFrom(base) => Self::get_working_tree_diff_from_with_ignore(
+                vcs,
+                root_path,
+                base,
+                highlighter,
+                path_filter,
+            ),
+            DiffSource::RevisionDiff { range, .. } => Self::get_commit_range_diff_with_ignore(
+                vcs,
+                root_path,
+                range,
+                highlighter,
+                path_filter,
+            ),
             DiffSource::PullRequest(_) => Err(TuicrError::UnsupportedOperation(
                 "Use :reload from the command line in PR mode".to_string(),
             )),

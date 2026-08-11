@@ -627,6 +627,19 @@ pub enum DiffSource {
     Staged,
     Unstaged,
     StagedAndUnstaged,
+    /// Working tree diffed against an arbitrary base revision (`tuicr -w
+    /// BASE`, like `git diff BASE`). Carries the user-supplied revision so
+    /// reloads re-resolve it.
+    WorkingTreeFrom(String),
+    /// Flat diff between the endpoints of a revision expression (`tuicr -w
+    /// A..B`, like `git diff A..B`). Unlike `CommitRange` there is no commit
+    /// list or per-commit narrowing.
+    RevisionDiff {
+        /// User-supplied revision expression, kept for display.
+        revset: String,
+        /// Resolved endpoints; reloads reuse them so the diff stays stable.
+        range: Box<ResolvedRevisionRange<'static>>,
+    },
     CommitRange(Vec<String>),
     StagedUnstagedAndCommits(Vec<String>),
     /// Remote PR review. Carries identity + base/head SHAs needed for
@@ -651,6 +664,7 @@ impl DiffSource {
             Self::WorkingTree
                 | Self::Unstaged
                 | Self::StagedAndUnstaged
+                | Self::WorkingTreeFrom(_)
                 | Self::StagedUnstagedAndCommits(_)
         )
     }
@@ -1822,6 +1836,10 @@ impl Default for VcsOpenOptions {
 pub struct AppStartupOptions<'a> {
     pub revisions: Option<&'a str>,
     pub working_tree: bool,
+    /// Base revision the working tree is diffed against (`tuicr -w BASE`,
+    /// like `git diff BASE`). A pure tree comparison; an explicit range
+    /// (`A..B`) instead diffs its endpoints, like `git diff A..B`.
+    pub working_tree_base: Option<&'a str>,
     pub path_filter: Option<&'a str>,
     pub file_path: Option<&'a str>,
     /// Whole-repo annotation mode (`--all-files`). Mutually exclusive with
