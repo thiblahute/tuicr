@@ -593,6 +593,7 @@ impl App {
             persisted_session_snapshot,
             session_path,
             session_file_state,
+            cached_owner_repo: std::cell::OnceCell::new(),
             review_watch_interval: Some(Duration::from_millis(DEFAULT_REVIEW_WATCH_INTERVAL_MS)),
             next_review_watch_at: Instant::now()
                 + Duration::from_millis(DEFAULT_REVIEW_WATCH_INTERVAL_MS),

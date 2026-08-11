@@ -1139,6 +1139,11 @@ pub struct App {
     pub(crate) persisted_session_snapshot: ReviewSession,
     pub(crate) session_path: Option<PathBuf>,
     pub(crate) session_file_state: Option<SessionFileState>,
+    /// Lazily resolved `origin` coordinate of the reviewed repo, used for
+    /// per-frame slug rendering. Resolving it opens the repository and parses
+    /// its config, far too slow for the render path; the repo path never
+    /// changes for the lifetime of an `App`, so resolve once and reuse.
+    pub(crate) cached_owner_repo: std::cell::OnceCell<Option<(Option<String>, String)>>,
     pub review_watch_interval: Option<Duration>,
     pub next_review_watch_at: Instant,
     /// `None` by default: the diff watch is opt-in. A `0` interval in config

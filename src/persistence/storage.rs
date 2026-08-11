@@ -665,11 +665,24 @@ pub fn load_pr_session(key: &PrSessionKey) -> Result<Option<(PathBuf, ReviewSess
 /// require resolving the repo's `origin` remote (I/O); PR sessions are
 /// derived purely from the embedded `pr_session_key`.
 pub fn slug_for_session(session: &ReviewSession) -> Result<Slug> {
+    let owner_repo = match session.pr_session_key.as_ref() {
+        Some(key) => return Ok(key.into()),
+        None => slug::resolve_owner_repo(&session.repo_path)
+            .map_err(|e| TuicrError::CorruptedSession(format!("slug derive: {e}")))?,
+    };
+    slug_for_session_with_owner_repo(session, owner_repo)
+}
+
+/// Like [`slug_for_session`], but taking the repo's already-resolved `origin`
+/// coordinate. Resolving that coordinate opens the repository and parses its
+/// config, so callers on the render path cache it and use this variant.
+pub fn slug_for_session_with_owner_repo(
+    session: &ReviewSession,
+    owner_repo: (Option<String>, String),
+) -> Result<Slug> {
     if let Some(key) = session.pr_session_key.as_ref() {
         return Ok(key.into());
     }
-    let owner_repo = slug::resolve_owner_repo(&session.repo_path)
-        .map_err(|e| TuicrError::CorruptedSession(format!("slug derive: {e}")))?;
     let local = slug::build_local_slug(
         owner_repo,
         session.branch_name.as_deref(),
