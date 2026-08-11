@@ -3,10 +3,23 @@ use super::*;
 impl App {
     /// Slug for the currently active session, derived from the session's
     /// embedded fields. Returns `None` if derivation fails (e.g., a local
-    /// session pointing at a non-existent path). The slug is cheap to derive
-    /// from PR sessions (no I/O) and a few stat calls for local sessions.
+    /// session pointing at a non-existent path).
+    ///
+    /// Rendered on every frame by the status bar, so the repo's `origin`
+    /// coordinate (the only I/O-bearing input: repo open + config parse) is
+    /// resolved once and cached; the rest is rebuilt from the live session
+    /// fields so commit re-scoping is still reflected.
     pub fn session_slug(&self) -> Option<String> {
-        crate::persistence::storage::slug_for_session(&self.session)
+        if self.session.pr_session_key.is_some() {
+            return crate::persistence::storage::slug_for_session(&self.session)
+                .ok()
+                .map(|s| s.to_string());
+        }
+        let owner_repo = self
+            .cached_owner_repo
+            .get_or_init(|| crate::slug::resolve_owner_repo(&self.session.repo_path).ok())
+            .clone()?;
+        crate::persistence::storage::slug_for_session_with_owner_repo(&self.session, owner_repo)
             .ok()
             .map(|s| s.to_string())
     }
