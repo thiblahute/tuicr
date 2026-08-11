@@ -1077,6 +1077,10 @@ impl App {
     /// and reviewed files render the body under a banner.
     fn file_render_body_height(&self, file_idx: usize, file: &DiffFile) -> usize {
         let path = file.display_path();
+        // Line-comment box widths per side — must match the renderer (and
+        // rebuild_annotations) or scroll math drifts from rendered rows.
+        let old_box = self.line_comment_box_width(LineSide::Old, file.is_commit_message);
+        let new_box = self.line_comment_box_width(LineSide::New, file.is_commit_message);
 
         let spacing_lines = 1; // Trailing blank or "next file" hint
         let mut content_lines = 0;
@@ -1173,9 +1177,10 @@ impl App {
                                                 commit_set.as_ref(),
                                             )
                                         {
-                                            comment_lines += Self::comment_display_lines(
+                                            comment_lines += Self::comment_display_lines_for_box(
                                                 comment,
-                                                self.diff_state.viewport_width,
+                                                old_box,
+                                                self.thread_collapsed(comment),
                                             );
                                         }
                                     }
@@ -1191,9 +1196,10 @@ impl App {
                                                 commit_set.as_ref(),
                                             )
                                         {
-                                            comment_lines += Self::comment_display_lines(
+                                            comment_lines += Self::comment_display_lines_for_box(
                                                 comment,
-                                                self.diff_state.viewport_width,
+                                                new_box,
+                                                self.thread_collapsed(comment),
                                             );
                                         }
                                     }
@@ -1238,10 +1244,12 @@ impl App {
                                                     commit_set.as_ref(),
                                                 )
                                             {
-                                                comment_lines += Self::comment_display_lines(
-                                                    comment,
-                                                    self.diff_state.viewport_width,
-                                                );
+                                                comment_lines +=
+                                                    Self::comment_display_lines_for_box(
+                                                        comment,
+                                                        new_box,
+                                                        self.thread_collapsed(comment),
+                                                    );
                                             }
                                         }
                                     }
@@ -1291,9 +1299,10 @@ impl App {
                                                         )
                                                     {
                                                         comment_lines +=
-                                                            Self::comment_display_lines(
+                                                            Self::comment_display_lines_for_box(
                                                                 comment,
-                                                                self.diff_state.viewport_width,
+                                                                old_box,
+                                                                self.thread_collapsed(comment),
                                                             );
                                                     }
                                                 }
@@ -1312,9 +1321,10 @@ impl App {
                                                         )
                                                     {
                                                         comment_lines +=
-                                                            Self::comment_display_lines(
+                                                            Self::comment_display_lines_for_box(
                                                                 comment,
-                                                                self.diff_state.viewport_width,
+                                                                new_box,
+                                                                self.thread_collapsed(comment),
                                                             );
                                                     }
                                                 }
@@ -1356,10 +1366,12 @@ impl App {
                                                     commit_set.as_ref(),
                                                 )
                                             {
-                                                comment_lines += Self::comment_display_lines(
-                                                    comment,
-                                                    self.diff_state.viewport_width,
-                                                );
+                                                comment_lines +=
+                                                    Self::comment_display_lines_for_box(
+                                                        comment,
+                                                        new_box,
+                                                        self.thread_collapsed(comment),
+                                                    );
                                             }
                                         }
                                     }
@@ -1491,30 +1503,57 @@ impl App {
     /// Uses viewport_width to account for pre-wrapped visual segments so the
     /// annotation count stays in sync with what format_comment_lines renders.
     pub(crate) fn comment_display_lines(comment: &Comment, viewport_width: usize) -> usize {
-        Self::comment_display_lines_collapsed(comment, viewport_width, false)
+        // Full-width boxes get `viewport_width - 1` (the cursor indicator
+        // column) as their format width.
+        Self::comment_display_lines_for_box(comment, viewport_width.saturating_sub(1), false)
     }
 
-    /// Row count for a comment box, where `collapsed` is the one-line marker a
-    /// settled thread renders as. Callers pass `App::thread_collapsed(comment)`;
-    /// the plain `comment_display_lines` is the never-collapsed case, kept for
-    /// the sites that render a box unconditionally (the editor, PR panels).
-    pub(crate) fn comment_display_lines_collapsed(
+    /// Display lines for a comment box formatted at `box_width` — the exact
+    /// `width` the renderer hands to `format_comment_lines` (full-width or a
+    /// side-by-side pane box). `collapsed` is the one-line marker a settled
+    /// thread renders as. Must stay in sync with that function's row output or
+    /// annotation indices drift from rendered rows.
+    pub(crate) fn comment_display_lines_for_box(
         comment: &Comment,
-        viewport_width: usize,
+        box_width: usize,
         collapsed: bool,
     ) -> usize {
         if collapsed {
             return 1;
         }
         // Mirrors the content_area calculation in format_comment_lines:
-        // indicator(1) + border_prefix(7) + safety_margin(2) = 10
-        let content_area = viewport_width.saturating_sub(10);
+        // border_prefix(7) + safety_margin(2) = 9
+        let content_area = box_width.saturating_sub(9);
         let visual_lines: usize = comment
             .content
             .split('\n')
             .map(|line| crate::ui::comment_panel::wrap_segments(line, content_area).len())
             .sum();
         2 + visual_lines // top border + visual segments + bottom border
+    }
+
+    /// Width `format_comment_lines` is called with for a line comment on
+    /// `side`: the side pane's box in side-by-side view (unless the pane is
+    /// too narrow to split or the file is the commit-message entry, which
+    /// render full-width), the full inner width minus the indicator column
+    /// otherwise. Annotation building and scroll math size line-comment
+    /// boxes through this so they match the renderer row for row.
+    pub(crate) fn line_comment_box_width(&self, side: LineSide, is_commit_message: bool) -> usize {
+        let viewport_width = self.diff_state.viewport_width;
+        if self.diff_view_mode == DiffViewMode::SideBySide && !is_commit_message {
+            let lw = self.lineno_width();
+            let content_width =
+                viewport_width.saturating_sub(crate::app::sbs_overhead(lw) as usize) / 2;
+            if let Some((_, format_width, _)) = crate::ui::diff_side_by_side::sbs_side_box_geometry(
+                side,
+                lw,
+                content_width,
+                viewport_width,
+            ) {
+                return format_width;
+            }
+        }
+        viewport_width.saturating_sub(1)
     }
 
     /// Update viewport_width and trigger annotation rebuild if it changed.

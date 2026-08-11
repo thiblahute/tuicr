@@ -289,7 +289,7 @@ const SIDE_BOX_INDENT_WIDTH: usize = 4;
 /// content wraps to the pane, and `right_col` is where the box's own right
 /// border is drawn. Returns `None` (use a full-width box) when the pane is too
 /// narrow to be worth splitting.
-fn sbs_side_box_geometry(
+pub(crate) fn sbs_side_box_geometry(
     side: LineSide,
     lw: usize,
     content_width: usize,
@@ -2307,7 +2307,14 @@ fn add_comments_to_line(
                     );
                     let box_top_row = line_idx;
                     let box_end = line_idx + input_lines.len().saturating_sub(1);
-                    let annotations_replaced = ctx.app.comment_rows(comment, ctx.panel_width);
+                    // Annotation rows the original comment box occupied — sized
+                    // to the same box width the non-editing render (and the
+                    // annotation builder) uses, or the offset mapping drifts.
+                    let annotations_replaced = App::comment_display_lines_for_box(
+                        comment,
+                        box_width,
+                        ctx.app.thread_collapsed(comment),
+                    );
                     cursor_info_out = Some((
                         line_idx + cursor_info.line_offset,
                         cursor_col(cursor_info.column),
@@ -2697,6 +2704,69 @@ mod remote_comments_side_by_side_snapshot_tests {
         assert!(
             body.contains("[github @alice]"),
             "expected badge in side-by-side render:\n{body}"
+        );
+    }
+
+    #[test]
+    fn cursor_stays_on_comment_after_a_wrapping_side_box_comment() {
+        // A side-box comment wraps at the pane width, so a line long enough
+        // to fit unwrapped at full width still takes extra rows in the box.
+        // Annotations must size boxes identically or every row below drifts:
+        // the cursor placed on the following comment's annotation would draw
+        // on a different rendered row, and edit/delete report "no comment at
+        // cursor" (regression: editing a comment placed after another
+        // author's long comment).
+        use crate::model::{Comment, CommentType};
+
+        let mut app = make_pr_app();
+        let path = PathBuf::from("src/lib.rs");
+        let review = app.session.get_file_mut(&path).expect("file registered");
+        review.add_line_comment(
+            2,
+            Comment::new(
+                "x".repeat(100),
+                CommentType::from_id("note"),
+                Some(LineSide::New),
+            ),
+        );
+        review.add_line_comment(
+            2,
+            Comment::new(
+                "SHORTNOTE".to_string(),
+                CommentType::from_id("note"),
+                Some(LineSide::New),
+            ),
+        );
+        // First draw establishes the real viewport width and rebuilds
+        // annotations at it (sync_viewport_width).
+        draw(&mut app);
+
+        let short_annotation = app
+            .line_annotations
+            .iter()
+            .position(|a| {
+                matches!(
+                    a,
+                    crate::app::AnnotatedLine::LineComment { comment_idx: 1, .. }
+                )
+            })
+            .expect("short comment annotated");
+        // Row 0 is the box's top border; +1 is the content row.
+        app.diff_state.cursor_line = short_annotation + 1;
+
+        let buffer = draw(&mut app);
+        let row_text = |y: u16| {
+            (0..buffer.area.width)
+                .map(|x| buffer[(x, y)].symbol().to_string())
+                .collect::<String>()
+        };
+        let short_row = (0..buffer.area.height)
+            .find(|&y| row_text(y).contains("SHORTNOTE"))
+            .expect("short comment rendered");
+        assert!(
+            row_text(short_row).contains('\u{25b6}'.to_string().as_str()),
+            "cursor on the short comment's annotation must render on its box; row: {:?}",
+            row_text(short_row)
         );
     }
 

@@ -840,7 +840,19 @@ impl App {
         cursor_at_end: bool,
     ) -> usize {
         let content = &self.comment_buffer;
-        let content_area = self.diff_state.viewport_width.saturating_sub(10);
+        // Wrap at the same width the comment's box renders at: side-by-side
+        // panes size line-comment boxes to the pane, not the full viewport.
+        let content_area = match self.line_annotations.get(block_start) {
+            Some(AnnotatedLine::LineComment { file_idx, side, .. }) => {
+                let is_commit_message = self
+                    .diff_files
+                    .get(*file_idx)
+                    .is_some_and(|f| f.is_commit_message);
+                self.line_comment_box_width(*side, is_commit_message)
+                    .saturating_sub(9)
+            }
+            _ => self.diff_state.viewport_width.saturating_sub(10),
+        };
         // Visual content row under the cursor (skip the top border at row 0).
         let visual_target = self
             .diff_state

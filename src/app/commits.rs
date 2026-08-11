@@ -804,12 +804,8 @@ impl App {
     /// Rows this comment occupies right now, collapsed or not. The renderers
     /// and the annotation builder both go through here so the two never
     /// disagree about a settled thread's height.
-    pub fn comment_rows(&self, comment: &crate::model::Comment, viewport_width: usize) -> usize {
-        Self::comment_display_lines_collapsed(
-            comment,
-            viewport_width,
-            self.thread_collapsed(comment),
-        )
+    pub fn comment_rows(&self, comment: &crate::model::Comment, box_width: usize) -> usize {
+        Self::comment_display_lines_for_box(comment, box_width, self.thread_collapsed(comment))
     }
 
     /// Pure visibility check against a precomputed commit set — no
