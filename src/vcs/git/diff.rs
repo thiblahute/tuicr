@@ -53,6 +53,50 @@ fn get_working_tree_diff_once(
     Ok(files)
 }
 
+/// Diff the working tree (with index) against an arbitrary base revision,
+/// like `git diff BASE`. Pure tree comparison; BASE need not be an ancestor
+/// of HEAD.
+pub fn get_working_tree_diff_from(
+    repo: &Repository,
+    base: &str,
+    whitespace_mode: &DiffWhitespaceMode,
+    include_untracked: bool,
+    highlighter: &SyntaxHighlighter,
+) -> Result<Vec<DiffFile>> {
+    materialize_diff(whitespace_mode, |comparison| {
+        get_working_tree_diff_from_once(repo, base, comparison, include_untracked, highlighter)
+    })
+}
+
+fn get_working_tree_diff_from_once(
+    repo: &Repository,
+    base: &str,
+    comparison: WhitespaceComparison,
+    include_untracked: bool,
+    highlighter: &SyntaxHighlighter,
+) -> Result<Vec<DiffFile>> {
+    let base_tree = repo
+        .revparse_single(&format!("{base}^{{commit}}"))?
+        .peel_to_commit()
+        .map_err(|e| TuicrError::VcsCommand(format!("Not a commit: {e}")))?
+        .tree()?;
+
+    let mut opts = diff_options(comparison);
+    opts.include_untracked(include_untracked);
+    opts.show_untracked_content(include_untracked);
+    opts.recurse_untracked_dirs(include_untracked);
+
+    let diff = repo.diff_tree_to_workdir_with_index(Some(&base_tree), Some(&mut opts))?;
+    let mut files = parse_diff(&diff, highlighter)?;
+    enhance_with_full_file_highlight(
+        &mut files,
+        highlighter,
+        |path| read_path_from_tree(repo, &base_tree, path),
+        |path| read_path_from_workdir(repo, path),
+    );
+    Ok(files)
+}
+
 /// Get the staged diff (index vs HEAD)
 /// On repos with no commits (unborn HEAD), diffs against an empty tree.
 pub fn get_staged_diff(

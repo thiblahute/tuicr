@@ -276,6 +276,8 @@ fn header_source_chunk(app: &App) -> Option<String> {
         DiffSource::Staged => Some(with_head_commit("staged", app)),
         DiffSource::Unstaged => Some(with_head_commit("unstaged", app)),
         DiffSource::StagedAndUnstaged => Some(with_head_commit("staged + unstaged", app)),
+        DiffSource::WorkingTreeFrom(base) => Some(format!("diff vs {base}")),
+        DiffSource::RevisionDiff { revset, .. } => Some(format!("diff {revset}")),
         DiffSource::CommitRange(commits) => {
             if commits.len() == 1 {
                 Some(format!("commit {}", &commits[0][..7.min(commits[0].len())]))

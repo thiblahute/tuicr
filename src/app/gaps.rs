@@ -337,6 +337,12 @@ impl App {
                     commits.last().map(|s| s.as_str())
                 }
             }
+            // The new side of a flat revision diff is the resolved head
+            // snapshot, not the working tree.
+            DiffSource::RevisionDiff { range, .. } => match &range.diff_target {
+                RevisionDiffTarget::Explicit { head, .. } => Some(head.as_str()),
+                RevisionDiffTarget::CommitList => range.commit_ids.last().map(|s| s.as_str()),
+            },
             _ => None,
         }
     }
@@ -379,6 +385,8 @@ impl App {
             DiffSource::WorkingTree
                 | DiffSource::Unstaged
                 | DiffSource::StagedAndUnstaged
+                | DiffSource::WorkingTreeFrom(_)
+                | DiffSource::RevisionDiff { .. }
                 | DiffSource::StagedUnstagedAndCommits(_)
                 | DiffSource::CommitRange(_)
                 | DiffSource::PullRequest(_)

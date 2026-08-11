@@ -81,6 +81,7 @@ tuicr -w                    # Uncommitted changes (skip selector)
 tuicr -w --no-untracked     # Tracked uncommitted changes only (like `git diff HEAD`)
 tuicr --staged              # Staged changes only (like `git diff --staged`)
 tuicr -w --no-staged        # Unstaged changes only (like `git diff`)
+tuicr -w main               # Working tree vs main (like `git diff main`)
 tuicr -r main..HEAD         # Commit range
 tuicr --file f.md --line 42 # Annotate a file, starting at line 42
 tuicr pr 125                # GitHub, Gitea, Bitbucket, or Azure DevOps PR, or Gerrit change
