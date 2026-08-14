@@ -459,10 +459,18 @@ pub fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             &app.search_buffer
         };
         let command_text = format!("{prefix}{buffer}");
-        vec![Span::styled(
+        let mut spans = vec![Span::styled(
             command_text,
             Style::default().fg(theme.fg_primary),
-        )]
+        )];
+        // Only advertise the history keys once there is something to recall.
+        if app.input_mode == InputMode::Search && app.has_search_history() {
+            spans.push(Span::styled(
+                "   \u{2191}\u{2193} history",
+                Style::default().fg(theme.fg_secondary),
+            ));
+        }
+        spans
     } else {
         let mode_span = Span::styled(mode_label(app), styles::mode_style(theme));
 

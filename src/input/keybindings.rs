@@ -93,6 +93,10 @@ pub enum Action {
     SubmitInput,
     CompleteCommand,
     CompleteCommandReverse,
+    /// Up in the search prompt: recall an older `/` pattern.
+    SearchHistoryPrev,
+    /// Down in the search prompt: come back towards the typed line.
+    SearchHistoryNext,
     TextCursorLeft,
     TextCursorRight,
     TextCursorLineStart,
@@ -311,6 +315,8 @@ fn map_search_mode(key: KeyEvent) -> Action {
     match (key.code, key.modifiers) {
         (KeyCode::Esc, KeyModifiers::NONE) => Action::ExitMode,
         (KeyCode::Enter, KeyModifiers::NONE) => Action::SubmitInput,
+        (KeyCode::Up, KeyModifiers::NONE) => Action::SearchHistoryPrev,
+        (KeyCode::Down, KeyModifiers::NONE) => Action::SearchHistoryNext,
         (KeyCode::Backspace, mods) if mods.contains(KeyModifiers::ALT) => Action::DeleteWord,
         (KeyCode::Backspace, KeyModifiers::NONE) => Action::DeleteChar,
         (KeyCode::Char('w'), KeyModifiers::CONTROL) => Action::DeleteWord,
@@ -767,6 +773,20 @@ mod tests {
         );
         assert_eq!(map_help_mode(key(KeyCode::Char('n'))), Action::SearchNext);
         assert_eq!(map_help_mode(key_shift('N')), Action::SearchPrev);
+    }
+
+    #[test]
+    fn should_map_arrows_to_search_history_at_the_search_prompt() {
+        assert_eq!(map_search_mode(key(KeyCode::Up)), Action::SearchHistoryPrev);
+        assert_eq!(
+            map_search_mode(key(KeyCode::Down)),
+            Action::SearchHistoryNext
+        );
+        // Typing still wins over anything else in the prompt.
+        assert_eq!(
+            map_search_mode(key(KeyCode::Char('k'))),
+            Action::InsertChar('k')
+        );
     }
 
     #[test]

@@ -1082,6 +1082,9 @@ pub struct Message {
 const MESSAGE_TTL_INFO: Duration = Duration::from_secs(3);
 const MESSAGE_TTL_WARNING: Duration = Duration::from_secs(5);
 
+/// How many `/` patterns the session keeps for `Up`/`Down` browsing.
+const SEARCH_HISTORY_LIMIT: usize = 50;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct SessionFileState {
     modified: Option<SystemTime>,
@@ -1196,6 +1199,15 @@ pub struct App {
     pub(crate) command_completion: Option<CommandCompletionState>,
     pub(crate) command_return_mode: InputMode,
     pub search_buffer: String,
+    /// Submitted `/` patterns, oldest first, shared by diff and help search.
+    /// Session-only; `Up`/`Down` walk it from the search prompt.
+    pub(crate) search_history: Vec<String>,
+    /// Index into `search_history` of the entry the prompt is showing.
+    /// `None` means the buffer is the line being typed.
+    pub(crate) search_history_idx: Option<usize>,
+    /// The typed line stashed when history browsing started, so stepping back
+    /// past the newest entry restores it.
+    pub(crate) search_history_draft: String,
     pub last_search_pattern: Option<String>,
     pub(crate) search_needle_lower: Option<String>,
     pub(crate) search_matches: Vec<usize>,

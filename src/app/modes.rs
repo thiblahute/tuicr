@@ -70,11 +70,63 @@ impl App {
         self.search_return_mode = self.input_mode;
         self.input_mode = InputMode::Search;
         self.search_buffer.clear();
+        self.reset_search_history_browsing();
     }
 
     pub fn exit_search_mode(&mut self) {
         self.input_mode = self.search_return_mode;
         self.search_buffer.clear();
+        self.reset_search_history_browsing();
+    }
+
+    /// Back to "the buffer is the line being typed". Called whenever the
+    /// buffer is edited, so the next `Up` starts from the fresh text.
+    pub(crate) fn reset_search_history_browsing(&mut self) {
+        self.search_history_idx = None;
+        self.search_history_draft.clear();
+    }
+
+    /// Record a submitted `/` pattern. Re-searching an older pattern moves it
+    /// back to the front rather than duplicating it, like vim.
+    pub(crate) fn push_search_history(&mut self, pattern: &str) {
+        if pattern.trim().is_empty() {
+            return;
+        }
+        self.search_history.retain(|entry| entry != pattern);
+        self.search_history.push(pattern.to_string());
+        if self.search_history.len() > SEARCH_HISTORY_LIMIT {
+            self.search_history.remove(0);
+        }
+    }
+
+    pub fn has_search_history(&self) -> bool {
+        !self.search_history.is_empty()
+    }
+
+    /// `Up` / `Down` in the search prompt: step to an older / newer entry.
+    /// Stops at both ends instead of wrapping; stepping past the newest entry
+    /// restores the line that was being typed.
+    pub fn browse_search_history(&mut self, older: bool) {
+        if self.search_history.is_empty() {
+            return;
+        }
+        let newest = self.search_history.len() - 1;
+        let next_idx = match (self.search_history_idx, older) {
+            (None, true) => {
+                self.search_history_draft = std::mem::take(&mut self.search_buffer);
+                Some(newest)
+            }
+            (None, false) => return,
+            (Some(0), true) => return,
+            (Some(idx), true) => Some(idx - 1),
+            (Some(idx), false) if idx == newest => None,
+            (Some(idx), false) => Some(idx + 1),
+        };
+        self.search_buffer = match next_idx {
+            Some(idx) => self.search_history[idx].clone(),
+            None => std::mem::take(&mut self.search_history_draft),
+        };
+        self.search_history_idx = next_idx;
     }
 
     pub fn searching_help(&self) -> bool {

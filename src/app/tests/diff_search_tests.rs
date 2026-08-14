@@ -273,3 +273,186 @@ fn should_clamp_counter_to_one_when_cursor_is_above_the_first_match() {
 
     assert_eq!(app.search_match_position(), Some((1, 2)));
 }
+
+mod history {
+    use super::*;
+    use crate::handler::handle_search_action;
+    use crate::input::Action;
+
+    /// Type `pattern` at the `/` prompt and press Enter, through the same
+    /// handler the event loop uses.
+    fn submit(app: &mut App, pattern: &str) {
+        app.enter_search_mode();
+        for c in pattern.chars() {
+            handle_search_action(app, Action::InsertChar(c));
+        }
+        handle_search_action(app, Action::SubmitInput);
+    }
+
+    fn type_chars(app: &mut App, text: &str) {
+        for c in text.chars() {
+            handle_search_action(app, Action::InsertChar(c));
+        }
+    }
+
+    #[test]
+    fn should_record_submitted_patterns_oldest_first() {
+        let mut app = searchable_app();
+
+        submit(&mut app, "needle");
+        submit(&mut app, "tail");
+
+        assert_eq!(app.search_history, vec!["needle", "tail"]);
+    }
+
+    #[test]
+    fn should_record_patterns_that_matched_nothing() {
+        let mut app = searchable_app();
+
+        submit(&mut app, "missing");
+
+        assert_eq!(app.search_history, vec!["missing"]);
+    }
+
+    #[test]
+    fn should_ignore_blank_patterns() {
+        let mut app = searchable_app();
+
+        submit(&mut app, "   ");
+        submit(&mut app, "");
+
+        assert!(app.search_history.is_empty());
+    }
+
+    #[test]
+    fn should_move_a_repeated_pattern_to_the_front_instead_of_duplicating_it() {
+        let mut app = searchable_app();
+
+        submit(&mut app, "needle");
+        submit(&mut app, "tail");
+        submit(&mut app, "needle");
+
+        assert_eq!(app.search_history, vec!["tail", "needle"]);
+    }
+
+    #[test]
+    fn should_drop_the_oldest_entry_past_the_limit() {
+        let mut app = searchable_app();
+
+        for idx in 0..SEARCH_HISTORY_LIMIT + 2 {
+            submit(&mut app, &format!("pattern{idx}"));
+        }
+
+        assert_eq!(app.search_history.len(), SEARCH_HISTORY_LIMIT);
+        assert_eq!(app.search_history.first().unwrap(), "pattern2");
+    }
+
+    #[test]
+    fn should_walk_back_and_forward_through_history_with_the_arrows() {
+        let mut app = searchable_app();
+        submit(&mut app, "needle");
+        submit(&mut app, "tail");
+        app.enter_search_mode();
+
+        handle_search_action(&mut app, Action::SearchHistoryPrev);
+        assert_eq!(app.search_buffer, "tail");
+        handle_search_action(&mut app, Action::SearchHistoryPrev);
+        assert_eq!(app.search_buffer, "needle");
+        handle_search_action(&mut app, Action::SearchHistoryNext);
+        assert_eq!(app.search_buffer, "tail");
+    }
+
+    #[test]
+    fn should_stop_at_both_ends_instead_of_wrapping() {
+        let mut app = searchable_app();
+        submit(&mut app, "needle");
+        app.enter_search_mode();
+
+        // Down on a fresh line: nothing to come back to.
+        handle_search_action(&mut app, Action::SearchHistoryNext);
+        assert_eq!(app.search_buffer, "");
+
+        handle_search_action(&mut app, Action::SearchHistoryPrev);
+        handle_search_action(&mut app, Action::SearchHistoryPrev);
+        assert_eq!(app.search_buffer, "needle");
+    }
+
+    #[test]
+    fn should_do_nothing_when_history_is_empty() {
+        let mut app = searchable_app();
+        app.enter_search_mode();
+        type_chars(&mut app, "ne");
+
+        handle_search_action(&mut app, Action::SearchHistoryPrev);
+
+        assert_eq!(app.search_buffer, "ne");
+    }
+
+    #[test]
+    fn should_restore_the_typed_line_when_stepping_forward_past_the_newest_entry() {
+        let mut app = searchable_app();
+        submit(&mut app, "needle");
+        app.enter_search_mode();
+        type_chars(&mut app, "half typed");
+
+        handle_search_action(&mut app, Action::SearchHistoryPrev);
+        assert_eq!(app.search_buffer, "needle");
+
+        handle_search_action(&mut app, Action::SearchHistoryNext);
+        assert_eq!(app.search_buffer, "half typed");
+    }
+
+    #[test]
+    fn should_restart_browsing_from_the_recalled_text_once_it_is_edited() {
+        let mut app = searchable_app();
+        submit(&mut app, "needle");
+        submit(&mut app, "tail");
+        app.enter_search_mode();
+
+        handle_search_action(&mut app, Action::SearchHistoryPrev);
+        assert_eq!(app.search_buffer, "tail");
+        // Editing turns the recalled entry into the draft...
+        handle_search_action(&mut app, Action::DeleteChar);
+        assert_eq!(app.search_buffer, "tai");
+
+        // ...so Up restarts at the newest entry, and Down comes back to it.
+        handle_search_action(&mut app, Action::SearchHistoryPrev);
+        assert_eq!(app.search_buffer, "tail");
+        handle_search_action(&mut app, Action::SearchHistoryNext);
+        assert_eq!(app.search_buffer, "tai");
+    }
+
+    #[test]
+    fn should_forget_the_browsing_position_between_prompts() {
+        let mut app = searchable_app();
+        submit(&mut app, "needle");
+        submit(&mut app, "tail");
+
+        app.enter_search_mode();
+        handle_search_action(&mut app, Action::SearchHistoryPrev);
+        handle_search_action(&mut app, Action::SearchHistoryPrev);
+        assert_eq!(app.search_buffer, "needle");
+        handle_search_action(&mut app, Action::ExitMode);
+
+        app.enter_search_mode();
+        assert_eq!(app.search_buffer, "");
+        handle_search_action(&mut app, Action::SearchHistoryPrev);
+        assert_eq!(app.search_buffer, "tail");
+    }
+
+    #[test]
+    fn should_share_one_history_between_diff_and_help_searches() {
+        let mut app = searchable_app();
+        submit(&mut app, "needle");
+
+        app.input_mode = InputMode::Help;
+        app.enter_search_mode();
+        assert!(app.searching_help());
+        handle_search_action(&mut app, Action::SearchHistoryPrev);
+        assert_eq!(app.search_buffer, "needle");
+        type_chars(&mut app, "s");
+        handle_search_action(&mut app, Action::SubmitInput);
+
+        assert_eq!(app.search_history, vec!["needle", "needles"]);
+    }
+}

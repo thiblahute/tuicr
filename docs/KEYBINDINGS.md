@@ -22,6 +22,7 @@ Full reference. Press `?` inside tuicr for an in-app version of this list.
 | `m` / `M` | Jump to next / previous comment. Settled threads are skipped while folded; `<leader>R` brings them back into the rotation |
 | `/` | Search within diff (case-insensitive); matches on diff content are highlighted and the status bar shows the `[current/total]` position (headers, comments, and PR info are searchable but not highlighted) |
 | `n` / `N` | Next / previous search match (wraps around) |
+| `↑` / `↓` | At the `/` prompt: recall the previous / next search pattern (see [Search history](#search-history)) |
 | `Esc` | Clear search-match highlighting; the pattern is kept so `n` / `N` still work |
 | `w` / `b` | Move cursor to next / previous word |
 | `*` / `#` | Search word under cursor forward / backward |
@@ -40,6 +41,15 @@ Press `?` to open help.
 | `n` / `N` | Next / previous help search match |
 | `j` / `k` | Scroll down / up |
 | `q` / `?` / `Esc` | Close help |
+
+## Search history
+
+Every pattern submitted at the `/` prompt is remembered for the session (the
+last 50, diff and help searches sharing one list). At the prompt, `↑` walks back
+through them and `↓` walks forward; going forward past the newest entry restores
+whatever was being typed when browsing started. Re-running an older pattern
+moves it to the front instead of duplicating it. Editing the recalled text
+restarts browsing from the new text. The history is not written to disk.
 
 ## File tree
 

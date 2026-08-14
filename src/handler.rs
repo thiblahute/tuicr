@@ -1145,12 +1145,26 @@ fn parse_lineno_command(cmd: &str) -> Option<(u32, LineSide)> {
 
 /// Handle actions in Search mode (text input for /pattern)
 pub fn handle_search_action(app: &mut App, action: Action) {
+    // Editing the recalled text makes it the new draft: the next Up starts
+    // over from what is on screen rather than from where history browsing was.
+    if matches!(
+        action,
+        Action::InsertChar(_)
+            | Action::Paste(_)
+            | Action::DeleteChar
+            | Action::DeleteWord
+            | Action::ClearLine
+    ) {
+        app.reset_search_history_browsing();
+    }
     match action {
         Action::InsertChar(c) => app.search_buffer.push(c),
         Action::Paste(text) => push_single_line(&mut app.search_buffer, &text),
         Action::DeleteChar => {
             app.search_buffer.pop();
         }
+        Action::SearchHistoryPrev => app.browse_search_history(true),
+        Action::SearchHistoryNext => app.browse_search_history(false),
         Action::DeleteWord if !app.search_buffer.is_empty() => {
             while app
                 .search_buffer
@@ -1176,11 +1190,15 @@ pub fn handle_search_action(app: &mut App, action: Action) {
         }
         Action::ExitMode => app.exit_search_mode(),
         Action::SubmitInput => {
+            let pattern = app.search_buffer.clone();
             if app.searching_help() {
                 app.search_in_help_from_scroll();
             } else {
                 app.search_in_diff_from_cursor();
             }
+            // Recorded even when nothing matched: a typo is worth recalling to
+            // fix, and vim keeps failed searches too.
+            app.push_search_history(&pattern);
             app.exit_search_mode();
         }
         Action::Quit => app.should_quit = true,
