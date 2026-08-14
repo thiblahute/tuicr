@@ -195,6 +195,13 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(vec![
             Span::styled(
+                "  \u{2191}/\u{2193}       ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Recall previous/next search pattern (at the / prompt)"),
+        ]),
+        Line::from(vec![
+            Span::styled(
                 "  Esc       ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),

@@ -320,6 +320,7 @@ A first-session cheatsheet. Press `?` inside tuicr for the full reference.
 | `/` | Search the diff by case-insensitive regex, or search the file tree/help by text — whichever is focused/open |
 | `n` / `N` | Next / previous search match (wraps); matches stay highlighted — `Esc` clears |
 | `*` / `#` | Search the word under the cursor |
+| `↑` / `↓` in `/` prompt | Recall the previous / next search pattern of the session |
 | `i` / `e` (file tree) | Filter files in / out by regex; narrows the tree **and** the diff |
 | `I` / `E` (file tree) | Clear the include / exclude filter |
 | `c` / `C` | Add line / file comment |
