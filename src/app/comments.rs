@@ -750,18 +750,84 @@ impl App {
         let Some(location) = self.find_comment_at_cursor() else {
             return false;
         };
+        // A thread goes as a unit, so note the root's id while it is still
+        // there: once `remove_comment` has taken it, nothing names the replies.
+        let root_id = self
+            .comment_at_location(&location)
+            .filter(|comment| !comment.is_reply())
+            .map(|comment| comment.id.clone());
         if !self.session.remove_comment(&location) {
             return false;
         }
+        let removed = 1 + root_id
+            .map(|id| self.remove_replies_to(&location, &id))
+            .unwrap_or(0);
         let message = match location {
-            CommentLocation::Review { .. } => "Review comment deleted".to_string(),
-            CommentLocation::File { .. } => "Comment deleted".to_string(),
-            CommentLocation::Line { line, .. } => format!("Comment on line {line} deleted"),
+            CommentLocation::Review { .. } => thread_deleted_message("Review comment", removed),
+            CommentLocation::File { .. } => thread_deleted_message("Comment", removed),
+            CommentLocation::Line { line, .. } => {
+                thread_deleted_message(&format!("Comment on line {line}"), removed)
+            }
         };
         self.dirty = true;
         self.set_message(message);
         self.rebuild_annotations();
         true
+    }
+
+    /// The stored comment a cursor location resolves to.
+    fn comment_at_location(&self, location: &CommentLocation) -> Option<&Comment> {
+        match location {
+            CommentLocation::Review { index } => self.session.review_comments.get(*index),
+            CommentLocation::File { path, index } => self
+                .session
+                .files
+                .get(path)
+                .and_then(|review| review.file_comments.get(*index)),
+            CommentLocation::Line {
+                path, line, index, ..
+            } => self
+                .session
+                .files
+                .get(path)
+                .and_then(|review| review.line_comments.get(line))
+                .and_then(|comments| comments.get(*index)),
+        }
+    }
+
+    /// Drop every reply to `root_id` from the list `location` points into, and
+    /// return how many went. An orphaned reply would render as a bare
+    /// `\u{21b3} @name` box answering nothing.
+    fn remove_replies_to(&mut self, location: &CommentLocation, root_id: &str) -> usize {
+        let line_key = match location {
+            CommentLocation::Line { path, line, .. } => Some((path.clone(), *line)),
+            _ => None,
+        };
+        let comments = match location {
+            CommentLocation::Review { .. } => Some(&mut self.session.review_comments),
+            CommentLocation::File { path, .. } => self
+                .session
+                .get_file_mut(path)
+                .map(|review| &mut review.file_comments),
+            CommentLocation::Line { path, line, .. } => self
+                .session
+                .get_file_mut(path)
+                .and_then(|review| review.line_comments.get_mut(line)),
+        };
+        let Some(comments) = comments else {
+            return 0;
+        };
+        let before = comments.len();
+        comments.retain(|comment| comment.in_reply_to.as_deref() != Some(root_id));
+        let removed = before - comments.len();
+        let now_empty = comments.is_empty();
+        if let Some((path, line)) = line_key
+            && now_empty
+            && let Some(review) = self.session.get_file_mut(&path)
+        {
+            review.line_comments.remove(&line);
+        }
+        removed
     }
 
     pub fn clear_comments(&mut self, scope: ClearScope) {
@@ -1240,5 +1306,14 @@ impl App {
             label
         };
         self.set_message(format!("Comment type: {display}"));
+    }
+}
+
+/// Status line for a deletion that may have taken replies with it.
+fn thread_deleted_message(subject: &str, removed: usize) -> String {
+    match removed {
+        0 | 1 => format!("{subject} deleted"),
+        2 => format!("{subject} and its reply deleted"),
+        n => format!("{subject} and its {} replies deleted", n - 1),
     }
 }

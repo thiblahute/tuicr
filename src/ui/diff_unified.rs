@@ -15,8 +15,8 @@ use crate::model::{FileStatus, LineOrigin, LineRange, LineSide};
 use crate::theme::Theme;
 use crate::ui::comment_panel;
 use crate::ui::diff_view::{
-    apply_horizontal_scroll, comment_box_visible, comment_type_presentation, cursor_indicator,
-    cursor_indicator_spaced, diff_stat_title, hunk_header_text_and_style,
+    apply_horizontal_scroll, comment_bar_range, comment_box_visible, comment_type_presentation,
+    cursor_indicator, cursor_indicator_spaced, diff_stat_title, hunk_header_text_and_style,
     paint_cursor_line_highlight, paint_unified_diff_rows_with, paint_visual_selection_overlay,
     populate_row_to_annotation, push_comment_bar, render_expander_line, render_hidden_lines,
     scroll_comment_input_into_view, skip_comment_box, unified_line_bg_style,
@@ -186,7 +186,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                 &comment.content,
                 None,
                 comment_width,
-                (comment.author != app.username).then_some(comment.author.as_str()),
+                comment_panel::CommentBadge::for_comment(comment, &app.username),
             );
             for mut comment_line in comment_lines {
                 let indicator = cursor_indicator(line_idx, current_line_idx);
@@ -390,7 +390,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                         &comment.content,
                         None,
                         comment_width,
-                        (comment.author != app.username).then_some(comment.author.as_str()),
+                        comment_panel::CommentBadge::for_comment(comment, &app.username),
                     );
                     for mut comment_line in comment_lines {
                         let indicator = cursor_indicator(line_idx, current_line_idx);
@@ -775,7 +775,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                                         push_comment_bar(
                                             &mut comment_bars,
                                             box_top_row,
-                                            line_range,
+                                            comment_bar_range(comment, line_range),
                                         );
                                     } else {
                                         let line_range = comment
@@ -805,8 +805,10 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                                                 &comment.content,
                                                 line_range,
                                                 comment_width,
-                                                (comment.author != app.username)
-                                                    .then_some(comment.author.as_str()),
+                                                comment_panel::CommentBadge::for_comment(
+                                                    comment,
+                                                    &app.username,
+                                                ),
                                             );
                                             for mut comment_line in comment_lines {
                                                 let is_current = line_idx == current_line_idx;
@@ -828,7 +830,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                                         push_comment_bar(
                                             &mut comment_bars,
                                             box_top_row,
-                                            line_range,
+                                            comment_bar_range(comment, line_range),
                                         );
                                     }
                                 }
@@ -965,7 +967,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                                         push_comment_bar(
                                             &mut comment_bars,
                                             box_top_row,
-                                            line_range,
+                                            comment_bar_range(comment, line_range),
                                         );
                                     } else {
                                         let line_range = comment
@@ -995,8 +997,10 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                                                 &comment.content,
                                                 line_range,
                                                 comment_width,
-                                                (comment.author != app.username)
-                                                    .then_some(comment.author.as_str()),
+                                                comment_panel::CommentBadge::for_comment(
+                                                    comment,
+                                                    &app.username,
+                                                ),
                                             );
                                             for mut comment_line in comment_lines {
                                                 let indicator =
@@ -1017,7 +1021,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                                         push_comment_bar(
                                             &mut comment_bars,
                                             box_top_row,
-                                            line_range,
+                                            comment_bar_range(comment, line_range),
                                         );
                                     }
                                 }
