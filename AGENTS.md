@@ -229,6 +229,13 @@ Repository-managed agent integrations:
 
 ## Forge integration
 
+Local comment threads (a comment plus `in_reply_to` replies) submit as **one**
+forge comment: `forge::submit::fold_threads` quotes each reply under its root
+before mapping, so a conversation does not scatter into several comments on the
+same line. A reply whose root has already been pushed stays local — the root is
+not resubmitted, so there is nothing to fold it into; reply on the remote thread
+itself (`c` on it in PR mode) to put that answer on the forge.
+
 Forge review (`tuicr pr <target>`, `tuicr mr <target>`, or their explicit `tuicr tui` forms) is the only feature in `src/forge/`. GitHub operations shell out to `gh`; GitLab operations shell out to `glab`; Bitbucket Cloud operations shell out to `bkt`.
 
 Forge selection is host-driven: `parse_any_remote_url` tries Bitbucket (`bitbucket.org` only), then GitLab (host contains `gitlab`, or matches `glab config get host`), then GitHub. GitHub must stay last — its parser accepts any host, so it would otherwise claim every Bitbucket and self-hosted GitLab remote. Bitbucket Data Center is deliberately unsupported: it speaks REST 1.0, so those remotes are not claimed at all.
@@ -379,8 +386,13 @@ Each comment is numbered and self-contained:
 
 - `{n}. **[TYPE]** \`{file}:{line}\` - {content}` (line comment)
 - `{n}. **[TYPE]** \`{file}\` - {content}` (file comment)
+- `   - @{author} - {content}` (a reply, under the comment it answers)
 
-You can reference comments by number (e.g., "Regarding comment #2...").
+You can reference comments by number (e.g., "Regarding comment #2..."). A reply
+shares its root's number: a thread is one piece of feedback, so it is numbered
+once. Reply to a comment with `tuicr review reply --comment-id <id>` (see
+[docs/REVIEW_CLI.md](docs/REVIEW_CLI.md)) — the reviewer sees it in place, in
+the running TUI.
 
 ### How to Respond
 
