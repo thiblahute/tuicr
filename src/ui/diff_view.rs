@@ -808,6 +808,17 @@ pub(super) fn skip_comment_box(lines: &mut Vec<Line<'_>>, line_idx: &mut usize, 
     *line_idx += rows;
 }
 
+/// The bar range a comment box should record. A reply's box hangs directly
+/// under the comment it answers, so its own bar would be painted straight
+/// through that box: replies record none, exactly as remote thread replies
+/// (which share one box) never get a second bar.
+pub(super) fn comment_bar_range(
+    comment: &crate::model::Comment,
+    line_range: Option<crate::model::LineRange>,
+) -> Option<crate::model::LineRange> {
+    if comment.is_reply() { None } else { line_range }
+}
+
 /// Per-call-site helper: record a bar anchor if the comment has a line
 /// range. No-op for file-level / review-level comments which don't anchor
 /// to a covered line span.

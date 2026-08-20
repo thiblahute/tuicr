@@ -471,22 +471,70 @@ pub(crate) fn markdown_body_lines(
     out
 }
 
+/// How a local comment box announces itself in its top border.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum CommentBadge<'a> {
+    /// The reader's own comment: no author badge, type-colored border.
+    #[default]
+    Own,
+    /// Someone else's comment: `[@name]` badge and an author-colored border.
+    Author(&'a str),
+    /// A reply in a local thread: the `↳ @name` header remote threads use, so
+    /// a thread reads the same whether it lives here or on the forge.
+    Reply(&'a str),
+}
+
+impl<'a> CommentBadge<'a> {
+    /// Badge for a stored comment, as seen by `username`. Replies keep the
+    /// reply header even when the reader wrote them — it is what marks the box
+    /// as a continuation rather than a second comment on the same line.
+    pub fn for_comment(comment: &'a crate::model::Comment, username: &str) -> Self {
+        if comment.is_reply() {
+            Self::Reply(&comment.author)
+        } else if comment.author != username {
+            Self::Author(&comment.author)
+        } else {
+            Self::Own
+        }
+    }
+
+    /// Badge for a box whose author is known but which is not part of a local
+    /// thread (remote PR conversation comments).
+    pub fn from_author(author: Option<&'a str>) -> Self {
+        match author {
+            Some(name) => Self::Author(name),
+            None => Self::Own,
+        }
+    }
+
+    fn author(self) -> Option<&'a str> {
+        match self {
+            Self::Own => None,
+            Self::Author(name) | Self::Reply(name) => Some(name),
+        }
+    }
+
+    fn is_reply(self) -> bool {
+        matches!(self, Self::Reply(_))
+    }
+}
+
 /// Format a comment as multiple lines with a box border (themed version).
 ///
-/// `author` advertises the comment's author in the top-row badge and tints
-/// the box border. Callers pass `Some(name)` for non-self comments — the
-/// resulting badge reads `[TYPE @name]`, mirroring the remote forge badge
-/// format used for remote PR threads. `None` keeps the existing neutral
-/// `[TYPE]` badge and theme border.
+/// `badge` sets the top-row badge and tints the box border: `Own` keeps the
+/// neutral `[TYPE]` badge and theme border, `Author` reads `[TYPE @name]` and
+/// tints the border to the author, and `Reply` adds the `↳ @name` header that
+/// a local thread shares with remote forge threads.
 pub fn format_comment_lines(
     theme: &Theme,
     comment_type: CommentTypePresentation,
     content: &str,
     line_range: Option<LineRange>,
     width: usize,
-    author: Option<&str>,
+    badge: CommentBadge<'_>,
 ) -> Vec<Line<'static>> {
     let type_style = styles::comment_type_style(theme, comment_type.color);
+    let author = badge.author();
     let border_style = match author {
         Some(name) => Style::default()
             .fg(styles::author_color_for(name))
@@ -495,8 +543,10 @@ pub fn format_comment_lines(
     };
 
     // `None` comments have an empty label: drop the `[TYPE]` badge, keeping the
-    // author tag when present so per-author coloring still reads.
+    // author tag when present so per-author coloring still reads. A reply shows
+    // the `↳ @name` header instead — it has no type of its own.
     let badge_text = match (author, comment_type.label.is_empty()) {
+        (Some(name), _) if badge.is_reply() => format!("↳ @{name} "),
         (Some(name), true) => format!("[@{name}] "),
         (Some(name), false) => format!("[{} @{name}] ", comment_type.label),
         (None, true) => String::new(),
@@ -505,6 +555,8 @@ pub fn format_comment_lines(
     let badge_width = badge_text.width();
 
     let line_info = match line_range {
+        // A reply repeats no anchor: its root's header already showed it.
+        _ if badge.is_reply() => String::new(),
         Some(range) if range.is_single() => format!("L{} ", range.start),
         Some(range) => format!("L{}-L{} ", range.start, range.end),
         None => String::new(),
@@ -517,7 +569,13 @@ pub fn format_comment_lines(
 
     let mut result = Vec::new();
 
-    let top_corner = if line_range.is_some() { '├' } else { '╭' };
+    // A reply hangs under the comment it answers, so it tees even at review
+    // scope; a root only tees when a bar connects it to its diff line.
+    let top_corner = if line_range.is_some() || badge.is_reply() {
+        '├'
+    } else {
+        '╭'
+    };
     let top_prefix = format!("    {top_corner}── ");
 
     // Top border — fill dynamically so total line = width.
@@ -637,7 +695,7 @@ mod tests {
                     // What every call site passes: the viewport minus the
                     // cursor-indicator column.
                     viewport_width.saturating_sub(1),
-                    None,
+                    CommentBadge::Own,
                 );
                 assert_eq!(
                     App::comment_display_lines(&comment, viewport_width),
@@ -1078,7 +1136,7 @@ mod tests {
             content,
             None,
             80,
-            None,
+            CommentBadge::Own,
         );
         // Header + footer wrap the body; reconstruct must round-trip the text.
         assert_eq!(reconstruct(&lines), content);

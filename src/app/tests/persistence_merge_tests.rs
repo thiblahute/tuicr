@@ -100,3 +100,34 @@ fn should_apply_external_edit_when_comment_is_unchanged_locally() {
         "new"
     );
 }
+
+#[test]
+fn should_merge_an_external_reply_into_an_open_session() {
+    // The agent's `tuicr review reply` writes to the session file; the review
+    // watch tick merges it in without the reviewer doing anything.
+    let mut base = test_session();
+    push_file_comment(&mut base, "root", "handle the empty case");
+    let mut current = base.clone();
+    let mut latest = base.clone();
+
+    let mut reply = comment("reply", "fixed in def4567");
+    reply.author = "Claude".to_string();
+    reply.in_reply_to = Some("root".to_string());
+    latest
+        .get_file_mut(&PathBuf::from("src/main.rs"))
+        .unwrap()
+        .file_comments
+        .push(reply);
+
+    let changed = App::merge_external_session_changes(&mut current, &base, &latest);
+
+    assert_eq!(changed, 1);
+    assert_eq!(file_comment_ids(&current), vec!["root", "reply"]);
+    let merged = &current
+        .files
+        .get(&PathBuf::from("src/main.rs"))
+        .unwrap()
+        .file_comments[1];
+    assert_eq!(merged.in_reply_to.as_deref(), Some("root"));
+    assert_eq!(merged.author, "Claude");
+}

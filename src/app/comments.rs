@@ -678,17 +678,17 @@ impl App {
             Some(CommentLocation::Review { index })
                 if index < self.session.review_comments.len() =>
             {
-                self.session.review_comments.remove(index);
+                let removed = remove_comment_thread(&mut self.session.review_comments, index);
                 self.dirty = true;
-                self.set_message("Review comment deleted");
+                self.set_message(thread_deleted_message("Review comment", removed));
                 self.rebuild_annotations();
                 return true;
             }
             Some(CommentLocation::File { path, index }) => {
                 if let Some(review) = self.session.get_file_mut(&path) {
-                    review.file_comments.remove(index);
+                    let removed = remove_comment_thread(&mut review.file_comments, index);
                     self.dirty = true;
-                    self.set_message("Comment deleted");
+                    self.set_message(thread_deleted_message("Comment", removed));
                     self.rebuild_annotations();
                     return true;
                 }
@@ -708,12 +708,15 @@ impl App {
                     if index < comments.len() {
                         let comment_side = comments[index].side.unwrap_or(LineSide::New);
                         if comment_side == side {
-                            comments.remove(index);
+                            let removed = remove_comment_thread(comments, index);
                             if comments.is_empty() {
                                 review.line_comments.remove(&line);
                             }
                             self.dirty = true;
-                            self.set_message(format!("Comment on line {line} deleted"));
+                            self.set_message(thread_deleted_message(
+                                &format!("Comment on line {line}"),
+                                removed,
+                            ));
                             self.rebuild_annotations();
                             return true;
                         }
@@ -1201,5 +1204,27 @@ impl App {
             label
         };
         self.set_message(format!("Comment type: {display}"));
+    }
+}
+
+/// Remove the comment at `index` and, when it is a thread root, every reply to
+/// it. A thread is deleted as a unit: an orphaned reply would render as a bare
+/// `↳ @name` box answering nothing. Returns how many comments were removed.
+fn remove_comment_thread(comments: &mut Vec<Comment>, index: usize) -> usize {
+    let removed = comments.remove(index);
+    if removed.is_reply() {
+        return 1;
+    }
+    let before = comments.len();
+    comments.retain(|c| c.in_reply_to.as_deref() != Some(removed.id.as_str()));
+    1 + before - comments.len()
+}
+
+/// Status line for a deletion that may have taken replies with it.
+fn thread_deleted_message(subject: &str, removed: usize) -> String {
+    match removed {
+        0 | 1 => format!("{subject} deleted"),
+        2 => format!("{subject} and its reply deleted"),
+        n => format!("{subject} and its {} replies deleted", n - 1),
     }
 }

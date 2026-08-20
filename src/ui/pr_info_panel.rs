@@ -294,7 +294,7 @@ fn format_issue_comment_lines(
         &comment.body,
         None,
         width,
-        comment.author.as_deref(),
+        comment_panel::CommentBadge::from_author(comment.author.as_deref()),
     )
 }
 
