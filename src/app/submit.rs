@@ -24,7 +24,7 @@ impl App {
     ) {
         use crate::forge::submit::{
             CommentAnchor, InlineComment, ResolverAction, SubmitContext, UnmappableItem,
-            map_comment,
+            fold_threads, map_comment,
         };
 
         let DiffSource::PullRequest(pr) = &self.diff_source else {
@@ -75,7 +75,7 @@ impl App {
             let Some(review) = self.session.files.get(file.display_path()) else {
                 continue;
             };
-            for comment in &review.file_comments {
+            for comment in &fold_threads(&review.file_comments) {
                 if comment.is_locked() || !self.comment_visible(comment) {
                     continue;
                 }
@@ -89,7 +89,7 @@ impl App {
             let mut keys: Vec<&u32> = review.line_comments.keys().collect();
             keys.sort();
             for key in keys {
-                for comment in &review.line_comments[key] {
+                for comment in &fold_threads(&review.line_comments[key]) {
                     if comment.is_locked() || !self.comment_visible(comment) {
                         continue;
                     }
@@ -539,22 +539,35 @@ impl App {
             return;
         }
 
+        // A folded thread went out as one comment under its root's id, so the
+        // replies quoted inside it are published too. They have to lock with
+        // the root: left as drafts they would survive `prune_locked_comments`
+        // as replies to a comment that is no longer there, and could never be
+        // submitted again.
+        let was_sent = |comment: &crate::model::Comment| {
+            target_ids.contains(comment.id.as_str())
+                || comment
+                    .in_reply_to
+                    .as_deref()
+                    .is_some_and(|root| target_ids.contains(root))
+        };
+
         for comment in self.session.review_comments.iter_mut() {
-            if target_ids.contains(comment.id.as_str()) {
+            if was_sent(comment) {
                 comment.lifecycle_state = new_state;
                 comment.remote_review_id = Some(review_id.clone());
             }
         }
         for review in self.session.files.values_mut() {
             for comment in review.file_comments.iter_mut() {
-                if target_ids.contains(comment.id.as_str()) {
+                if was_sent(comment) {
                     comment.lifecycle_state = new_state;
                     comment.remote_review_id = Some(review_id.clone());
                 }
             }
             for comments in review.line_comments.values_mut() {
                 for comment in comments.iter_mut() {
-                    if target_ids.contains(comment.id.as_str()) {
+                    if was_sent(comment) {
                         comment.lifecycle_state = new_state;
                         comment.remote_review_id = Some(review_id.clone());
                     }

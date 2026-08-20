@@ -11,15 +11,15 @@ use crate::error::{Result, TuicrError};
 use crate::forge::remote_comments::{
     PrCommentsVisibility, RemoteReviewThread, filter_threads, group_threads_by_path,
 };
-use crate::model::{CommentType, LineRange, LineSide, ReviewSession};
+use crate::model::{Comment, CommentType, LineRange, LineSide, ReviewSession};
 use crate::slug::short_sha;
-/// (file_path, line_range, side, comment_type, content, commit_id)
+/// (file_path, line_range, side, comment_type, comment, commit_id)
 type CommentEntry<'a> = (
     String,
     Option<LineRange>,
     Option<LineSide>,
     String,
-    &'a str,
+    &'a Comment,
     Option<&'a str>,
 );
 
@@ -360,7 +360,7 @@ fn generate_markdown(
             None,
             None,
             export_comment_type_label(&comment.comment_type, comment_types),
-            &comment.content,
+            comment,
             None,
         ));
     }
@@ -379,7 +379,7 @@ fn generate_markdown(
                 None,
                 None,
                 export_comment_type_label(&comment.comment_type, comment_types),
-                &comment.content,
+                comment,
                 comment.commit_id.as_deref(),
             ));
         }
@@ -399,7 +399,7 @@ fn generate_markdown(
                     line_range,
                     comment.side,
                     export_comment_type_label(&comment.comment_type, comment_types),
-                    &comment.content,
+                    comment,
                     comment.commit_id.as_deref(),
                 ));
             }
@@ -417,9 +417,24 @@ fn generate_markdown(
         }
         local_section_written = true;
     }
-    for (i, (file, line_range, side, comment_type, content, commit_id)) in
-        all_comments.iter().enumerate()
+    // Replies are printed under the comment they answer, not numbered as
+    // review items of their own — a thread is one piece of feedback.
+    // A reply whose root is gone stands on its own — dropping it would lose
+    // feedback that is still on screen in the TUI.
+    let roots: Vec<&CommentEntry> = all_comments
+        .iter()
+        .filter(|(.., comment, _)| {
+            comment.in_reply_to.as_deref().is_none_or(|root| {
+                !all_comments
+                    .iter()
+                    .any(|(.., other, _)| other.id.as_str() == root)
+            })
+        })
+        .collect();
+    for (i, (file, line_range, side, comment_type, comment, commit_id)) in
+        roots.iter().copied().enumerate()
     {
+        let content = &comment.content;
         let number = i + 1;
         let location = match (line_range, side) {
             // Range on deleted side (old lines)
@@ -461,6 +476,22 @@ fn generate_markdown(
         );
         for line in content_lines {
             let _ = writeln!(md, "{continuation_indent}{line}");
+        }
+        for (.., reply, _) in all_comments
+            .iter()
+            .filter(|(.., c, _)| c.in_reply_to.as_deref() == Some(comment.id.as_str()))
+        {
+            // Same shape the remote-thread section uses for its replies.
+            let mut reply_lines = reply.content.split('\n').map(|l| l.trim_end_matches('\r'));
+            let first = reply_lines.next().unwrap_or_default();
+            let _ = writeln!(
+                md,
+                "{continuation_indent}- @{author} - {first}",
+                author = reply.author
+            );
+            for line in reply_lines {
+                let _ = writeln!(md, "{continuation_indent}  {line}");
+            }
         }
     }
 

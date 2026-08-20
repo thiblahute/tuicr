@@ -338,3 +338,139 @@ fn should_still_open_a_fresh_comment_when_the_cursor_is_on_a_diff_line() {
     assert!(app.local_reply_target.is_none());
     assert_eq!(app.comment_line, Some((42, LineSide::New)));
 }
+
+#[test]
+fn should_fold_a_thread_into_one_comment_for_the_forge() {
+    let (mut session, root) = session_with_line_comment();
+    reply(&mut session, &root.id, "fixed in def4567");
+    reply(&mut session, &root.id, "and covered by a test");
+
+    let folded = crate::forge::submit::fold_threads(&line_thread(&session));
+
+    // One review comment, not three: a thread is one conversation.
+    assert_eq!(folded.len(), 1);
+    assert_eq!(folded[0].id, root.id);
+    assert!(folded[0].content.starts_with("handle the empty case"));
+    assert!(
+        folded[0].content.contains("> **@Claude**:"),
+        "{}",
+        folded[0].content
+    );
+    assert!(folded[0].content.contains("> fixed in def4567"));
+    assert!(folded[0].content.contains("> and covered by a test"));
+}
+
+#[test]
+fn should_export_replies_under_the_comment_they_answer() {
+    let (mut session, root) = session_with_line_comment();
+    reply(&mut session, &root.id, "fixed in def4567");
+    let other = Comment::new(
+        "unrelated".to_string(),
+        CommentType::from_id("note"),
+        Some(LineSide::New),
+    );
+    session
+        .get_file_mut(&PathBuf::from("src/main.rs"))
+        .unwrap()
+        .add_line_comment(43, other);
+
+    let md = crate::output::markdown::generate_export_content(
+        &session,
+        &DiffSource::WorkingTree,
+        &[],
+        &crate::config::ExportConfig::default(),
+        &[],
+        None,
+    )
+    .expect("export should render");
+
+    // The reply hangs off item 1 rather than taking a number of its own, so
+    // the unrelated comment stays item 2.
+    assert!(md.contains("- @Claude - fixed in def4567"), "{md}");
+    assert!(md.contains("2. **[NOTE]** `src/main.rs:43`"), "{md}");
+    assert!(!md.contains("3. "), "{md}");
+}
+
+#[test]
+fn should_carry_an_orphaned_reply_out_on_its_own() {
+    // The reviewer deleted the root in the TUI while the agent replied to it
+    // from the CLI; the merge keeps the reply. It must not vanish from the
+    // export or the forge payload just because its root is gone.
+    let (mut session, root) = session_with_line_comment();
+    reply(&mut session, &root.id, "fixed in def4567");
+    session
+        .get_file_mut(&PathBuf::from("src/main.rs"))
+        .unwrap()
+        .line_comments
+        .get_mut(&42)
+        .unwrap()
+        .retain(|c| c.id != root.id);
+
+    let folded = crate::forge::submit::fold_threads(&line_thread(&session));
+    assert_eq!(folded.len(), 1);
+    assert_eq!(folded[0].content, "fixed in def4567");
+
+    let md = crate::output::markdown::generate_export_content(
+        &session,
+        &DiffSource::WorkingTree,
+        &[],
+        &crate::config::ExportConfig::default(),
+        &[],
+        None,
+    )
+    .expect("export should render");
+    assert!(
+        md.contains("1. `src/main.rs:42` - fixed in def4567"),
+        "{md}"
+    );
+}
+
+#[test]
+fn should_lock_replies_with_the_root_they_were_submitted_inside() {
+    use crate::forge::submit::SubmitEvent;
+    use crate::model::comment::CommentLifecycleState;
+
+    let (mut session, root) = session_with_line_comment();
+    let reply = reply(&mut session, &root.id, "fixed in def4567");
+    let mut app = app_for(session);
+
+    // The thread went out as one inline comment, under the root's id.
+    let in_flight = SubmitInFlightState {
+        event: SubmitEvent::Comment,
+        mappable: vec![crate::forge::submit::InlineComment {
+            path: PathBuf::from("src/main.rs"),
+            line: 42,
+            side: crate::forge::submit::GhSide::Right,
+            counterpart_line: None,
+            start_line: None,
+            start_side: None,
+            range_anchors: None,
+            old_path: None,
+            body: "handle the empty case".to_string(),
+            comment_id: root.id.clone(),
+        }],
+        summary_comment_ids: Vec::new(),
+        review_comment_ids: Vec::new(),
+        moved_to_summary_count: 0,
+        head_sha_snapshot: "head".to_string(),
+        repository: crate::forge::traits::ForgeRepository::github("github.com", "agavra", "tuicr"),
+        pr_number: 125,
+        started_at: std::time::Instant::now(),
+    };
+    app.apply_submit_success(
+        &in_flight,
+        &crate::forge::traits::GhCreateReviewResponse {
+            id: 7,
+            html_url: "https://github.com/agavra/tuicr/pull/125".to_string(),
+            state: "COMMENTED".to_string(),
+        },
+    );
+
+    let thread = line_thread(&app.session);
+    // The reply's text is on the forge inside the root's body, so it locks
+    // with it — otherwise pruning the root would strand it.
+    assert_eq!(thread[0].lifecycle_state, CommentLifecycleState::Submitted);
+    assert_eq!(thread[1].id, reply.id);
+    assert_eq!(thread[1].lifecycle_state, CommentLifecycleState::Submitted);
+    assert_eq!(thread[1].remote_review_id.as_deref(), Some("7"));
+}

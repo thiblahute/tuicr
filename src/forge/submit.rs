@@ -233,6 +233,50 @@ fn build_inline_body(comment: &Comment, file_level: bool, ctx: SubmitContext<'_>
     format!("{prefix}{body}", body = comment.content)
 }
 
+/// Fold a bucket's local threads into one comment each, replies quoted under
+/// the root they answer.
+///
+/// A reply is not an independent review comment: submitted on its own it would
+/// land as a second comment on the same line, scattering one conversation
+/// across the diff. Folding keeps the forge's copy readable and leaves the
+/// mapping code below to deal with roots only.
+///
+/// A reply whose root has already been pushed stays local — the root is not
+/// resubmitted, so there is nothing here to fold it into. Reply on the remote
+/// thread itself (`c` on it in PR mode) to put that answer on the forge.
+pub fn fold_threads(comments: &[Comment]) -> Vec<Comment> {
+    let mut folded = Vec::new();
+    // A reply whose root is gone (deleted here while it was written from the
+    // CLI) stands on its own rather than being dropped with its thread.
+    let has_root = |comment: &Comment| {
+        comment
+            .in_reply_to
+            .as_deref()
+            .is_some_and(|root| comments.iter().any(|other| other.id == root))
+    };
+    for comment in comments {
+        if has_root(comment) {
+            continue;
+        }
+        let mut root = comment.clone();
+        for reply in comments
+            .iter()
+            .filter(|c| c.in_reply_to.as_deref() == Some(comment.id.as_str()))
+        {
+            root.content.push_str("\n\n");
+            let quoted: Vec<String> = reply
+                .content
+                .split('\n')
+                .map(|line| format!("> {line}").trim_end().to_string())
+                .collect();
+            root.content
+                .push_str(&format!("> **@{}**:\n{}", reply.author, quoted.join("\n")));
+        }
+        folded.push(root);
+    }
+    folded
+}
+
 /// Where a local comment is anchored. The caller knows this from how it
 /// walked the session (`file_comments` vs `line_comments[key]`); supplying
 /// it explicitly avoids inferring file-level-ness from missing fields on
