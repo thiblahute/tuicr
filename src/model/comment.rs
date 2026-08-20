@@ -192,6 +192,15 @@ pub struct Comment {
     /// comments are always shown.
     #[serde(default)]
     pub commit_id: Option<String>,
+    /// Root comment this one replies to, forming a local thread. `None` for a
+    /// thread root. Replies live in the same bucket as their root — same file,
+    /// same line, same review scope — so anchoring, persistence, and the
+    /// external-session merge treat them like any other comment. Threads are
+    /// flat: a reply to a reply carries the root's id, mirroring how forges
+    /// model review threads. Session JSON predating this field rehydrates as
+    /// `None`.
+    #[serde(default)]
+    pub in_reply_to: Option<String>,
 }
 
 impl Comment {
@@ -209,6 +218,7 @@ impl Comment {
             remote_review_id: None,
             remote_comment_id: None,
             commit_id: None,
+            in_reply_to: None,
         }
     }
 
@@ -232,6 +242,7 @@ impl Comment {
             remote_review_id: None,
             remote_comment_id: None,
             commit_id: None,
+            in_reply_to: None,
         }
     }
 
@@ -250,6 +261,19 @@ impl Comment {
     pub fn with_commit_id(mut self, commit_id: impl Into<String>) -> Self {
         self.commit_id = Some(commit_id.into());
         self
+    }
+
+    /// Builder: mark this comment as a reply to `root_id` and return self.
+    /// Used by `reply_to_comment_in_session` at the single point where a
+    /// reply is constructed.
+    pub fn with_in_reply_to(mut self, root_id: impl Into<String>) -> Self {
+        self.in_reply_to = Some(root_id.into());
+        self
+    }
+
+    /// True when this comment is a reply rather than a thread root.
+    pub fn is_reply(&self) -> bool {
+        self.in_reply_to.is_some()
     }
 
     /// True if this comment has been pushed/submitted to the forge and is
