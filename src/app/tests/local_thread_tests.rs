@@ -551,3 +551,28 @@ fn should_render_a_settled_thread_in_the_dim_palette() {
     // Same row count settled or not: the annotation model must not shift.
     assert_eq!(App::comment_display_lines(&settled, 80), lines.len());
 }
+
+#[test]
+fn should_mark_a_settled_thread_in_the_export() {
+    let (mut session, root) = session_with_line_comment();
+    reply(&mut session, &root.id, "fixed in def4567");
+    crate::review_store::set_thread_resolved(&mut session, &root.id, true).unwrap();
+
+    let md = crate::output::markdown::generate_export_content(
+        &session,
+        &DiffSource::WorkingTree,
+        &[],
+        &crate::config::ExportConfig::default(),
+        &[],
+        None,
+    )
+    .expect("export should render");
+
+    // Still exported — dropping feedback silently would be worse — but flagged
+    // so a reader knows it needs no action.
+    assert!(
+        md.contains("1. (resolved) **[ISSUE]** `src/main.rs:42`"),
+        "{md}"
+    );
+    assert!(md.contains("- @Claude - fixed in def4567"), "{md}");
+}
