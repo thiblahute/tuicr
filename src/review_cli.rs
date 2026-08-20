@@ -12,7 +12,7 @@ use crate::error::{Result, TuicrError};
 use crate::model::comment::{self, CommentLifecycleState};
 use crate::model::{Comment, CommentType, LineRange, LineSide, ReviewSession};
 use crate::review_store::{
-    AddCommentRequest, CommentTarget, ReviewStore, SessionRef, SessionSummary,
+    AddCommentRequest, CommentTarget, ReplyRequest, ReviewStore, SessionRef, SessionSummary,
 };
 use crate::slug::Slug;
 
@@ -45,6 +45,24 @@ fn run_with_writer(command: ReviewCommand, out: &mut impl Write) -> Result<()> {
                 line,
                 end_line,
                 side,
+                username,
+                content,
+            },
+            out,
+        ),
+        ReviewCommand::Reply {
+            session,
+            comment_id,
+            input,
+            repo,
+            username,
+            content,
+        } => reply_to_comment(
+            &session,
+            &repo,
+            ReplyOptions {
+                comment_id,
+                input,
                 username,
                 content,
             },
@@ -111,6 +129,151 @@ fn add_comment(
         },
     )?;
     let output = CommentOutput::from_target(&target, &comment);
+    serde_json::to_writer_pretty(&mut *out, &output)?;
+    writeln!(out)?;
+    Ok(())
+}
+
+struct ReplyOptions {
+    comment_id: Option<String>,
+    input: Option<String>,
+    username: Option<String>,
+    content: Option<String>,
+}
+
+/// Payload accepted by `tuicr review reply --input`.
+#[derive(Debug, Deserialize)]
+struct ReplyPayload {
+    /// Id of the comment being replied to. `comment_id` and `in_reply_to` are
+    /// both accepted so the payload can be built straight from a
+    /// `review comments` entry either way.
+    #[serde(alias = "in_reply_to")]
+    comment_id: Option<String>,
+    content: Option<String>,
+    username: Option<String>,
+}
+
+/// Flags and JSON payload resolved into the parts of a reply. Flags win over
+/// JSON fields, matching `review add`.
+#[derive(Debug)]
+struct ReplyParts {
+    parent_id: String,
+    content: String,
+    username: Option<String>,
+}
+
+fn build_reply_parts(options: ReplyOptions) -> Result<ReplyParts> {
+    let ReplyOptions {
+        mut comment_id,
+        input,
+        mut username,
+        mut content,
+    } = options;
+
+    if let Some(input) = input {
+        let raw = read_json_input(&input)?;
+        let payload: ReplyPayload = serde_json::from_str(&raw)
+            .map_err(|err| TuicrError::InvalidInput(format!("invalid reply JSON: {err}")))?;
+        comment_id = comment_id.or(payload.comment_id);
+        content = content.or(payload.content);
+        username = username.or(payload.username);
+    }
+
+    let parent_id = comment_id
+        .map(|id| id.trim().to_string())
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| {
+            TuicrError::InvalidInput("reply needs --comment-id (or a JSON comment_id)".to_string())
+        })?;
+    let content = content
+        .map(|text| text.trim().to_string())
+        .filter(|text| !text.is_empty())
+        .ok_or_else(|| TuicrError::InvalidInput("reply cannot be empty".to_string()))?;
+
+    Ok(ReplyParts {
+        parent_id,
+        content,
+        username,
+    })
+}
+
+/// Resolve `--comment-id` against the session, accepting an unambiguous
+/// prefix the way git accepts short SHAs — copying a full UUID out of
+/// `review comments` to name a comment is needless friction.
+fn resolve_comment_id(session: &ReviewSession, wanted: &str) -> Result<String> {
+    let ids: Vec<&str> = session
+        .review_comments
+        .iter()
+        .chain(session.files.values().flat_map(|review| {
+            review
+                .file_comments
+                .iter()
+                .chain(review.line_comments.values().flatten())
+        }))
+        .map(|comment| comment.id.as_str())
+        .collect();
+
+    // An exact id wins outright: never let one comment's id being a prefix of
+    // another's turn a precise request into an ambiguity error.
+    if ids.contains(&wanted) {
+        return Ok(wanted.to_string());
+    }
+
+    let matches: Vec<&str> = ids
+        .iter()
+        .copied()
+        .filter(|id| id.starts_with(wanted))
+        .collect();
+    match matches.as_slice() {
+        [id] => Ok((*id).to_string()),
+        [] => Err(TuicrError::InvalidInput(format!(
+            "session has no comment with id {wanted}"
+        ))),
+        several => Err(TuicrError::InvalidInput(format!(
+            "comment id {wanted} is ambiguous — matches {}",
+            several.join(", ")
+        ))),
+    }
+}
+
+fn reply_to_comment(
+    session: &str,
+    repo: &Path,
+    options: ReplyOptions,
+    out: &mut impl Write,
+) -> Result<()> {
+    let ReplyParts {
+        parent_id,
+        content,
+        username,
+    } = build_reply_parts(options)?;
+
+    let store = ReviewStore::new();
+    let session_ref = resolve_session_ref(&store, repo, session)?;
+    let parent_id = resolve_comment_id(&store.get_review(&session_ref)?, &parent_id)?;
+    // Same config read the comment path does: the author fallback lives there.
+    let config = config::load_config()
+        .ok()
+        .and_then(|outcome| outcome.config);
+    let author = resolve_cli_author(username, config.as_ref());
+    let reply = store.reply_to_comment(
+        &session_ref,
+        ReplyRequest {
+            parent_id,
+            content,
+            author,
+        },
+    )?;
+
+    // Report the reply with its thread's anchor, so callers see where it
+    // landed without re-reading the whole session.
+    let session_data = store.get_review(&session_ref)?;
+    let output = collect_comments(&session_data)
+        .into_iter()
+        .find(|c| c.id == reply.id)
+        .ok_or_else(|| {
+            TuicrError::InvalidInput("reply was not found in the saved session".to_string())
+        })?;
     serde_json::to_writer_pretty(&mut *out, &output)?;
     writeln!(out)?;
     Ok(())
@@ -589,6 +752,13 @@ struct CommentOutput {
     comment_type: String,
     lifecycle_state: &'static str,
     created_at: String,
+    /// Who wrote the comment. Agents pass `--username`; the user's own
+    /// comments carry the config `username` or `"user"`. Callers use this to
+    /// tell their own replies from the comments they still have to answer.
+    author: String,
+    /// Set on replies: the id of the comment this one answers.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    in_reply_to: Option<String>,
     content: String,
 }
 
@@ -638,6 +808,8 @@ impl CommentOutput {
             comment_type: comment.comment_type.id().to_string(),
             lifecycle_state: lifecycle_id(comment.lifecycle_state),
             created_at: comment.created_at.to_rfc3339(),
+            author: comment.author.clone(),
+            in_reply_to: comment.in_reply_to.clone(),
             content: comment.content.clone(),
         }
     }
@@ -990,5 +1162,157 @@ mod tests {
 
         // then the warning is advisory only — the comment is still stored
         assert_eq!(comment.comment_type.id(), "isue");
+    }
+
+    #[test]
+    fn should_build_reply_parts_from_flags() {
+        let parts = build_reply_parts(ReplyOptions {
+            comment_id: Some("  abc-123  ".to_string()),
+            input: None,
+            username: Some("Claude".to_string()),
+            content: Some("  fixed in def4567  ".to_string()),
+        })
+        .unwrap();
+
+        assert_eq!(parts.parent_id, "abc-123");
+        assert_eq!(parts.content, "fixed in def4567");
+        assert_eq!(parts.username.as_deref(), Some("Claude"));
+    }
+
+    #[test]
+    fn should_build_reply_parts_from_json_using_the_in_reply_to_alias() {
+        let parts = build_reply_parts(ReplyOptions {
+            comment_id: None,
+            input: Some(
+                r#"{"in_reply_to":"abc-123","content":"done","username":"Claude"}"#.to_string(),
+            ),
+            username: None,
+            content: None,
+        })
+        .unwrap();
+
+        assert_eq!(parts.parent_id, "abc-123");
+        assert_eq!(parts.content, "done");
+        assert_eq!(parts.username.as_deref(), Some("Claude"));
+    }
+
+    #[test]
+    fn should_reject_a_reply_without_a_parent() {
+        let err = build_reply_parts(ReplyOptions {
+            comment_id: None,
+            input: None,
+            username: None,
+            content: Some("done".to_string()),
+        })
+        .unwrap_err();
+        assert!(matches!(err, TuicrError::InvalidInput(_)), "{err:?}");
+    }
+
+    #[test]
+    fn should_report_author_and_reply_link_in_comment_output() {
+        let temp = tempdir().unwrap();
+        let repo = temp.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let reviews = temp.path().join("reviews");
+        let store = ReviewStore::with_reviews_dir(&reviews);
+        let session_ref = store.save_review(&test_session(repo.clone())).unwrap();
+
+        let root = store
+            .add_comment(
+                &session_ref,
+                AddCommentRequest {
+                    target: CommentTarget::Line {
+                        path: PathBuf::from("src/main.rs"),
+                        line: 42,
+                        side: LineSide::New,
+                    },
+                    content: "check this".to_string(),
+                    comment_type: CommentType::from_id("issue"),
+                    author: comment::DEFAULT_AUTHOR.to_string(),
+                    commit_id: None,
+                },
+            )
+            .unwrap();
+        let reply = store
+            .reply_to_comment(
+                &session_ref,
+                ReplyRequest {
+                    parent_id: root.id.clone(),
+                    content: "fixed in def4567".to_string(),
+                    author: "Claude".to_string(),
+                },
+            )
+            .unwrap();
+
+        let mut out = Vec::new();
+        show_comments(&session_ref.path().display().to_string(), &repo, &mut out).unwrap();
+        let value: serde_json::Value =
+            serde_json::from_str(&String::from_utf8(out).unwrap()).unwrap();
+
+        assert_eq!(value[0]["id"], root.id);
+        assert_eq!(value[0]["author"], comment::DEFAULT_AUTHOR);
+        // A root carries no in_reply_to, so the field is omitted entirely.
+        assert!(value[0].get("in_reply_to").is_none());
+
+        assert_eq!(value[1]["id"], reply.id);
+        assert_eq!(value[1]["author"], "Claude");
+        assert_eq!(value[1]["in_reply_to"], root.id);
+        // The reply is reported at the root's anchor, not as a stray comment.
+        assert_eq!(value[1]["location"], "src/main.rs:42");
+    }
+
+    #[test]
+    fn should_resolve_a_comment_id_from_an_unambiguous_prefix() {
+        let mut session = test_session(PathBuf::from("/repo"));
+        let mut first = Comment::new("a".to_string(), CommentType::None, None);
+        first.id = "abc12345-0000-0000-0000-000000000000".to_string();
+        let mut second = Comment::new("b".to_string(), CommentType::None, None);
+        second.id = "def67890-0000-0000-0000-000000000000".to_string();
+        session.review_comments.push(first);
+        session
+            .get_file_mut(&PathBuf::from("src/main.rs"))
+            .unwrap()
+            .add_line_comment(7, second);
+
+        assert_eq!(
+            resolve_comment_id(&session, "abc1").unwrap(),
+            "abc12345-0000-0000-0000-000000000000"
+        );
+        // A line comment is reachable by prefix too, not just review scope.
+        assert_eq!(
+            resolve_comment_id(&session, "def").unwrap(),
+            "def67890-0000-0000-0000-000000000000"
+        );
+        // A full id still resolves to itself.
+        assert_eq!(
+            resolve_comment_id(&session, "abc12345-0000-0000-0000-000000000000").unwrap(),
+            "abc12345-0000-0000-0000-000000000000"
+        );
+    }
+
+    #[test]
+    fn should_reject_an_ambiguous_comment_id_prefix() {
+        let mut session = test_session(PathBuf::from("/repo"));
+        for suffix in ["1111", "2222"] {
+            let mut comment = Comment::new("x".to_string(), CommentType::None, None);
+            comment.id = format!("abc12345-0000-0000-0000-00000000{suffix}");
+            session.review_comments.push(comment);
+        }
+
+        let err = resolve_comment_id(&session, "abc").unwrap_err();
+        let TuicrError::InvalidInput(message) = &err else {
+            panic!("expected InvalidInput, got {err:?}");
+        };
+        // The message has to name the candidates, or the caller cannot pick.
+        assert!(message.contains("ambiguous"), "{message}");
+        assert!(message.contains("00001111"), "{message}");
+        assert!(message.contains("00002222"), "{message}");
+    }
+
+    #[test]
+    fn should_reject_a_comment_id_that_matches_nothing() {
+        let session = test_session(PathBuf::from("/repo"));
+        let err = resolve_comment_id(&session, "nope").unwrap_err();
+        assert!(matches!(err, TuicrError::InvalidInput(_)), "{err:?}");
     }
 }

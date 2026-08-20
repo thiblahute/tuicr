@@ -30,6 +30,7 @@ tuicr review list --repo slatedb/slatedb              # all sessions for a forge
 tuicr review list --all                               # every session across all repos
 tuicr review comments --session agavra/tuicr@main/worktree
 tuicr review comments --session gh:slatedb/slatedb/pr/1745
+tuicr review reply --session agavra/tuicr@main/worktree --comment-id <ID> "Fixed."
 ```
 
 All `tuicr review` commands emit JSON by default. Timestamps are RFC3339 strings
@@ -90,6 +91,37 @@ Target flags:
 - add `--line <n>` for a line comment
 - add `--end-line <n>` for a range comment
 - use `--side old|new` for inline comments
+
+## Reply To Comments
+
+`reply` answers an existing comment, forming a thread:
+
+```bash
+tuicr review reply --session agavra/tuicr@main/worktree \
+  --comment-id 79c9b3e1-0a7a-4efe-9d43-f7085d7c1a82 \
+  --username "Claude" \
+  "Fixed in def4567 — the empty case now returns early."
+```
+
+The id comes from `tuicr review comments`, and an unambiguous prefix works the
+way a short SHA does in git (`--comment-id 79c9b3e1`); an ambiguous one is an
+error naming the candidates. A reply is stored beside the comment it answers, so it inherits that comment's file, line, and side and
+needs no target flags of its own. Threads are one level deep: replying to a
+reply attaches to the same root. Replies carry no comment type — the body is
+stored as written.
+
+A TUI with the session open picks the reply up on its next poll (see
+`review_watch_interval_ms` in [CONFIG.md](CONFIG.md), default one second), so
+it appears in the reviewer's diff without any action on their part.
+
+`--input` takes the same JSON forms as `add`:
+
+```json
+{ "comment_id": "79c9b3e1-…", "content": "Fixed in def4567.", "username": "Claude" }
+```
+
+`in_reply_to` is accepted as an alias for `comment_id`, so an entry read from
+`review comments` can be echoed back with its own text.
 
 ## JSON Input
 
@@ -193,7 +225,27 @@ PR slug:
     "comment_type": "issue",
     "lifecycle_state": "local_draft",
     "created_at": "2026-05-22T17:20:00Z",
+    "author": "user",
     "content": "Handle the empty case here."
+  },
+  {
+    "id": "2f0a5c77-1b19-4d0e-9f42-6c1ac2b3e8d1",
+    "location": "src/main.rs:42",
+    "path": "src/main.rs",
+    "start_line": 42,
+    "end_line": 42,
+    "side": "new",
+    "comment_type": "none",
+    "lifecycle_state": "local_draft",
+    "created_at": "2026-05-22T17:24:00Z",
+    "author": "Claude",
+    "in_reply_to": "79c9b3e1-0a7a-4efe-9d43-f7085d7c1a82",
+    "content": "Fixed in def4567."
   }
 ]
 ```
+
+`author` distinguishes the user's comments from an agent's: agents pass
+`--username`, humans get the config `username` or `user`. `in_reply_to` is
+present only on replies and names the root comment of the thread. Together
+they are how a caller finds the comments it has not answered yet.

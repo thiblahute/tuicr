@@ -252,6 +252,44 @@ pub enum ReviewCommand {
         content: Option<String>,
     },
 
+    /// Reply to an existing comment in a persisted session, forming a thread.
+    Reply {
+        /// Session slug from `tuicr review list` (local or PR), or path to a
+        /// session JSON file.
+        #[arg(long, value_name = "SESSION")]
+        session: String,
+
+        /// Id of the comment to reply to, from `tuicr review comments`.
+        /// Replying to a reply attaches to that thread's root comment.
+        #[arg(long = "comment-id", value_name = "ID")]
+        comment_id: Option<String>,
+
+        /// JSON payload. Use literal JSON, @path/to/file.json, or - for stdin.
+        #[arg(long, value_name = "JSON|@FILE|-")]
+        input: Option<String>,
+
+        /// Repo selector used to resolve a local session slug (path or
+        /// `owner/repo`). PR slugs and JSON paths resolve without it.
+        #[arg(long, value_name = "PATH|OWNER/REPO", default_value = ".")]
+        repo: PathBuf,
+
+        /// Author stamped on the reply. Pass an explicit value when invoking
+        /// from an agent (e.g. `--username "Claude Opus 4.7"`) so the reply is
+        /// visually distinguished from the user's own comments — and so the
+        /// agent can tell which comments it has already answered.
+        #[arg(long, value_name = "NAME")]
+        username: Option<String>,
+
+        /// Reply text.
+        #[arg(
+            value_name = "REPLY",
+            required_unless_present = "input",
+            value_parser = non_empty_comment_text,
+            allow_hyphen_values = true
+        )]
+        content: Option<String>,
+    },
+
     /// Print comments stored in a persisted session.
     #[command(alias = "get")]
     Comments {

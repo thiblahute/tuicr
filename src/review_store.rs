@@ -83,6 +83,20 @@ impl ReviewStore {
         Ok(comment)
     }
 
+    /// Reply to an existing comment in a persisted session.
+    pub fn reply_to_comment(
+        &self,
+        session_ref: &SessionRef,
+        request: ReplyRequest,
+    ) -> Result<Comment> {
+        let reviews_dir = self.reviews_dir()?;
+        let (_session, comment) =
+            storage::update_session_in_dir(session_ref.path(), &reviews_dir, |session| {
+                reply_to_comment_in_session(session, request)
+            })?;
+        Ok(comment)
+    }
+
     /// Save a session through this store's storage root.
     pub fn save_review(&self, session: &ReviewSession) -> Result<SessionRef> {
         let reviews_dir = self.reviews_dir()?;
@@ -187,6 +201,18 @@ pub struct AddCommentRequest {
     pub commit_id: Option<String>,
 }
 
+/// Request to reply to an existing local comment, forming a thread.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplyRequest {
+    /// Id of the comment being replied to. A reply to a reply is flattened
+    /// onto that reply's root, so threads stay one level deep.
+    pub parent_id: String,
+    pub content: String,
+    /// Author to stamp on the reply. Agents pass their own name so the box
+    /// renders with an author badge.
+    pub author: String,
+}
+
 /// Where a new local draft comment should be attached.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommentTarget {
@@ -262,6 +288,81 @@ pub fn add_comment_to_session(
 
     session.updated_at = Utc::now();
     Ok(comment)
+}
+
+/// Add a reply to the local comment `parent_id` names, in the same session.
+///
+/// The reply is stored as a sibling of its root — same vec, so it inherits the
+/// root's anchor (file, line, side, review scope) for free and rides the same
+/// persistence and external-merge paths. It is placed directly after the last
+/// comment already in the thread so the thread stays contiguous, and carries
+/// no comment type: a reply's body posts as written.
+///
+/// This is the shared primitive used by the TUI and by [`ReviewStore`].
+pub fn reply_to_comment_in_session(
+    session: &mut ReviewSession,
+    request: ReplyRequest,
+) -> Result<Comment> {
+    let content = request.content.trim().to_string();
+    if content.is_empty() {
+        return Err(TuicrError::InvalidInput(
+            "reply cannot be empty".to_string(),
+        ));
+    }
+
+    let parent_id = request.parent_id;
+    let mut buckets: Vec<&mut Vec<Comment>> = vec![&mut session.review_comments];
+    for review in session.files.values_mut() {
+        buckets.push(&mut review.file_comments);
+        for comments in review.line_comments.values_mut() {
+            buckets.push(comments);
+        }
+    }
+
+    for bucket in buckets {
+        let Some(parent) = bucket.iter().find(|c| c.id == parent_id) else {
+            continue;
+        };
+        // Flatten: replying to a reply attaches to the thread's root.
+        let root_id = parent
+            .in_reply_to
+            .clone()
+            .unwrap_or_else(|| parent.id.clone());
+        let root = bucket
+            .iter()
+            .find(|c| c.id == root_id)
+            .unwrap_or(parent)
+            .clone();
+        let reply = Comment {
+            id: uuid::Uuid::new_v4().to_string(),
+            content,
+            comment_type: CommentType::None,
+            created_at: Utc::now(),
+            line_context: root.line_context.clone(),
+            side: root.side,
+            line_range: root.line_range,
+            author: request.author,
+            lifecycle_state: Default::default(),
+            remote_review_id: None,
+            remote_comment_id: None,
+            commit_id: root.commit_id.clone(),
+            in_reply_to: Some(root_id.clone()),
+        };
+        // After the last comment already in this thread, so replies read in
+        // posted order and the thread never interleaves with its neighbours.
+        let insert_at = bucket
+            .iter()
+            .rposition(|c| c.id == root_id || c.in_reply_to.as_deref() == Some(root_id.as_str()))
+            .map(|idx| idx + 1)
+            .unwrap_or(bucket.len());
+        bucket.insert(insert_at, reply.clone());
+        session.updated_at = Utc::now();
+        return Ok(reply);
+    }
+
+    Err(TuicrError::InvalidInput(format!(
+        "session has no comment with id {parent_id}"
+    )))
 }
 
 fn file_review_mut<'a>(
@@ -425,5 +526,174 @@ mod tests {
 
         let listed = store.list_sessions_for_repo(&repo).unwrap();
         assert_eq!(listed[0].comment_count, 1);
+    }
+
+    fn line_comment(session: &mut ReviewSession, content: &str, author: &str) -> Comment {
+        add_comment_to_session(
+            session,
+            AddCommentRequest {
+                target: CommentTarget::Line {
+                    path: PathBuf::from("src/main.rs"),
+                    line: 42,
+                    side: LineSide::New,
+                },
+                content: content.to_string(),
+                comment_type: CommentType::from_id("issue"),
+                author: author.to_string(),
+                commit_id: None,
+            },
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn should_store_a_reply_beside_its_root_comment() {
+        let mut session = test_session(PathBuf::from("/repo"));
+        let root = line_comment(&mut session, "handle the empty case", "user");
+
+        let reply = reply_to_comment_in_session(
+            &mut session,
+            ReplyRequest {
+                parent_id: root.id.clone(),
+                content: "fixed in abc1234".to_string(),
+                author: "Claude".to_string(),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(reply.in_reply_to.as_deref(), Some(root.id.as_str()));
+        assert_eq!(reply.author, "Claude");
+        // A reply posts verbatim: no type prefix or badge.
+        assert!(reply.comment_type.is_none());
+        // The anchor is inherited, so the reply renders in the root's thread.
+        assert_eq!(reply.side, root.side);
+        assert_eq!(reply.line_range, root.line_range);
+
+        let review = session.files.get(&PathBuf::from("src/main.rs")).unwrap();
+        let thread = review.line_comments.get(&42).unwrap();
+        assert_eq!(thread.len(), 2);
+        assert_eq!(thread[0].id, root.id);
+        assert_eq!(thread[1].id, reply.id);
+    }
+
+    #[test]
+    fn should_flatten_a_reply_to_a_reply_onto_the_root() {
+        let mut session = test_session(PathBuf::from("/repo"));
+        let root = line_comment(&mut session, "handle the empty case", "user");
+        let first = reply_to_comment_in_session(
+            &mut session,
+            ReplyRequest {
+                parent_id: root.id.clone(),
+                content: "fixed in abc1234".to_string(),
+                author: "Claude".to_string(),
+            },
+        )
+        .unwrap();
+
+        let second = reply_to_comment_in_session(
+            &mut session,
+            ReplyRequest {
+                parent_id: first.id.clone(),
+                content: "thanks".to_string(),
+                author: "user".to_string(),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(second.in_reply_to.as_deref(), Some(root.id.as_str()));
+        let review = session.files.get(&PathBuf::from("src/main.rs")).unwrap();
+        let thread = review.line_comments.get(&42).unwrap();
+        assert_eq!(
+            thread.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
+            vec![root.id.as_str(), first.id.as_str(), second.id.as_str()]
+        );
+    }
+
+    #[test]
+    fn should_keep_a_thread_contiguous_when_a_later_comment_shares_the_line() {
+        let mut session = test_session(PathBuf::from("/repo"));
+        let root = line_comment(&mut session, "first", "user");
+        let other = line_comment(&mut session, "unrelated", "user");
+
+        let reply = reply_to_comment_in_session(
+            &mut session,
+            ReplyRequest {
+                parent_id: root.id.clone(),
+                content: "done".to_string(),
+                author: "Claude".to_string(),
+            },
+        )
+        .unwrap();
+
+        let review = session.files.get(&PathBuf::from("src/main.rs")).unwrap();
+        let thread = review.line_comments.get(&42).unwrap();
+        assert_eq!(
+            thread.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
+            vec![root.id.as_str(), reply.id.as_str(), other.id.as_str()]
+        );
+    }
+
+    #[test]
+    fn should_reply_to_a_review_level_comment() {
+        let mut session = test_session(PathBuf::from("/repo"));
+        let root = add_comment_to_session(
+            &mut session,
+            AddCommentRequest {
+                target: CommentTarget::Review,
+                content: "overall looks good".to_string(),
+                comment_type: CommentType::None,
+                author: "user".to_string(),
+                commit_id: None,
+            },
+        )
+        .unwrap();
+
+        let reply = reply_to_comment_in_session(
+            &mut session,
+            ReplyRequest {
+                parent_id: root.id.clone(),
+                content: "noted".to_string(),
+                author: "Claude".to_string(),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(session.review_comments.len(), 2);
+        assert_eq!(session.review_comments[1].id, reply.id);
+    }
+
+    #[test]
+    fn should_reject_a_reply_to_an_unknown_comment() {
+        let mut session = test_session(PathBuf::from("/repo"));
+
+        let err = reply_to_comment_in_session(
+            &mut session,
+            ReplyRequest {
+                parent_id: "does-not-exist".to_string(),
+                content: "hello".to_string(),
+                author: "Claude".to_string(),
+            },
+        )
+        .unwrap_err();
+
+        assert!(matches!(err, TuicrError::InvalidInput(_)), "{err:?}");
+    }
+
+    #[test]
+    fn should_reject_an_empty_reply() {
+        let mut session = test_session(PathBuf::from("/repo"));
+        let root = line_comment(&mut session, "handle the empty case", "user");
+
+        let err = reply_to_comment_in_session(
+            &mut session,
+            ReplyRequest {
+                parent_id: root.id,
+                content: "   ".to_string(),
+                author: "Claude".to_string(),
+            },
+        )
+        .unwrap_err();
+
+        assert!(matches!(err, TuicrError::InvalidInput(_)), "{err:?}");
     }
 }
