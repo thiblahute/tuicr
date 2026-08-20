@@ -460,6 +460,10 @@ fn generate_markdown(
             Some(sha) => format!(" (commit {})", short_sha(sha)),
             None => String::new(),
         };
+        // A settled thread still exports — dropping feedback silently is worse
+        // than a reader skipping a line — but says so, so an agent reading the
+        // review knows it needs no action.
+        let resolved_marker = if comment.resolved { "(resolved) " } else { "" };
         let marker = format!("{number}.");
         let continuation_indent = " ".repeat(marker.len() + 1);
         let mut content_lines = content.split('\n').map(|line| line.trim_end_matches('\r'));
@@ -472,7 +476,7 @@ fn generate_markdown(
         };
         let _ = writeln!(
             md,
-            "{marker} {type_marker}{location}{commit_suffix} - {first_line}"
+            "{marker} {resolved_marker}{type_marker}{location}{commit_suffix} - {first_line}"
         );
         for line in content_lines {
             let _ = writeln!(md, "{continuation_indent}{line}");

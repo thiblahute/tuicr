@@ -167,6 +167,7 @@ The command emits JSON. Each comment includes fields like:
 - `lifecycle_state`
 - `author`
 - `in_reply_to` (replies only — the id of the comment being answered)
+- `resolved` (the whole thread is settled; skip it)
 - `content`
 
 Treat these comments as the user's review feedback:
@@ -211,7 +212,10 @@ Rules for the loop:
 
 - Work in threads, not in single comments. A thread is a root comment plus
   every comment whose `in_reply_to` is that root's `id`; sort it by
-  `created_at`. **A thread needs an answer when its last entry is not yours.**
+  `created_at`. **A thread needs an answer when it is not `resolved` and its
+  last entry is not yours.** `resolved` is the user's explicit "this is done" —
+  honour it even if the last word is theirs, and never reopen a thread just to
+  have the last word.
   Do not ask whether a particular comment has a reply pointing at it: replies
   always point at the thread's root, so a mid-thread comment can never be
   matched that way and you will keep re-reading it as unanswered.
@@ -233,6 +237,21 @@ Rules for the loop:
 `--input` takes the same JSON as `review add`, with `comment_id` (or
 `in_reply_to`) alongside `content`, which is convenient for batching a round of
 replies from a script.
+
+### Resolving
+
+```bash
+tuicr review resolve --repo /path/to/repo --session <slug> --comment-id <id>
+```
+
+Resolve a thread when you have finished the work it asked for and nothing is
+left to discuss — it dims in the user's diff and drops out of your loop. Be
+conservative: leave the thread open when you answered with a question, when you
+declined the request, or when the user may still want to push back. Resolving
+your own answer is not a way to close a disagreement. The user can reopen a
+thread with `:unresolve`; their replies in the TUI reopen it automatically.
+Your CLI replies do not reopen a thread the user has already resolved — if
+your answer needs their eyes on a settled thread, say so outside the thread.
 
 ## Add Agent Comments
 
