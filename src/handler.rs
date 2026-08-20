@@ -109,6 +109,8 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         &["comments hide"],
         CommandKind::Comments(PrCommentsVisibility::Hide),
     ),
+    CommandSpec::new(&["resolve"], CommandKind::SetThreadResolved(true)),
+    CommandSpec::new(&["unresolve"], CommandKind::SetThreadResolved(false)),
 ];
 
 /// CommandSpec is the single registry entry used by both completion and
@@ -162,6 +164,8 @@ enum CommandKind {
     Submit(SubmitEvent),
     Comments(PrCommentsVisibility),
     ThemePicker,
+    /// Settle (or reopen) the local comment thread under the cursor.
+    SetThreadResolved(bool),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1014,6 +1018,10 @@ fn dispatch_command(app: &mut App, kind: CommandKind) -> CommandAfterDispatch {
         }
         CommandKind::Comments(visibility) => {
             set_remote_comments_visibility(app, visibility);
+            CommandAfterDispatch::ExitCommandMode
+        }
+        CommandKind::SetThreadResolved(resolved) => {
+            app.set_thread_resolved_at_cursor(resolved);
             CommandAfterDispatch::ExitCommandMode
         }
     }

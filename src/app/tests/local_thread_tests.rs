@@ -177,6 +177,7 @@ fn should_render_a_reply_with_the_thread_header_and_no_repeated_anchor() {
         Some(LineRange::single(42)),
         80,
         crate::ui::comment_panel::CommentBadge::for_comment(&reply, "user"),
+        reply.resolved,
     );
 
     let header: String = lines[0]
@@ -474,4 +475,79 @@ fn should_lock_replies_with_the_root_they_were_submitted_inside() {
     assert_eq!(thread[1].id, reply.id);
     assert_eq!(thread[1].lifecycle_state, CommentLifecycleState::Submitted);
     assert_eq!(thread[1].remote_review_id.as_deref(), Some("7"));
+}
+
+#[test]
+fn should_resolve_the_thread_under_the_cursor() {
+    let (mut session, root) = session_with_line_comment();
+    let reply = reply(&mut session, &root.id, "fixed in def4567");
+    let mut app = app_for(session);
+    // Cursor on the reply, not the root: a thread settles as a unit.
+    cursor_on_line_comment(&mut app, 1);
+
+    assert!(app.set_thread_resolved_at_cursor(true));
+
+    let thread = line_thread(&app.session);
+    assert!(
+        thread.iter().all(|c| c.resolved),
+        "root and reply both settle"
+    );
+
+    // Resolving rebuilds the annotations, so re-anchor the cursor the way a
+    // real frame would before toggling back.
+    cursor_on_line_comment(&mut app, 1);
+    assert!(app.set_thread_resolved_at_cursor(false));
+    let thread = line_thread(&app.session);
+    assert!(thread.iter().all(|c| !c.resolved), "and both reopen");
+    assert_eq!(thread[1].id, reply.id);
+}
+
+#[test]
+fn should_report_when_there_is_no_thread_under_the_cursor() {
+    let (session, _root) = session_with_line_comment();
+    let mut app = app_for(session);
+    app.line_annotations = vec![AnnotatedLine::DiffLine {
+        file_idx: 0,
+        hunk_idx: 0,
+        line_idx: 0,
+        old_lineno: None,
+        new_lineno: Some(42),
+    }];
+    app.diff_state.cursor_line = 0;
+
+    assert!(!app.set_thread_resolved_at_cursor(true));
+    assert!(line_thread(&app.session).iter().all(|c| !c.resolved));
+}
+
+#[test]
+fn should_render_a_settled_thread_in_the_dim_palette() {
+    let (mut session, root) = session_with_line_comment();
+    crate::review_store::set_thread_resolved(&mut session, &root.id, true).unwrap();
+    let settled = line_thread(&session)[0].clone();
+    let theme = Theme::dark();
+    let presentation = crate::ui::comment_panel::CommentTypePresentation {
+        label: "ISSUE".to_string(),
+        color: theme.fg_primary,
+    };
+
+    let lines = crate::ui::comment_panel::format_comment_lines(
+        &theme,
+        presentation,
+        &settled.content,
+        Some(LineRange::single(42)),
+        80,
+        crate::ui::comment_panel::CommentBadge::for_comment(&settled, "user"),
+        settled.resolved,
+    );
+
+    let header: String = lines[0]
+        .spans
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect();
+    // The state is announced in the badge, as remote resolved threads do.
+    assert!(header.contains("resolved"), "{header}");
+    assert!(header.contains("ISSUE"), "{header}");
+    // Same row count settled or not: the annotation model must not shift.
+    assert_eq!(App::comment_display_lines(&settled, 80), lines.len());
 }
