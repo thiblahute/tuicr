@@ -97,6 +97,22 @@ impl ReviewStore {
         Ok(comment)
     }
 
+    /// Resolve (or reopen) the thread a comment belongs to in a persisted
+    /// session. Returns the thread's root.
+    pub fn set_thread_resolved(
+        &self,
+        session_ref: &SessionRef,
+        comment_id: &str,
+        resolved: bool,
+    ) -> Result<Comment> {
+        let reviews_dir = self.reviews_dir()?;
+        let (_session, comment) =
+            storage::update_session_in_dir(session_ref.path(), &reviews_dir, |session| {
+                set_thread_resolved(session, comment_id, resolved)
+            })?;
+        Ok(comment)
+    }
+
     /// Save a session through this store's storage root.
     pub fn save_review(&self, session: &ReviewSession) -> Result<SessionRef> {
         let reviews_dir = self.reviews_dir()?;
@@ -211,6 +227,13 @@ pub struct ReplyRequest {
     /// Author to stamp on the reply. Agents pass their own name so the box
     /// renders with an author badge.
     pub author: String,
+    /// Whether this reply reopens a settled thread. A reply written in the
+    /// TUI is someone answering a thread they can see — reopening is the
+    /// point. One landing through the CLI was composed against the thread as
+    /// it stood earlier: when the reader settled it meanwhile, their resolve
+    /// is the later word, and an agent's "done" confirmation quietly joins
+    /// the settled record instead of undoing it.
+    pub reopen: bool,
 }
 
 /// Where a new local draft comment should be attached.
@@ -347,6 +370,10 @@ pub fn reply_to_comment_in_session(
             remote_comment_id: None,
             commit_id: root.commit_id.clone(),
             in_reply_to: Some(root_id.clone()),
+            // A reply that does not reopen joins the thread in its current
+            // state — a lone unresolved member of a settled thread would
+            // render as an orphan box under the collapsed marker.
+            resolved: if request.reopen { false } else { root.resolved },
         };
         // After the last comment already in this thread, so replies read in
         // posted order and the thread never interleaves with its neighbours.
@@ -355,6 +382,16 @@ pub fn reply_to_comment_in_session(
             .rposition(|c| c.id == root_id || c.in_reply_to.as_deref() == Some(root_id.as_str()))
             .map(|idx| idx + 1)
             .unwrap_or(bucket.len());
+        // A reply from the TUI reopens a settled thread: there is something
+        // new to read, written by someone looking at it.
+        if request.reopen {
+            for comment in bucket.iter_mut() {
+                if comment.id == root_id || comment.in_reply_to.as_deref() == Some(root_id.as_str())
+                {
+                    comment.resolved = false;
+                }
+            }
+        }
         bucket.insert(insert_at, reply.clone());
         session.updated_at = Utc::now();
         return Ok(reply);
@@ -362,6 +399,52 @@ pub fn reply_to_comment_in_session(
 
     Err(TuicrError::InvalidInput(format!(
         "session has no comment with id {parent_id}"
+    )))
+}
+
+/// Mark the thread `comment_id` belongs to as resolved (or reopen it), and
+/// return its root.
+///
+/// Naming any member of the thread works — the root, or a reply — because a
+/// thread is settled as a unit. The flag is written to every member so
+/// renderers can mute a box from the comment in hand.
+pub fn set_thread_resolved(
+    session: &mut ReviewSession,
+    comment_id: &str,
+    resolved: bool,
+) -> Result<Comment> {
+    let mut buckets: Vec<&mut Vec<Comment>> = vec![&mut session.review_comments];
+    for review in session.files.values_mut() {
+        buckets.push(&mut review.file_comments);
+        for comments in review.line_comments.values_mut() {
+            buckets.push(comments);
+        }
+    }
+
+    for bucket in buckets {
+        let Some(target) = bucket.iter().find(|c| c.id == comment_id) else {
+            continue;
+        };
+        let root_id = target
+            .in_reply_to
+            .clone()
+            .unwrap_or_else(|| target.id.clone());
+        for comment in bucket.iter_mut() {
+            if comment.id == root_id || comment.in_reply_to.as_deref() == Some(root_id.as_str()) {
+                comment.resolved = resolved;
+            }
+        }
+        session.updated_at = Utc::now();
+        let root = bucket
+            .iter()
+            .find(|c| c.id == root_id)
+            .cloned()
+            .ok_or_else(|| TuicrError::InvalidInput(format!("thread root {root_id} is missing")))?;
+        return Ok(root);
+    }
+
+    Err(TuicrError::InvalidInput(format!(
+        "session has no comment with id {comment_id}"
     )))
 }
 
@@ -557,6 +640,7 @@ mod tests {
                 parent_id: root.id.clone(),
                 content: "fixed in abc1234".to_string(),
                 author: "Claude".to_string(),
+                reopen: true,
             },
         )
         .unwrap();
@@ -586,6 +670,7 @@ mod tests {
                 parent_id: root.id.clone(),
                 content: "fixed in abc1234".to_string(),
                 author: "Claude".to_string(),
+                reopen: true,
             },
         )
         .unwrap();
@@ -596,6 +681,7 @@ mod tests {
                 parent_id: first.id.clone(),
                 content: "thanks".to_string(),
                 author: "user".to_string(),
+                reopen: true,
             },
         )
         .unwrap();
@@ -621,6 +707,7 @@ mod tests {
                 parent_id: root.id.clone(),
                 content: "done".to_string(),
                 author: "Claude".to_string(),
+                reopen: true,
             },
         )
         .unwrap();
@@ -654,6 +741,7 @@ mod tests {
                 parent_id: root.id.clone(),
                 content: "noted".to_string(),
                 author: "Claude".to_string(),
+                reopen: true,
             },
         )
         .unwrap();
@@ -672,6 +760,7 @@ mod tests {
                 parent_id: "does-not-exist".to_string(),
                 content: "hello".to_string(),
                 author: "Claude".to_string(),
+                reopen: true,
             },
         )
         .unwrap_err();
@@ -690,10 +779,87 @@ mod tests {
                 parent_id: root.id,
                 content: "   ".to_string(),
                 author: "Claude".to_string(),
+                reopen: true,
             },
         )
         .unwrap_err();
 
+        assert!(matches!(err, TuicrError::InvalidInput(_)), "{err:?}");
+    }
+
+    #[test]
+    fn should_resolve_a_thread_from_any_of_its_comments() {
+        let mut session = test_session(PathBuf::from("/repo"));
+        let root = line_comment(&mut session, "handle the empty case", "user");
+        let reply = reply_to_comment_in_session(
+            &mut session,
+            ReplyRequest {
+                parent_id: root.id.clone(),
+                content: "fixed in abc1234".to_string(),
+                author: "Claude".to_string(),
+                reopen: true,
+            },
+        )
+        .unwrap();
+
+        // Naming the reply settles the whole thread, not just that message.
+        let returned = set_thread_resolved(&mut session, &reply.id, true).unwrap();
+        assert_eq!(returned.id, root.id);
+
+        let thread = session.files[&PathBuf::from("src/main.rs")].line_comments[&42].clone();
+        assert!(thread.iter().all(|c| c.resolved), "whole thread resolves");
+
+        set_thread_resolved(&mut session, &root.id, false).unwrap();
+        let thread = session.files[&PathBuf::from("src/main.rs")].line_comments[&42].clone();
+        assert!(thread.iter().all(|c| !c.resolved), "whole thread reopens");
+    }
+
+    #[test]
+    fn should_leave_a_neighbouring_thread_alone_when_resolving() {
+        let mut session = test_session(PathBuf::from("/repo"));
+        let first = line_comment(&mut session, "first", "user");
+        let second = line_comment(&mut session, "second", "user");
+
+        set_thread_resolved(&mut session, &first.id, true).unwrap();
+
+        let thread = session.files[&PathBuf::from("src/main.rs")].line_comments[&42].clone();
+        let by_id = |id: &str| thread.iter().find(|c| c.id == id).unwrap().resolved;
+        assert!(by_id(&first.id));
+        assert!(
+            !by_id(&second.id),
+            "the other comment on this line is untouched"
+        );
+    }
+
+    #[test]
+    fn should_reopen_a_resolved_thread_when_a_reply_arrives() {
+        let mut session = test_session(PathBuf::from("/repo"));
+        let root = line_comment(&mut session, "handle the empty case", "user");
+        set_thread_resolved(&mut session, &root.id, true).unwrap();
+
+        reply_to_comment_in_session(
+            &mut session,
+            ReplyRequest {
+                parent_id: root.id.clone(),
+                content: "actually, one more thing".to_string(),
+                author: "user".to_string(),
+                reopen: true,
+            },
+        )
+        .unwrap();
+
+        // A new message means the thread is not settled after all.
+        let thread = session.files[&PathBuf::from("src/main.rs")].line_comments[&42].clone();
+        assert!(
+            thread.iter().all(|c| !c.resolved),
+            "reply reopens the thread"
+        );
+    }
+
+    #[test]
+    fn should_reject_resolving_an_unknown_comment() {
+        let mut session = test_session(PathBuf::from("/repo"));
+        let err = set_thread_resolved(&mut session, "does-not-exist", true).unwrap_err();
         assert!(matches!(err, TuicrError::InvalidInput(_)), "{err:?}");
     }
 }

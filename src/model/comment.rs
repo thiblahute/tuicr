@@ -201,6 +201,13 @@ pub struct Comment {
     /// `None`.
     #[serde(default)]
     pub in_reply_to: Option<String>,
+    /// Whether this comment's thread is settled. Kept on every member of the
+    /// thread, not only its root, so a renderer can mute a box without
+    /// resolving its root first; `set_thread_resolved` is what keeps them in
+    /// step. Replying reopens the thread — a new message means it is not
+    /// settled after all. Old session JSON rehydrates as `false`.
+    #[serde(default)]
+    pub resolved: bool,
 }
 
 impl Comment {
@@ -219,6 +226,7 @@ impl Comment {
             remote_comment_id: None,
             commit_id: None,
             in_reply_to: None,
+            resolved: false,
         }
     }
 
@@ -243,6 +251,7 @@ impl Comment {
             remote_comment_id: None,
             commit_id: None,
             in_reply_to: None,
+            resolved: false,
         }
     }
 

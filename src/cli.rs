@@ -290,6 +290,28 @@ pub enum ReviewCommand {
         content: Option<String>,
     },
 
+    /// Mark a comment's thread resolved, or reopen it with --unresolve.
+    Resolve {
+        /// Session slug from `tuicr review list` (local or PR), or path to a
+        /// session JSON file.
+        #[arg(long, value_name = "SESSION")]
+        session: String,
+
+        /// Id of any comment in the thread, from `tuicr review comments`. An
+        /// unambiguous prefix works, like a short SHA in git.
+        #[arg(long = "comment-id", value_name = "ID")]
+        comment_id: String,
+
+        /// Reopen the thread instead of resolving it.
+        #[arg(long, action = ArgAction::SetTrue)]
+        unresolve: bool,
+
+        /// Repo selector used to resolve a local session slug (path or
+        /// `owner/repo`). PR slugs and JSON paths resolve without it.
+        #[arg(long, value_name = "PATH|OWNER/REPO", default_value = ".")]
+        repo: PathBuf,
+    },
+
     /// Print comments stored in a persisted session.
     #[command(alias = "get")]
     Comments {

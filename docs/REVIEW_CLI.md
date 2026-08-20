@@ -31,6 +31,7 @@ tuicr review list --all                               # every session across all
 tuicr review comments --session agavra/tuicr@main/worktree
 tuicr review comments --session gh:slatedb/slatedb/pr/1745
 tuicr review reply --session agavra/tuicr@main/worktree --comment-id <ID> "Fixed."
+tuicr review resolve --session agavra/tuicr@main/worktree --comment-id <ID>
 ```
 
 All `tuicr review` commands emit JSON by default. Timestamps are RFC3339 strings
@@ -122,6 +123,23 @@ it appears in the reviewer's diff without any action on their part.
 
 `in_reply_to` is accepted as an alias for `comment_id`, so an entry read from
 `review comments` can be echoed back with its own text.
+
+## Resolve Threads
+
+`resolve` marks a thread settled; `--unresolve` reopens it:
+
+```bash
+tuicr review resolve --session agavra/tuicr@main/worktree --comment-id 79c9b3e1
+tuicr review resolve --session agavra/tuicr@main/worktree --comment-id 79c9b3e1 --unresolve
+```
+
+Any comment in the thread names it — the root or a reply — since a thread is
+settled as a unit. Every comment in it carries the resulting `resolved` flag,
+and the command prints the thread's root. Replying to a resolved thread reopens
+it: a new message means it was not settled after all.
+
+`resolved` appears on every entry of `review comments`. A caller answering a
+review should skip resolved threads.
 
 ## JSON Input
 
@@ -226,6 +244,7 @@ PR slug:
     "lifecycle_state": "local_draft",
     "created_at": "2026-05-22T17:20:00Z",
     "author": "user",
+    "resolved": false,
     "content": "Handle the empty case here."
   },
   {
@@ -240,6 +259,7 @@ PR slug:
     "created_at": "2026-05-22T17:24:00Z",
     "author": "Claude",
     "in_reply_to": "79c9b3e1-0a7a-4efe-9d43-f7085d7c1a82",
+    "resolved": false,
     "content": "Fixed in def4567."
   }
 ]
