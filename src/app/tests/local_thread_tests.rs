@@ -126,6 +126,7 @@ fn reply(session: &mut ReviewSession, parent: &str, body: &str) -> Comment {
             parent_id: parent.to_string(),
             content: body.to_string(),
             author: "Claude".to_string(),
+            reopen: true,
         },
     )
     .expect("reply should attach")

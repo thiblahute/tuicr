@@ -69,6 +69,12 @@ fn run_with_writer(command: ReviewCommand, out: &mut impl Write) -> Result<()> {
             },
             out,
         ),
+        ReviewCommand::Resolve {
+            session,
+            comment_id,
+            unresolve,
+            repo,
+        } => set_resolved(&session, &repo, &comment_id, !unresolve, out),
         ReviewCommand::Comments { session, repo } => show_comments(&session, &repo, out),
         ReviewCommand::Delete {
             session,
@@ -311,6 +317,7 @@ fn reply_to_comment(
             parent_id,
             content,
             author,
+            reopen: false,
         },
     )?;
 
@@ -574,6 +581,32 @@ fn line_side_arg_to_model(side: LineSideArg) -> LineSide {
     }
 }
 
+fn set_resolved(
+    session: &str,
+    repo: &Path,
+    comment_id: &str,
+    resolved: bool,
+    out: &mut impl Write,
+) -> Result<()> {
+    let store = ReviewStore::new();
+    let session_ref = resolve_session_ref(&store, repo, session)?;
+    let comment_id = resolve_comment_id(&store.get_review(&session_ref)?, comment_id)?;
+    let root = store.set_thread_resolved(&session_ref, &comment_id, resolved)?;
+
+    // Report the thread's root as `comments` would show it, so the caller sees
+    // which thread moved and its new state.
+    let session_data = store.get_review(&session_ref)?;
+    let output = collect_comments(&session_data)
+        .into_iter()
+        .find(|c| c.id == root.id)
+        .ok_or_else(|| {
+            TuicrError::InvalidInput("thread root was not found in the saved session".to_string())
+        })?;
+    serde_json::to_writer_pretty(&mut *out, &output)?;
+    writeln!(out)?;
+    Ok(())
+}
+
 fn show_comments(session: &str, repo: &Path, out: &mut impl Write) -> Result<()> {
     let store = ReviewStore::new();
     let session_ref = resolve_session_ref(&store, repo, session)?;
@@ -808,6 +841,9 @@ struct CommentOutput {
     /// Set on replies: the id of the comment this one answers.
     #[serde(skip_serializing_if = "Option::is_none")]
     in_reply_to: Option<String>,
+    /// Whether this comment's thread is settled. Callers answering a review
+    /// skip resolved threads.
+    resolved: bool,
     content: String,
 }
 
@@ -859,6 +895,7 @@ impl CommentOutput {
             lifecycle_state: lifecycle_id(comment.lifecycle_state),
             created_at: comment.created_at.to_rfc3339(),
             in_reply_to: comment.in_reply_to.clone(),
+            resolved: comment.resolved,
             content: comment.content.clone(),
         }
     }
@@ -1311,6 +1348,7 @@ mod tests {
                     parent_id: root.id.clone(),
                     content: "fixed in def4567".to_string(),
                     author: "Claude".to_string(),
+                    reopen: true,
                 },
             )
             .unwrap();

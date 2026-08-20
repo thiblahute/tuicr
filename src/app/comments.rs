@@ -1198,6 +1198,7 @@ impl App {
                     parent_id,
                     content,
                     author,
+                    reopen: true,
                 },
             ) {
                 Ok(_) => "Reply added".to_string(),
