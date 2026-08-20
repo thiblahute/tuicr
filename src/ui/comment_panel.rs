@@ -532,14 +532,26 @@ pub fn format_comment_lines(
     line_range: Option<LineRange>,
     width: usize,
     badge: CommentBadge<'_>,
+    resolved: bool,
 ) -> Vec<Line<'static>> {
-    let type_style = styles::comment_type_style(theme, comment_type.color);
+    // A settled thread keeps its shape — same rows, same anchor — but drops to
+    // the dim palette so it reads as background, the way a resolved remote
+    // thread does.
+    let type_style = if resolved {
+        styles::dim_style(theme)
+    } else {
+        styles::comment_type_style(theme, comment_type.color)
+    };
     let author = badge.author();
-    let border_style = match author {
-        Some(name) => Style::default()
-            .fg(styles::author_color_for(name))
-            .add_modifier(ratatui::style::Modifier::BOLD),
-        None => styles::comment_border_style(theme, comment_type.color),
+    let border_style = if resolved {
+        styles::dim_style(theme)
+    } else {
+        match author {
+            Some(name) => Style::default()
+                .fg(styles::author_color_for(name))
+                .add_modifier(ratatui::style::Modifier::BOLD),
+            None => styles::comment_border_style(theme, comment_type.color),
+        }
     };
 
     // `None` comments have an empty label: drop the `[TYPE]` badge, keeping the
@@ -551,6 +563,12 @@ pub fn format_comment_lines(
         (Some(name), false) => format!("[{} @{name}] ", comment_type.label),
         (None, true) => String::new(),
         (None, false) => format!("[{}] ", comment_type.label),
+    };
+    // The root announces the state once; its replies are already dimmed.
+    let badge_text = match (resolved, badge.is_reply()) {
+        (false, _) | (true, true) => badge_text,
+        (true, false) if badge_text.is_empty() => "[resolved] ".to_string(),
+        (true, false) => badge_text.replacen("] ", " resolved] ", 1),
     };
     let badge_width = badge_text.width();
 
@@ -696,6 +714,7 @@ mod tests {
                     // cursor-indicator column.
                     viewport_width.saturating_sub(1),
                     CommentBadge::Own,
+                    false,
                 );
                 assert_eq!(
                     App::comment_display_lines(&comment, viewport_width),
@@ -1137,6 +1156,7 @@ mod tests {
             None,
             80,
             CommentBadge::Own,
+            false,
         );
         // Header + footer wrap the body; reconstruct must round-trip the text.
         assert_eq!(reconstruct(&lines), content);

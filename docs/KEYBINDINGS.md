@@ -216,6 +216,8 @@ In command mode,
 | `:set reviewed` | Show files already marked reviewed |
 | `:set noreviewed` | Hide files already marked reviewed |
 | `:set reviewed!` / `:reviewed` | Toggle files already marked reviewed |
+| `:resolve` | Settle the comment thread at the cursor — it dims, and `tuicr review comments` reports it `resolved` |
+| `:unresolve` | Reopen the thread at the cursor |
 | `:clear` | Clear all comments |
 | `:clearc` | Clear comments without clearing reviewed marks |
 | `:version` | Show tuicr version |

@@ -1044,6 +1044,42 @@ impl App {
         }
     }
 
+    /// Settle (or reopen) the thread the cursor sits on. The whole thread
+    /// moves together, so it does not matter whether the cursor is on the
+    /// root or one of its replies.
+    pub fn set_thread_resolved_at_cursor(&mut self, resolved: bool) -> bool {
+        let Some(location) = self.find_comment_at_cursor() else {
+            self.set_message("No comment at cursor");
+            return false;
+        };
+        let Some(comment_id) = self.comment_at_location(&location).map(|c| c.id.clone()) else {
+            self.set_message("No comment at cursor");
+            return false;
+        };
+
+        match crate::review_store::set_thread_resolved(&mut self.session, &comment_id, resolved) {
+            Ok(_) => {
+                self.dirty = true;
+                let message = if resolved {
+                    "Thread resolved"
+                } else {
+                    "Thread reopened"
+                };
+                if let Err(e) = self.save_current_session_merging_external() {
+                    self.set_error(format!("{message}; autosave failed: {e}"));
+                } else {
+                    self.set_message(message);
+                }
+                self.rebuild_annotations();
+                true
+            }
+            Err(e) => {
+                self.set_error(format!("Could not update thread: {e}"));
+                false
+            }
+        }
+    }
+
     /// True while the editor is composing a reply — to a remote thread or to a
     /// local comment. Renderers use it to skip the connector bar: a reply box
     /// hangs under the comment it answers, so a bar would cross that box.
