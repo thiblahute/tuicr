@@ -1714,6 +1714,10 @@ fn handle_shared_normal_action(app: &mut App, action: Action) {
                 // `c` on a remote review thread replies to it instead of
                 // opening a fresh line comment.
                 app.enter_reply_mode(thread_idx);
+            } else if app.cursor_on_local_comment() {
+                // `c` on a local comment replies to it, the same way it does
+                // on a remote thread.
+                app.enter_local_reply_mode();
             } else {
                 let line = app.get_line_at_cursor();
                 if line.is_some() {

@@ -92,7 +92,9 @@ tuicr update 0.18.0         # Install a known-good version
 Inside tuicr, navigate with `j`/`k`, press `c` to comment, then `y` to copy the review or
 `:submit` to push it to GitHub, GitLab, or Bitbucket. Existing PR discussions render inline;
 pressing `c` on one replies to it — the reply posts to the forge immediately, outside the
-`:submit` draft flow. When reopening a pull request you've reviewed
+`:submit` draft flow. `c` on one of your own comments replies to it too, threading the answer
+underneath; `tuicr review reply` does the same from the CLI, which is how a coding agent
+answers your review comments in place (see [docs/REVIEW_CLI.md](docs/REVIEW_CLI.md)). When reopening a pull request you've reviewed
 before, tuicr preselects commits newer than your latest submitted review when that metadata is
 available; commits already covered by that review are marked with `✓` in the inline selector.
 (Bitbucket does not record which commit an approval covered, so that preselection does not apply

@@ -198,6 +198,20 @@ impl ReviewSession {
         self.files.get_mut(path)
     }
 
+    /// The comment with `id`, wherever it is stored — review scope, a file, or
+    /// a line. Resolves a reply's parent without knowing its anchor.
+    pub fn find_comment(&self, id: &str) -> Option<&Comment> {
+        self.review_comments
+            .iter()
+            .chain(self.files.values().flat_map(|review| {
+                review
+                    .file_comments
+                    .iter()
+                    .chain(review.line_comments.values().flatten())
+            }))
+            .find(|comment| comment.id == id)
+    }
+
     pub fn has_comments(&self) -> bool {
         !self.review_comments.is_empty() || self.files.values().any(|f| f.comment_count() > 0)
     }

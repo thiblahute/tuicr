@@ -876,7 +876,11 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                                 lines.push(input_line);
                                 line_idx += 1;
                             }
-                            push_comment_bar(&mut comment_bars, box_top_row, line_range);
+                            push_comment_bar(
+                                &mut comment_bars,
+                                box_top_row,
+                                (!app.composing_reply()).then_some(line_range).flatten(),
+                            );
                         }
                     }
 
@@ -1067,7 +1071,11 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                                 lines.push(input_line);
                                 line_idx += 1;
                             }
-                            push_comment_bar(&mut comment_bars, box_top_row, line_range);
+                            push_comment_bar(
+                                &mut comment_bars,
+                                box_top_row,
+                                (!app.composing_reply()).then_some(line_range).flatten(),
+                            );
                         }
                     }
                 }

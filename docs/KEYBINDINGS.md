@@ -133,7 +133,7 @@ Shown below the file tree when local comments or visible remote PR threads exist
 |-----|--------|
 | `r` | Toggle file reviewed |
 | `R` | Toggle hunk reviewed |
-| `c` | Add line comment (on a remote PR thread: reply to it) |
+| `c` | Add line comment (on an existing comment or remote PR thread: reply to it) |
 | `C` | Add file comment |
 | `<leader>c` | Add review comment |
 | `v` / `V` | Enter visual mode for range comments |

@@ -251,3 +251,90 @@ fn should_delete_only_the_reply_when_the_cursor_is_on_it() {
     assert_eq!(remaining[0].id, root.id);
     assert_ne!(remaining[0].id, reply.id);
 }
+
+/// Put the cursor on the comment box for `comment_idx` on line 42.
+fn cursor_on_line_comment(app: &mut App, comment_idx: usize) {
+    app.line_annotations = vec![AnnotatedLine::LineComment {
+        file_idx: 0,
+        line: 42,
+        side: LineSide::New,
+        comment_idx,
+    }];
+    app.diff_state.cursor_line = 0;
+}
+
+#[test]
+fn should_open_a_reply_editor_with_c_on_a_local_comment() {
+    let (session, root) = session_with_line_comment();
+    let mut app = app_for(session);
+    cursor_on_line_comment(&mut app, 0);
+
+    crate::handler::handle_diff_action(&mut app, crate::input::Action::AddLineComment);
+
+    assert_eq!(app.input_mode, InputMode::Comment);
+    assert_eq!(app.local_reply_target.as_deref(), Some(root.id.as_str()));
+    // Anchored where the comment it answers is, so the box lands in the thread.
+    assert_eq!(app.comment_line, Some((42, LineSide::New)));
+    assert!(!app.comment_is_review_level);
+    // A reply has no type of its own.
+    assert!(app.comment_type.is_none());
+    // The editor labels itself with whom it is answering.
+    assert_eq!(app.comment_reply_author().as_deref(), Some("user"));
+}
+
+#[test]
+fn should_store_the_reply_beside_its_root_on_save() {
+    let (session, root) = session_with_line_comment();
+    let mut app = app_for(session);
+    cursor_on_line_comment(&mut app, 0);
+    crate::handler::handle_diff_action(&mut app, crate::input::Action::AddLineComment);
+
+    app.comment_buffer = "fixed in def4567".to_string();
+    app.save_comment();
+
+    let thread = line_thread(&app.session);
+    assert_eq!(thread.len(), 2);
+    assert_eq!(thread[1].in_reply_to.as_deref(), Some(root.id.as_str()));
+    assert_eq!(thread[1].content, "fixed in def4567");
+    assert_eq!(thread[1].author, app.username);
+    // The editor closes and forgets its target, like every other save.
+    assert_eq!(app.input_mode, InputMode::Normal);
+    assert!(app.local_reply_target.is_none());
+}
+
+#[test]
+fn should_thread_a_reply_to_a_reply_onto_the_root() {
+    let (mut session, root) = session_with_line_comment();
+    reply(&mut session, &root.id, "fixed in def4567");
+    let mut app = app_for(session);
+    cursor_on_line_comment(&mut app, 1);
+    crate::handler::handle_diff_action(&mut app, crate::input::Action::AddLineComment);
+
+    app.comment_buffer = "thanks".to_string();
+    app.save_comment();
+
+    let thread = line_thread(&app.session);
+    assert_eq!(thread.len(), 3);
+    // Flat threads: the second reply answers the root, not the first reply.
+    assert_eq!(thread[2].in_reply_to.as_deref(), Some(root.id.as_str()));
+}
+
+#[test]
+fn should_still_open_a_fresh_comment_when_the_cursor_is_on_a_diff_line() {
+    let (session, _root) = session_with_line_comment();
+    let mut app = app_for(session);
+    app.line_annotations = vec![AnnotatedLine::DiffLine {
+        file_idx: 0,
+        hunk_idx: 0,
+        line_idx: 0,
+        old_lineno: None,
+        new_lineno: Some(42),
+    }];
+    app.diff_state.cursor_line = 0;
+
+    crate::handler::handle_diff_action(&mut app, crate::input::Action::AddLineComment);
+
+    assert_eq!(app.input_mode, InputMode::Comment);
+    assert!(app.local_reply_target.is_none());
+    assert_eq!(app.comment_line, Some((42, LineSide::New)));
+}

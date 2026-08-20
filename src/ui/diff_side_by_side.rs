@@ -2168,7 +2168,7 @@ fn add_comments_to_line(
         crate::ui::diff_view::push_comment_bar(
             &mut ctx.comment_bars.borrow_mut(),
             box_top_row,
-            line_range,
+            (!ctx.app.composing_reply()).then_some(line_range).flatten(),
         );
     }
 

@@ -1,4 +1,5 @@
 use super::*;
+use crate::review_store::{ReplyRequest, reply_to_comment_in_session};
 
 enum SummaryAnnotationTarget {
     Review {
@@ -568,6 +569,13 @@ impl App {
         self.remote_thread_at_cursor().is_some()
     }
 
+    /// True when the cursor is on one of this session's own comment boxes —
+    /// the local counterpart of `cursor_on_remote_thread`, so `c` can pick
+    /// between replying and opening a fresh comment.
+    pub fn cursor_on_local_comment(&self) -> bool {
+        self.find_comment_at_cursor().is_some()
+    }
+
     /// Index into `forge_review_threads` of the thread rendered at the
     /// cursor row, if the cursor sits on one.
     pub fn remote_thread_at_cursor(&self) -> Option<usize> {
@@ -980,10 +988,81 @@ impl App {
         self.comment_reply_target = Some(thread_idx);
     }
 
+    /// Open the comment editor as a reply to the local comment at the cursor.
+    /// The editor anchors where that comment does, so the reply box lands in
+    /// its thread; saving stores a local draft reply beside it. Callers gate
+    /// on `cursor_on_local_comment`; with no comment under the cursor this is
+    /// a no-op.
+    pub fn enter_local_reply_mode(&mut self) {
+        let Some(location) = self.find_comment_at_cursor() else {
+            return;
+        };
+        let Some(comment) = self.comment_at_location(&location) else {
+            return;
+        };
+        // Replying to a reply continues the same thread; the store flattens
+        // the parent id onto the root, so the editor need not resolve it.
+        let parent_id = comment.id.clone();
+        let (review_level, file_level, line) = match &location {
+            CommentLocation::Review { .. } => (true, false, None),
+            CommentLocation::File { .. } => (false, true, None),
+            CommentLocation::Line { line, side, .. } => (false, false, Some((*line, *side))),
+        };
+
+        self.input_mode = InputMode::Comment;
+        self.diff_state.scroll_x = 0;
+        self.comment_buffer.clear();
+        self.comment_cursor = 0;
+        // A reply carries no comment type — its body is stored as written.
+        self.comment_type = CommentType::None;
+        self.comment_is_review_level = review_level;
+        self.comment_is_file_level = file_level;
+        self.comment_line = line;
+        self.comment_line_range = None;
+        self.editing_comment_id = None;
+        self.comment_reply_target = None;
+        self.local_reply_target = Some(parent_id);
+    }
+
+    /// The stored comment a cursor location resolves to.
+    fn comment_at_location(&self, location: &CommentLocation) -> Option<&Comment> {
+        match location {
+            CommentLocation::Review { index } => self.session.review_comments.get(*index),
+            CommentLocation::File { path, index } => self
+                .session
+                .files
+                .get(path)
+                .and_then(|review| review.file_comments.get(*index)),
+            CommentLocation::Line {
+                path, line, index, ..
+            } => self
+                .session
+                .files
+                .get(path)
+                .and_then(|review| review.line_comments.get(line))
+                .and_then(|comments| comments.get(*index)),
+        }
+    }
+
+    /// True while the editor is composing a reply — to a remote thread or to a
+    /// local comment. Renderers use it to skip the connector bar: a reply box
+    /// hangs under the comment it answers, so a bar would cross that box.
+    pub fn composing_reply(&self) -> bool {
+        self.comment_reply_target.is_some() || self.local_reply_target.is_some()
+    }
+
     /// Author of the root comment of the thread a reply is being composed
     /// for. `None` when the editor is not in reply mode. Used by the
     /// renderers to label the input box.
     pub fn comment_reply_author(&self) -> Option<String> {
+        if let Some(parent_id) = self.local_reply_target.as_deref() {
+            return Some(
+                self.session
+                    .find_comment(parent_id)
+                    .map(|comment| comment.author.clone())
+                    .unwrap_or_else(|| "comment".to_string()),
+            );
+        }
         let thread = self
             .comment_reply_target
             .and_then(|idx| self.forge_review_threads.get(idx))?;
@@ -1006,6 +1085,7 @@ impl App {
         self.editing_comment_id = None;
         self.comment_line_range = None;
         self.comment_reply_target = None;
+        self.local_reply_target = None;
     }
 
     pub fn save_comment(&mut self) {
@@ -1026,8 +1106,26 @@ impl App {
             return;
         }
 
+        // A reply to a local comment is an ordinary local draft, stored beside
+        // the comment it answers.
+        if let Some(parent_id) = self.local_reply_target.clone() {
+            let author = self.username.clone();
+            let message = match reply_to_comment_in_session(
+                &mut self.session,
+                ReplyRequest {
+                    parent_id,
+                    content,
+                    author,
+                },
+            ) {
+                Ok(_) => "Reply added".to_string(),
+                Err(e) => format!("Error: Could not save reply: {e}"),
+            };
+            self.finish_comment_save(message);
+            return;
+        }
+
         let mut message = "Error: Could not save comment".to_string();
-        let mut autosave_error = None;
 
         // Check if we're editing an existing comment
         if let Some(editing_id) = &self.editing_comment_id {
@@ -1124,6 +1222,12 @@ impl App {
             };
         }
 
+        self.finish_comment_save(message);
+    }
+
+    /// Shared tail of every comment save: autosave, report, rebuild, close.
+    fn finish_comment_save(&mut self, message: String) {
+        let mut autosave_error = None;
         if !message.starts_with("Error:") {
             self.dirty = true;
             if let Err(e) = self.save_current_session_merging_external() {

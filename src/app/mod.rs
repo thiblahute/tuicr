@@ -1202,6 +1202,11 @@ pub struct App {
     /// review thread at this index in `forge_review_threads`. Saving posts
     /// the reply straight to the forge instead of storing a local draft.
     pub comment_reply_target: Option<usize>,
+    /// When `Some`, the comment editor is composing a reply to the local
+    /// comment with this id. Saving stores a local draft reply beside it
+    /// (`reply_to_comment_in_session`) — unlike a remote thread reply, nothing
+    /// is posted anywhere.
+    pub local_reply_target: Option<String>,
 
     pub visual_selection: Option<VisualSelection>,
     /// True once the active mouse drag has actually moved off the press cell.
