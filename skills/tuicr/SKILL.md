@@ -19,6 +19,8 @@ First decide which workflow the user is asking for:
      with `tuicr review comments` when they say comments are ready. If you are
      explicitly waiting while the user reviews, poll the same command
      periodically and look for new comment IDs.
+   - Once you have addressed a comment, reply to it in the session (see
+     **Reply To User Comments**) so the answer sits with the code.
    - Do not add your own review comments, do not preemptively review your own
      patch, and do not impersonate the user's comments.
 
@@ -163,6 +165,8 @@ The command emits JSON. Each comment includes fields like:
 - `side`
 - `comment_type`
 - `lifecycle_state`
+- `author`
+- `in_reply_to` (replies only — the id of the comment being answered)
 - `content`
 
 Treat these comments as the user's review feedback:
@@ -188,6 +192,47 @@ another active session should be selected, when `reviewed_count` is less than
 `file_count` (the user quit before reviewing everything) or you can't find a
 `tuicr-summary:` line at all. If the review may have continued while you were
 working, rerun `tuicr review comments` before claiming completion.
+
+## Reply To User Comments
+
+This is how you answer the review. After addressing a comment, reply to it in
+the session — the user sees your answer under their comment, in the running
+TUI, within about a second. Do not report back only in chat: the reply belongs
+next to the code it is about.
+
+```bash
+tuicr review reply --repo /path/to/repo --session <slug> \
+  --comment-id 79c9b3e1-0a7a-4efe-9d43-f7085d7c1a82 \
+  --username "Claude" \
+  "Fixed in def4567 — returns early on empty input."
+```
+
+Rules for the loop:
+
+- Work in threads, not in single comments. A thread is a root comment plus
+  every comment whose `in_reply_to` is that root's `id`; sort it by
+  `created_at`. **A thread needs an answer when its last entry is not yours.**
+  Do not ask whether a particular comment has a reply pointing at it: replies
+  always point at the thread's root, so a mid-thread comment can never be
+  matched that way and you will keep re-reading it as unanswered.
+- `author` is what tells the user's comments from your own — compare it against
+  the `--username` you reply with.
+- Never reply to your own comments, and reply at most once per comment per
+  round. Re-read with `tuicr review comments` before replying again — the user
+  may have answered in the meantime.
+- Say what you did, not that you will: the commit or the change (`Fixed in
+  <sha> — …`). If you are not doing it, say so and why; a disagreement belongs
+  in the thread, not silently dropped.
+- Use the same `--username` all session so your replies stay attributable.
+- A reply inherits the comment's file, line, and side. Pass no target flags.
+- Replying to a reply attaches to the same thread — you cannot nest deeper.
+- The id must come from `tuicr review comments` for that session; an
+  unambiguous prefix works, like a short SHA in git. An unknown id is an error,
+  not a new comment.
+
+`--input` takes the same JSON as `review add`, with `comment_id` (or
+`in_reply_to`) alongside `content`, which is convenient for batching a round of
+replies from a script.
 
 ## Add Agent Comments
 
@@ -300,6 +345,7 @@ Herdr:
 | Not a repository | Ask for the correct repo directory |
 | Comments are empty, but `reviewed_count` == `file_count` | Treat as a completed review with nothing to flag — don't ask |
 | Comments are empty and `reviewed_count` < `file_count` | Confirm the selected session or ask the user to save/add comments |
+| `review reply` says the id is unknown | Re-read `tuicr review comments`; the comment was edited away or belongs to another session |
 
 ## When Not To Use
 
