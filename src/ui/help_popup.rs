@@ -540,6 +540,13 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(vec![
             Span::styled(
+                format!("  {}r        ", app.leader_key),
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Resolve / reopen the thread at cursor"),
+        ]),
+        Line::from(vec![
+            Span::styled(
                 "  i         ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),

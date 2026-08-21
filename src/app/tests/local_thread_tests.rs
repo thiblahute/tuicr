@@ -576,3 +576,33 @@ fn should_mark_a_settled_thread_in_the_export() {
     );
     assert!(md.contains("- @Claude - fixed in def4567"), "{md}");
 }
+
+#[test]
+fn should_toggle_the_thread_at_the_cursor_both_ways() {
+    // `<leader>r` is one key for both directions, so the toggle has to read
+    // the current state rather than assume it.
+    let (mut session, root) = session_with_line_comment();
+    reply(&mut session, &root.id, "fixed in def4567");
+    let mut app = app_for(session);
+
+    cursor_on_line_comment(&mut app, 0);
+    assert!(app.toggle_thread_resolved_at_cursor());
+    assert!(line_thread(&app.session).iter().all(|c| c.resolved));
+
+    cursor_on_line_comment(&mut app, 0);
+    assert!(app.toggle_thread_resolved_at_cursor());
+    assert!(line_thread(&app.session).iter().all(|c| !c.resolved));
+}
+
+#[test]
+fn should_toggle_from_a_reply_row_using_the_threads_state() {
+    let (mut session, root) = session_with_line_comment();
+    reply(&mut session, &root.id, "fixed in def4567");
+    crate::review_store::set_thread_resolved(&mut session, &root.id, true).unwrap();
+    let mut app = app_for(session);
+
+    // Cursor on the reply of an already-settled thread: one press reopens it.
+    cursor_on_line_comment(&mut app, 1);
+    assert!(app.toggle_thread_resolved_at_cursor());
+    assert!(line_thread(&app.session).iter().all(|c| !c.resolved));
+}

@@ -1080,6 +1080,23 @@ impl App {
         }
     }
 
+    /// Flip the resolved state of the thread at the cursor. Backs
+    /// `<leader>r`, where a single key has to mean both directions —
+    /// `:resolve` / `:unresolve` name them explicitly instead.
+    pub fn toggle_thread_resolved_at_cursor(&mut self) -> bool {
+        let resolved = self
+            .find_comment_at_cursor()
+            .and_then(|location| self.comment_at_location(&location))
+            .map(|comment| comment.resolved);
+        match resolved {
+            Some(resolved) => self.set_thread_resolved_at_cursor(!resolved),
+            None => {
+                self.set_message("No comment at cursor");
+                false
+            }
+        }
+    }
+
     /// True while the editor is composing a reply — to a remote thread or to a
     /// local comment. Renderers use it to skip the connector bar: a reply box
     /// hangs under the comment it answers, so a bar would cross that box.

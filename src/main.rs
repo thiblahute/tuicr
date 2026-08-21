@@ -636,6 +636,13 @@ fn main() -> anyhow::Result<()> {
                                 app.toggle_single_file_view();
                                 continue;
                             }
+                            // `<leader>r` settles the thread at the cursor, or
+                            // reopens it — the same toggle `:resolve` /
+                            // `:unresolve` give, without leaving the diff.
+                            crossterm::event::KeyCode::Char('r') => {
+                                app.toggle_thread_resolved_at_cursor();
+                                continue;
+                            }
                             _ => {}
                         }
                         // Otherwise fall through to normal handling

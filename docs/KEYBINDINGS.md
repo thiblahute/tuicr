@@ -136,6 +136,7 @@ Shown below the file tree when local comments or visible remote PR threads exist
 | `c` | Add line comment (on an existing comment or remote PR thread: reply to it) |
 | `C` | Add file comment |
 | `<leader>c` | Add review comment |
+| `<leader>r` | Resolve / reopen the comment thread at the cursor (also `:resolve` / `:unresolve`) |
 | `v` / `V` | Enter visual mode for range comments |
 | `dd` | Delete comment at cursor |
 | `i` | Edit comment at cursor (vim: text cursor at start) |
