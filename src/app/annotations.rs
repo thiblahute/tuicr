@@ -1,5 +1,34 @@
 use super::*;
 
+/// The three values every annotation builder needs to size a comment box:
+/// how wide the viewport is, which commits are selected, and whether settled
+/// threads are expanded. They always travel together — bundling them keeps the
+/// builders from drifting apart as the set grows.
+#[derive(Clone, Copy)]
+pub(in crate::app) struct CommentLayout<'a> {
+    pub viewport_width: usize,
+    pub commit_set: Option<&'a std::collections::HashSet<String>>,
+    pub show_resolved: bool,
+    /// Roots whose visibility is flipped relative to `show_resolved`.
+    pub overrides: &'a std::collections::HashSet<String>,
+}
+
+impl CommentLayout<'_> {
+    /// Whether this comment's thread is expanded — globally or on its own.
+    fn thread_shown(&self, comment: &crate::model::Comment) -> bool {
+        let root = comment.in_reply_to.as_deref().unwrap_or(&comment.id);
+        self.show_resolved != self.overrides.contains(root)
+    }
+
+    fn collapsed(&self, comment: &crate::model::Comment) -> bool {
+        comment.resolved && !comment.is_reply() && !self.thread_shown(comment)
+    }
+
+    fn reply_hidden(&self, comment: &crate::model::Comment) -> bool {
+        comment.resolved && comment.is_reply() && !self.thread_shown(comment)
+    }
+}
+
 impl App {
     /// Ensure the file line count cache is populated for a given file.
     pub(in crate::app) fn ensure_file_line_count_cached(&mut self, file_idx: usize) {
@@ -71,6 +100,13 @@ impl App {
         // Commit-selection filter: comments scoped to a commit outside the
         // current inline selection are hidden. `None` => no selector, show all.
         let commit_set = self.selected_commit_set();
+        let show_resolved = self.show_resolved_threads;
+        let layout = CommentLayout {
+            viewport_width: self.diff_state.viewport_width,
+            commit_set: commit_set.as_ref(),
+            show_resolved,
+            overrides: &self.thread_display_overrides,
+        };
 
         if let Some(info) = &self.pr_info {
             let pr_line_count = crate::ui::pr_info_panel::build_pr_info_lines(
@@ -101,8 +137,14 @@ impl App {
             }
         }
         for (comment_idx, comment) in self.session.review_comments.iter().enumerate() {
-            let comment_lines =
-                Self::comment_display_lines(comment, self.diff_state.viewport_width);
+            if !self.comment_visible(comment) {
+                continue;
+            }
+            let comment_lines = Self::comment_display_lines_collapsed(
+                comment,
+                self.diff_state.viewport_width,
+                self.thread_collapsed(comment),
+            );
             for _ in 0..comment_lines {
                 self.line_annotations
                     .push(AnnotatedLine::ReviewComment { comment_idx });
@@ -184,11 +226,16 @@ impl App {
             // File comments
             if let Some(review) = self.session.files.get(path) {
                 for (comment_idx, comment) in review.file_comments.iter().enumerate() {
-                    if !Self::comment_visible_with(comment, commit_set.as_ref()) {
+                    if !Self::comment_visible_with(comment, commit_set.as_ref())
+                        || layout.reply_hidden(comment)
+                    {
                         continue;
                     }
-                    let comment_lines =
-                        Self::comment_display_lines(comment, self.diff_state.viewport_width);
+                    let comment_lines = Self::comment_display_lines_collapsed(
+                        comment,
+                        self.diff_state.viewport_width,
+                        layout.collapsed(comment),
+                    );
                     for _ in 0..comment_lines {
                         self.line_annotations.push(AnnotatedLine::FileComment {
                             file_idx,
@@ -309,8 +356,7 @@ impl App {
                                 path,
                                 &self.forge_review_threads,
                                 &remote_index,
-                                self.diff_state.viewport_width,
-                                commit_set.as_ref(),
+                                layout,
                             );
                         }
                         DiffViewMode::SideBySide => {
@@ -323,8 +369,7 @@ impl App {
                                 path,
                                 &self.forge_review_threads,
                                 &remote_index,
-                                self.diff_state.viewport_width,
-                                commit_set.as_ref(),
+                                layout,
                             );
                         }
                     }
@@ -398,8 +443,7 @@ impl App {
         line_no: Option<u32>,
         line_comments: &std::collections::HashMap<u32, Vec<crate::model::Comment>>,
         side: LineSide,
-        viewport_width: usize,
-        commit_set: Option<&std::collections::HashSet<String>>,
+        layout: CommentLayout<'_>,
     ) {
         let Some(ln) = line_no else {
             return;
@@ -419,11 +463,17 @@ impl App {
 
             // Hide comments scoped to a commit outside the current selection.
             // Uses the shared predicate so height math and rendering agree.
-            if !Self::comment_visible_with(comment, commit_set) {
+            if !Self::comment_visible_with(comment, layout.commit_set)
+                || layout.reply_hidden(comment)
+            {
                 continue;
             }
 
-            let comment_lines = Self::comment_display_lines(comment, viewport_width);
+            let comment_lines = Self::comment_display_lines_collapsed(
+                comment,
+                layout.viewport_width,
+                layout.collapsed(comment),
+            );
             for _ in 0..comment_lines {
                 annotations.push(AnnotatedLine::LineComment {
                     file_idx,
@@ -503,8 +553,7 @@ impl App {
         path: &std::path::Path,
         remote_threads: &[crate::forge::remote_comments::RemoteReviewThread],
         remote_index: &RemoteThreadIndex,
-        viewport_width: usize,
-        commit_set: Option<&std::collections::HashSet<String>>,
+        layout: CommentLayout<'_>,
     ) {
         for (line_idx, diff_line) in lines.iter().enumerate() {
             annotations.push(AnnotatedLine::DiffLine {
@@ -523,8 +572,7 @@ impl App {
                     Some(old_ln),
                     line_comments,
                     LineSide::Old,
-                    viewport_width,
-                    commit_set,
+                    layout,
                 );
                 Self::push_remote_threads(
                     annotations,
@@ -544,8 +592,7 @@ impl App {
                     Some(new_ln),
                     line_comments,
                     LineSide::New,
-                    viewport_width,
-                    commit_set,
+                    layout,
                 );
                 Self::push_remote_threads(
                     annotations,
@@ -570,8 +617,7 @@ impl App {
         path: &std::path::Path,
         remote_threads: &[crate::forge::remote_comments::RemoteReviewThread],
         remote_index: &RemoteThreadIndex,
-        viewport_width: usize,
-        commit_set: Option<&std::collections::HashSet<String>>,
+        layout: CommentLayout<'_>,
     ) {
         let mut i = 0;
         while i < lines.len() {
@@ -594,8 +640,7 @@ impl App {
                         diff_line.new_lineno,
                         line_comments,
                         LineSide::New,
-                        viewport_width,
-                        commit_set,
+                        layout,
                     );
                     if let Some(new_ln) = diff_line.new_lineno {
                         Self::push_remote_threads(
@@ -660,8 +705,7 @@ impl App {
                             old_lineno,
                             line_comments,
                             LineSide::Old,
-                            viewport_width,
-                            commit_set,
+                            layout,
                         );
                         if let Some(old_ln) = old_lineno {
                             Self::push_remote_threads(
@@ -679,8 +723,7 @@ impl App {
                             new_lineno,
                             line_comments,
                             LineSide::New,
-                            viewport_width,
-                            commit_set,
+                            layout,
                         );
                         if let Some(new_ln) = new_lineno {
                             Self::push_remote_threads(
@@ -712,8 +755,7 @@ impl App {
                         diff_line.new_lineno,
                         line_comments,
                         LineSide::New,
-                        viewport_width,
-                        commit_set,
+                        layout,
                     );
                     if let Some(new_ln) = diff_line.new_lineno {
                         Self::push_remote_threads(

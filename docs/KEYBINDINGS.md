@@ -137,6 +137,8 @@ Shown below the file tree when local comments or visible remote PR threads exist
 | `C` | Add file comment |
 | `<leader>c` | Add review comment |
 | `<leader>r` | Resolve / reopen the comment thread at the cursor (also `:resolve` / `:unresolve`) |
+| `<leader>R` | Show or collapse settled threads (also `:threads resolved` / `:threads open`) |
+| `Enter` | On a settled thread: show or collapse settled threads (does not unresolve) |
 | `v` / `V` | Enter visual mode for range comments |
 | `dd` | Delete comment at cursor |
 | `i` | Edit comment at cursor (vim: text cursor at start) |

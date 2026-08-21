@@ -138,6 +138,9 @@ settled as a unit. Every comment in it carries the resulting `resolved` flag,
 and the command prints the thread's root. Replying to a resolved thread reopens
 it: a new message means it was not settled after all.
 
+In the TUI a settled thread collapses to a single `▸ resolved (n replies)`
+marker row; `<leader>R` (or `:threads resolved`) shows them in full again.
+
 `resolved` appears on every entry of `review comments`. A caller answering a
 review should skip resolved threads.
 

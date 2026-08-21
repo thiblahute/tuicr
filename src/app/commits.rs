@@ -744,7 +744,72 @@ impl App {
     /// compute [`selected_commit_set`] once and use
     /// [`comment_visible_with`] instead.
     pub fn comment_visible(&self, comment: &crate::model::Comment) -> bool {
+        // A settled thread collapses to its root: the replies drop out of the
+        // diff entirely, and the root renders as a one-line marker (see
+        // `thread_collapsed`). Every filtering site goes through here, so the
+        // height model and the renderers cannot disagree about it.
+        if comment.resolved && comment.is_reply() && !self.thread_expanded(comment) {
+            return false;
+        }
         Self::comment_visible_with(comment, self.selected_commit_set().as_ref())
+    }
+
+    /// True when this comment should render as a collapsed marker rather than
+    /// a full box — a settled thread's root while resolved threads are hidden.
+    pub fn thread_collapsed(&self, comment: &crate::model::Comment) -> bool {
+        comment.resolved && !comment.is_reply() && !self.thread_expanded(comment)
+    }
+
+    /// True when this comment's thread is shown in full — the review-wide
+    /// setting, flipped for threads the reader toggled individually.
+    pub fn thread_expanded(&self, comment: &crate::model::Comment) -> bool {
+        let root = comment.in_reply_to.as_deref().unwrap_or(&comment.id);
+        self.show_resolved_threads != self.thread_display_overrides.contains(root)
+    }
+
+    /// How this comment's box should present: open, resolved-but-expanded, or
+    /// collapsed to a marker carrying its reply count.
+    pub fn thread_display(
+        &self,
+        comment: &crate::model::Comment,
+    ) -> crate::ui::comment_panel::ThreadDisplay {
+        use crate::ui::comment_panel::ThreadDisplay;
+        if self.thread_collapsed(comment) {
+            ThreadDisplay::Collapsed {
+                replies: self.thread_reply_count(&comment.id),
+                expand_key: self.leader_key,
+            }
+        } else if comment.resolved {
+            ThreadDisplay::Resolved
+        } else {
+            ThreadDisplay::Open
+        }
+    }
+
+    /// Replies stored against `root_id`, wherever the thread lives.
+    fn thread_reply_count(&self, root_id: &str) -> usize {
+        self.session
+            .review_comments
+            .iter()
+            .chain(self.session.files.values().flat_map(|review| {
+                review
+                    .file_comments
+                    .iter()
+                    .chain(review.line_comments.values().flatten())
+            }))
+            .filter(|c| c.in_reply_to.as_deref() == Some(root_id))
+            .count()
+    }
+
+    /// Rows this comment occupies right now, collapsed or not. The renderers
+    /// and the annotation builder both go through here so the two never
+    /// disagree about a settled thread's height.
+    pub fn comment_rows(&self, comment: &crate::model::Comment, viewport_width: usize) -> usize {
+        Self::comment_display_lines_collapsed(
+            comment,
+            viewport_width,
+            self.thread_collapsed(comment),
+        )
     }
 
     /// Pure visibility check against a precomputed commit set — no

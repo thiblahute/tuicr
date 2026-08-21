@@ -1487,6 +1487,21 @@ impl App {
     /// Uses viewport_width to account for pre-wrapped visual segments so the
     /// annotation count stays in sync with what format_comment_lines renders.
     pub(crate) fn comment_display_lines(comment: &Comment, viewport_width: usize) -> usize {
+        Self::comment_display_lines_collapsed(comment, viewport_width, false)
+    }
+
+    /// Row count for a comment box, where `collapsed` is the one-line marker a
+    /// settled thread renders as. Callers pass `App::thread_collapsed(comment)`;
+    /// the plain `comment_display_lines` is the never-collapsed case, kept for
+    /// the sites that render a box unconditionally (the editor, PR panels).
+    pub(crate) fn comment_display_lines_collapsed(
+        comment: &Comment,
+        viewport_width: usize,
+        collapsed: bool,
+    ) -> usize {
+        if collapsed {
+            return 1;
+        }
         // Mirrors the content_area calculation in format_comment_lines:
         // indicator(1) + border_prefix(7) + safety_margin(2) = 10
         let content_area = viewport_width.saturating_sub(10);

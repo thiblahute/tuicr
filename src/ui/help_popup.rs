@@ -547,6 +547,13 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(vec![
             Span::styled(
+                format!("  {}R        ", app.leader_key),
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Show or collapse settled threads (also ⏎ on one)"),
+        ]),
+        Line::from(vec![
+            Span::styled(
                 "  i         ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),

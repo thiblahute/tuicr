@@ -1080,6 +1080,164 @@ impl App {
         }
     }
 
+    /// Expand or collapse the settled thread under the cursor. Only that
+    /// thread moves — expanding used to flip the whole review, which inserts
+    /// rows above the cursor and throws the page around the reader.
+    ///
+    /// Returns true when it acted, so the caller can fall through to its own
+    /// Enter handling otherwise.
+    pub fn toggle_collapsed_thread_at_cursor(&mut self) -> bool {
+        let Some(comment) = self
+            .find_comment_at_cursor()
+            .and_then(|location| self.comment_at_location(&location))
+        else {
+            return false;
+        };
+        if !comment.resolved {
+            return false;
+        }
+        let root_id = comment
+            .in_reply_to
+            .clone()
+            .unwrap_or_else(|| comment.id.clone());
+
+        // Hold the thread's own row where it is on screen: the rows that
+        // appear or vanish are below it, so the reader keeps their place.
+        let anchor_screen_row = self
+            .diff_state
+            .cursor_line
+            .saturating_sub(self.diff_state.scroll_offset);
+
+        if !self.thread_display_overrides.insert(root_id.clone()) {
+            self.thread_display_overrides.remove(&root_id);
+        }
+        self.rebuild_annotations();
+        self.restore_thread_anchor(&root_id, anchor_screen_row);
+        true
+    }
+
+    /// Put the cursor back on `root_id`'s first row and scroll so that row sits
+    /// where it was on screen. Without this the page jumps by however many rows
+    /// the thread gained or lost.
+    fn restore_thread_anchor(&mut self, root_id: &str, screen_row: usize) {
+        let target = self.line_annotations.iter().position(|annotation| {
+            self.annotation_comment_id(annotation)
+                .is_some_and(|id| id == root_id)
+        });
+        if let Some(line) = target {
+            self.diff_state.cursor_line = line;
+            self.diff_state.scroll_offset = line.saturating_sub(screen_row);
+        }
+        self.clamp_cursor_to_document();
+    }
+
+    /// The comment an annotation row belongs to, when it is a comment row.
+    fn annotation_comment_id(&self, annotation: &AnnotatedLine) -> Option<&str> {
+        match annotation {
+            AnnotatedLine::ReviewComment { comment_idx } => self
+                .session
+                .review_comments
+                .get(*comment_idx)
+                .map(|c| c.id.as_str()),
+            AnnotatedLine::FileComment {
+                file_idx,
+                comment_idx,
+            } => {
+                let path = self.diff_files.get(*file_idx)?.display_path();
+                self.session
+                    .files
+                    .get(path)?
+                    .file_comments
+                    .get(*comment_idx)
+                    .map(|c| c.id.as_str())
+            }
+            AnnotatedLine::LineComment {
+                file_idx,
+                line,
+                comment_idx,
+                ..
+            } => {
+                let path = self.diff_files.get(*file_idx)?.display_path();
+                self.session
+                    .files
+                    .get(path)?
+                    .line_comments
+                    .get(line)?
+                    .get(*comment_idx)
+                    .map(|c| c.id.as_str())
+            }
+            _ => None,
+        }
+    }
+
+    /// Keep the cursor inside the document after a row-count change.
+    fn clamp_cursor_to_document(&mut self) {
+        let max = self.max_cursor_line();
+        if self.diff_state.cursor_line > max {
+            self.diff_state.cursor_line = max;
+        }
+    }
+
+    /// Show settled threads in full, or collapse them back to their marker.
+    pub fn set_show_resolved_threads(&mut self, show: bool) {
+        if self.show_resolved_threads == show {
+            return;
+        }
+        self.show_resolved_threads = show;
+        // A review-wide decision supersedes the per-thread ones.
+        self.thread_display_overrides.clear();
+        // Same reasoning as the per-thread toggle: hold the cursor's row on
+        // screen so a global fold does not scroll the reader away.
+        let anchor_screen_row = self
+            .diff_state
+            .cursor_line
+            .saturating_sub(self.diff_state.scroll_offset);
+        let anchor_id = self
+            .find_comment_at_cursor()
+            .and_then(|location| self.comment_at_location(&location))
+            .map(|comment| {
+                comment
+                    .in_reply_to
+                    .clone()
+                    .unwrap_or_else(|| comment.id.clone())
+            });
+        // Row counts change, so the annotation model has to be rebuilt before
+        // the next frame or the cursor lands on the wrong line — and collapsing
+        // shrinks the document, so the cursor may now be past its end.
+        self.rebuild_annotations();
+        match anchor_id {
+            Some(root_id) => self.restore_thread_anchor(&root_id, anchor_screen_row),
+            None => self.clamp_cursor_to_document(),
+        }
+        let hidden = self.resolved_thread_count();
+        self.set_message(match (show, hidden) {
+            (true, 0) => "Showing resolved threads (none in this review)".to_string(),
+            (true, 1) => "Showing 1 resolved thread".to_string(),
+            (true, n) => format!("Showing {n} resolved threads"),
+            (false, 1) => "1 resolved thread collapsed".to_string(),
+            (false, n) => format!("{n} resolved threads collapsed"),
+        });
+    }
+
+    pub fn toggle_show_resolved_threads(&mut self) {
+        self.set_show_resolved_threads(!self.show_resolved_threads);
+    }
+
+    /// Settled threads in the session, counted by their roots.
+    pub fn resolved_thread_count(&self) -> usize {
+        self.session
+            .review_comments
+            .iter()
+            .chain(self.session.files.values().flat_map(|review| {
+                review
+                    .file_comments
+                    .iter()
+                    .chain(review.line_comments.values().flatten())
+            }))
+            .filter(|c| c.resolved && !c.is_reply())
+            .count()
+    }
+
     /// Flip the resolved state of the thread at the cursor. Backs
     /// `<leader>r`, where a single key has to mean both directions —
     /// `:resolve` / `:unresolve` name them explicitly instead.

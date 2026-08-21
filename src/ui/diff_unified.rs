@@ -130,6 +130,13 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
     }
 
     for comment in &app.session.review_comments {
+        // The row model skips what is not visible — a settled thread's replies
+        // above all — so drawing it here would put the diff one box lower than
+        // every row index says it is, and the cursor would act on a different
+        // comment than the one under it.
+        if !app.comment_visible(comment) {
+            continue;
+        }
         let is_being_edited =
             app.editing_comment_id.as_ref() == Some(&comment.id) && is_review_comment_mode;
 
@@ -152,7 +159,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
             comment_cursor_column = 1 + cursor_info.column;
             comment_input_box_range =
                 Some((line_idx, line_idx + input_lines.len().saturating_sub(1)));
-            let annotations_replaced = App::comment_display_lines(comment, inner.width as usize);
+            let annotations_replaced = app.comment_rows(comment, inner.width as usize);
             app.comment_input_annotation_offset =
                 Some((line_idx, input_lines.len(), annotations_replaced));
 
@@ -166,7 +173,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                 line_idx += 1;
             }
         } else {
-            let rows = App::comment_display_lines(comment, inner.width as usize);
+            let rows = app.comment_rows(comment, inner.width as usize);
             if !comment_box_visible(line_idx, rows, (visible_start, visible_end)) {
                 skip_comment_box(&mut lines, &mut line_idx, rows);
                 continue;
@@ -178,7 +185,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                 None,
                 comment_width,
                 comment_panel::CommentBadge::for_comment(comment, &app.username),
-                comment.resolved,
+                app.thread_display(comment),
             );
             for mut comment_line in comment_lines {
                 let indicator = cursor_indicator(line_idx, current_line_idx);
@@ -353,8 +360,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                     comment_cursor_column = 1 + cursor_info.column;
                     comment_input_box_range =
                         Some((line_idx, line_idx + input_lines.len().saturating_sub(1)));
-                    let annotations_replaced =
-                        App::comment_display_lines(comment, inner.width as usize);
+                    let annotations_replaced = app.comment_rows(comment, inner.width as usize);
                     app.comment_input_annotation_offset =
                         Some((line_idx, input_lines.len(), annotations_replaced));
 
@@ -371,7 +377,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                         line_idx += 1;
                     }
                 } else {
-                    let rows = App::comment_display_lines(comment, inner.width as usize);
+                    let rows = app.comment_rows(comment, inner.width as usize);
                     if !comment_box_visible(line_idx, rows, (visible_start, visible_end)) {
                         skip_comment_box(&mut lines, &mut line_idx, rows);
                         continue;
@@ -383,7 +389,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                         None,
                         comment_width,
                         comment_panel::CommentBadge::for_comment(comment, &app.username),
-                        comment.resolved,
+                        app.thread_display(comment),
                     );
                     for mut comment_line in comment_lines {
                         let indicator = cursor_indicator(line_idx, current_line_idx);
@@ -735,10 +741,8 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                                             line_idx,
                                             line_idx + input_lines.len().saturating_sub(1),
                                         ));
-                                        let annotations_replaced = App::comment_display_lines(
-                                            comment,
-                                            inner.width as usize,
-                                        );
+                                        let annotations_replaced =
+                                            app.comment_rows(comment, inner.width as usize);
                                         app.comment_input_annotation_offset = Some((
                                             line_idx,
                                             input_lines.len(),
@@ -770,10 +774,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                                             .line_range
                                             .or_else(|| Some(LineRange::single(old_ln)));
                                         let box_top_row = line_idx;
-                                        let rows = App::comment_display_lines(
-                                            comment,
-                                            inner.width as usize,
-                                        );
+                                        let rows = app.comment_rows(comment, inner.width as usize);
                                         // The bar is recorded either way: it is
                                         // painted above the box, so it can be on
                                         // screen while the box itself is not.
@@ -797,7 +798,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                                                     comment,
                                                     &app.username,
                                                 ),
-                                                comment.resolved,
+                                                app.thread_display(comment),
                                             );
                                             for mut comment_line in comment_lines {
                                                 let is_current = line_idx == current_line_idx;
@@ -932,10 +933,8 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                                             line_idx,
                                             line_idx + input_lines.len().saturating_sub(1),
                                         ));
-                                        let annotations_replaced = App::comment_display_lines(
-                                            comment,
-                                            inner.width as usize,
-                                        );
+                                        let annotations_replaced =
+                                            app.comment_rows(comment, inner.width as usize);
                                         app.comment_input_annotation_offset = Some((
                                             line_idx,
                                             input_lines.len(),
@@ -967,10 +966,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                                             .line_range
                                             .or_else(|| Some(LineRange::single(new_ln)));
                                         let box_top_row = line_idx;
-                                        let rows = App::comment_display_lines(
-                                            comment,
-                                            inner.width as usize,
-                                        );
+                                        let rows = app.comment_rows(comment, inner.width as usize);
                                         // The bar is recorded either way: it is
                                         // painted above the box, so it can be on
                                         // screen while the box itself is not.
@@ -994,7 +990,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                                                     comment,
                                                     &app.username,
                                                 ),
-                                                comment.resolved,
+                                                app.thread_display(comment),
                                             );
                                             for mut comment_line in comment_lines {
                                                 let indicator =

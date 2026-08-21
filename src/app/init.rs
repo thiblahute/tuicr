@@ -521,6 +521,8 @@ impl App {
             comment_line: None,
             editing_comment_id: None,
             comment_reply_target: None,
+            show_resolved_threads: false,
+            thread_display_overrides: std::collections::HashSet::new(),
             local_reply_target: None,
             visual_selection: None,
             mouse_drag_active: false,

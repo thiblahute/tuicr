@@ -519,6 +519,66 @@ impl<'a> CommentBadge<'a> {
     }
 }
 
+/// How a comment box should present right now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThreadDisplay {
+    /// A normal box.
+    Open,
+    /// Settled, but shown in full because resolved threads are expanded.
+    Resolved,
+    /// Settled and hidden: one marker row carrying the reply count and the
+    /// leader key that expands it.
+    Collapsed { replies: usize, expand_key: char },
+}
+
+impl ThreadDisplay {
+    fn is_resolved(self) -> bool {
+        !matches!(self, Self::Open)
+    }
+}
+
+/// The single row a settled thread collapses to: `├─ ▸ [n replies] resolved:
+/// <first line>`. Dim, so it reads as background, and short enough that the
+/// diff stays legible while the record stays visible.
+fn collapsed_thread_line(
+    theme: &Theme,
+    content: &str,
+    reply_count: usize,
+    expand_key: char,
+    width: usize,
+) -> Line<'static> {
+    let dim = styles::dim_style(theme);
+    let summary = content.lines().next().unwrap_or_default();
+    let replies = match reply_count {
+        0 => String::new(),
+        1 => " (1 reply)".to_string(),
+        n => format!(" ({n} replies)"),
+    };
+    let head = format!("    ├─ ▸ resolved{replies}: ");
+    // The way out belongs on the row: a collapsed line that does not say how
+    // to uncollapse it is a dead end.
+    let hint = format!("  (⏎ or {expand_key}R to show)");
+    // Leave room for the hint and the ellipsis so neither is pushed off.
+    let room = width.saturating_sub(head.width() + hint.width() + 1);
+    let summary: String = if summary.width() > room {
+        let mut cut = String::new();
+        for ch in summary.chars() {
+            if cut.width() + 1 > room {
+                break;
+            }
+            cut.push(ch);
+        }
+        format!("{cut}\u{2026}")
+    } else {
+        summary.to_string()
+    };
+    Line::from(vec![
+        Span::styled(head, dim),
+        Span::styled(summary, dim),
+        Span::styled(hint, dim),
+    ])
+}
+
 /// Format a comment as multiple lines with a box border (themed version).
 ///
 /// `badge` sets the top-row badge and tints the box border: `Own` keeps the
@@ -532,8 +592,20 @@ pub fn format_comment_lines(
     line_range: Option<LineRange>,
     width: usize,
     badge: CommentBadge<'_>,
-    resolved: bool,
+    display: ThreadDisplay,
 ) -> Vec<Line<'static>> {
+    // A collapsed thread is exactly one row; `comment_display_lines_collapsed`
+    // promises the same, which is what keeps navigation aligned with the page.
+    if let ThreadDisplay::Collapsed {
+        replies,
+        expand_key,
+    } = display
+    {
+        return vec![collapsed_thread_line(
+            theme, content, replies, expand_key, width,
+        )];
+    }
+    let resolved = display.is_resolved();
     // A settled thread keeps its shape — same rows, same anchor — but drops to
     // the dim palette so it reads as background, the way a resolved remote
     // thread does.
@@ -714,7 +786,7 @@ mod tests {
                     // cursor-indicator column.
                     viewport_width.saturating_sub(1),
                     CommentBadge::Own,
-                    false,
+                    ThreadDisplay::Open,
                 );
                 assert_eq!(
                     App::comment_display_lines(&comment, viewport_width),
@@ -1156,7 +1228,7 @@ mod tests {
             None,
             80,
             CommentBadge::Own,
-            false,
+            ThreadDisplay::Open,
         );
         // Header + footer wrap the body; reconstruct must round-trip the text.
         assert_eq!(reconstruct(&lines), content);

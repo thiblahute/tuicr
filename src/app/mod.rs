@@ -1202,6 +1202,16 @@ pub struct App {
     /// review thread at this index in `forge_review_threads`. Saving posts
     /// the reply straight to the forge instead of storing a local draft.
     pub comment_reply_target: Option<usize>,
+    /// Whether settled threads are shown in full. Off by default: a resolved
+    /// thread collapses to its root's first line, marked `▸ resolved`, so the
+    /// diff shows what still needs attention without losing the record.
+    pub show_resolved_threads: bool,
+    /// Roots of settled threads whose visibility differs from
+    /// `show_resolved_threads` — Enter flips one thread rather than the whole
+    /// review, which would insert rows above the cursor and throw the page.
+    /// Read it as an override: shown when the global setting and membership
+    /// disagree, so one key works in both directions.
+    pub thread_display_overrides: std::collections::HashSet<String>,
     /// When `Some`, the comment editor is composing a reply to the local
     /// comment with this id. Saving stores a local draft reply beside it
     /// (`reply_to_comment_in_session`) — unlike a remote thread reply, nothing
