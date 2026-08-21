@@ -177,7 +177,7 @@ fn should_render_a_reply_with_the_thread_header_and_no_repeated_anchor() {
         Some(LineRange::single(42)),
         80,
         crate::ui::comment_panel::CommentBadge::for_comment(&reply, "user"),
-        reply.resolved,
+        crate::ui::comment_panel::ThreadDisplay::Open,
     );
 
     let header: String = lines[0]
@@ -537,7 +537,7 @@ fn should_render_a_settled_thread_in_the_dim_palette() {
         Some(LineRange::single(42)),
         80,
         crate::ui::comment_panel::CommentBadge::for_comment(&settled, "user"),
-        settled.resolved,
+        crate::ui::comment_panel::ThreadDisplay::Resolved,
     );
 
     let header: String = lines[0]
@@ -605,4 +605,269 @@ fn should_toggle_from_a_reply_row_using_the_threads_state() {
     cursor_on_line_comment(&mut app, 1);
     assert!(app.toggle_thread_resolved_at_cursor());
     assert!(line_thread(&app.session).iter().all(|c| !c.resolved));
+}
+
+#[test]
+fn should_collapse_a_settled_thread_to_one_marker_row() {
+    let (mut session, root) = session_with_line_comment();
+    reply(&mut session, &root.id, "fixed in def4567");
+    reply(&mut session, &root.id, "and covered by a test");
+    crate::review_store::set_thread_resolved(&mut session, &root.id, true).unwrap();
+    let mut app = app_for(session);
+    app.diff_state.viewport_width = 80;
+
+    // Hidden by default: the replies leave the diff, the root becomes a marker.
+    let thread = line_thread(&app.session);
+    assert!(!app.comment_visible(&thread[1]), "replies drop out");
+    assert!(
+        app.comment_visible(&thread[0]),
+        "the root stays as the marker"
+    );
+    assert_eq!(app.comment_rows(&thread[0], 80), 1, "one marker row");
+    assert_eq!(
+        app.thread_display(&thread[0]),
+        crate::ui::comment_panel::ThreadDisplay::Collapsed {
+            replies: 2,
+            expand_key: app.leader_key,
+        }
+    );
+
+    // Expanded: the whole thread is back at full height.
+    app.set_show_resolved_threads(true);
+    let thread = line_thread(&app.session);
+    assert!(thread.iter().all(|c| app.comment_visible(c)));
+    assert!(app.comment_rows(&thread[0], 80) > 1);
+    assert_eq!(
+        app.thread_display(&thread[0]),
+        crate::ui::comment_panel::ThreadDisplay::Resolved
+    );
+}
+
+#[test]
+fn should_keep_annotations_in_step_with_the_collapsed_height() {
+    // The scroll model and the renderer must agree, or the cursor lands on the
+    // wrong line after a thread collapses.
+    let (mut session, root) = session_with_line_comment();
+    reply(&mut session, &root.id, "fixed in def4567");
+    let mut app = app_for(session);
+    app.diff_state.viewport_width = 80;
+    app.rebuild_annotations();
+
+    let rows_when_open = app
+        .line_annotations
+        .iter()
+        .filter(|a| matches!(a, AnnotatedLine::LineComment { .. }))
+        .count();
+
+    crate::review_store::set_thread_resolved(&mut app.session, &root.id, true).unwrap();
+    app.rebuild_annotations();
+    let rows_when_collapsed = app
+        .line_annotations
+        .iter()
+        .filter(|a| matches!(a, AnnotatedLine::LineComment { .. }))
+        .count();
+
+    assert_eq!(
+        rows_when_collapsed, 1,
+        "collapsed thread owns exactly one row"
+    );
+    assert!(rows_when_collapsed < rows_when_open);
+
+    app.set_show_resolved_threads(true);
+    let rows_expanded = app
+        .line_annotations
+        .iter()
+        .filter(|a| matches!(a, AnnotatedLine::LineComment { .. }))
+        .count();
+    assert_eq!(rows_expanded, rows_when_open, "expanding restores the rows");
+}
+
+#[test]
+fn should_still_reach_a_collapsed_thread_with_the_cursor() {
+    // The marker keeps the thread addressable: <leader>r on it reopens.
+    let (mut session, root) = session_with_line_comment();
+    reply(&mut session, &root.id, "fixed in def4567");
+    crate::review_store::set_thread_resolved(&mut session, &root.id, true).unwrap();
+    let mut app = app_for(session);
+    cursor_on_line_comment(&mut app, 0);
+
+    assert!(app.toggle_thread_resolved_at_cursor());
+    assert!(line_thread(&app.session).iter().all(|c| !c.resolved));
+}
+
+#[test]
+fn should_tell_the_reader_how_to_expand_a_collapsed_thread() {
+    // A collapsed row that does not say how to uncollapse it is a dead end —
+    // this is the bug the review caught.
+    let (mut session, root) = session_with_line_comment();
+    reply(&mut session, &root.id, "fixed in def4567");
+    crate::review_store::set_thread_resolved(&mut session, &root.id, true).unwrap();
+    let app = app_for(session);
+    let settled = line_thread(&app.session)[0].clone();
+
+    let lines = crate::ui::comment_panel::format_comment_lines(
+        &app.theme,
+        crate::ui::comment_panel::CommentTypePresentation {
+            label: "ISSUE".to_string(),
+            color: app.theme.fg_primary,
+        },
+        &settled.content,
+        Some(LineRange::single(42)),
+        80,
+        crate::ui::comment_panel::CommentBadge::for_comment(&settled, "user"),
+        app.thread_display(&settled),
+    );
+
+    assert_eq!(lines.len(), 1, "collapsed to one row");
+    let row: String = lines[0]
+        .spans
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect();
+    assert!(row.contains("resolved (1 reply)"), "{row}");
+    assert!(row.contains("to show"), "the way out is on the row: {row}");
+    assert!(
+        row.contains(app.leader_key),
+        "hint names the real leader: {row}"
+    );
+}
+
+#[test]
+fn should_expand_settled_threads_with_enter_on_the_marker() {
+    let (mut session, root) = session_with_line_comment();
+    reply(&mut session, &root.id, "fixed in def4567");
+    crate::review_store::set_thread_resolved(&mut session, &root.id, true).unwrap();
+    let mut app = app_for(session);
+    cursor_on_line_comment(&mut app, 0);
+
+    assert!(app.toggle_collapsed_thread_at_cursor());
+    // Only this thread opens; the review-wide setting is untouched.
+    assert!(!app.show_resolved_threads);
+    assert!(!app.thread_collapsed(&line_thread(&app.session)[0]));
+    // Expanding must not unresolve: the thread is still settled, just visible.
+    assert!(line_thread(&app.session).iter().all(|c| c.resolved));
+}
+
+#[test]
+fn should_collapse_again_with_enter_inside_an_expanded_thread() {
+    let (mut session, root) = session_with_line_comment();
+    reply(&mut session, &root.id, "fixed in def4567");
+    crate::review_store::set_thread_resolved(&mut session, &root.id, true).unwrap();
+    let mut app = app_for(session);
+    app.diff_state.viewport_width = 80;
+    app.set_show_resolved_threads(true);
+    app.rebuild_annotations();
+
+    // Enter from a reply row folds the thread back to its marker.
+    cursor_on_line_comment(&mut app, 1);
+    assert!(app.toggle_collapsed_thread_at_cursor());
+    assert!(app.thread_collapsed(&line_thread(&app.session)[0]));
+    assert!(line_thread(&app.session).iter().all(|c| c.resolved));
+    // And the cursor is left on the marker, not stranded past the shrunken
+    // document or on some unrelated row.
+    assert!(app.diff_state.cursor_line <= app.max_cursor_line());
+    assert!(matches!(
+        app.line_annotations.get(app.diff_state.cursor_line),
+        Some(AnnotatedLine::LineComment { comment_idx: 0, .. })
+    ));
+}
+
+#[test]
+fn should_leave_enter_alone_when_the_cursor_is_not_on_a_marker() {
+    let (session, _root) = session_with_line_comment();
+    let mut app = app_for(session);
+    cursor_on_line_comment(&mut app, 0);
+
+    // An open thread's box is not a marker, so Enter falls through to the
+    // gap/expander handling it has always done.
+    assert!(!app.toggle_collapsed_thread_at_cursor());
+    assert!(!app.show_resolved_threads);
+    assert!(app.thread_display_overrides.is_empty());
+}
+
+#[test]
+fn should_expand_only_the_thread_under_the_cursor() {
+    // Opening one settled thread must not open the others: their rows would
+    // appear above the reader and shove the page.
+    let mut session = session_with_line_comment().0;
+    let first = line_thread(&session)[0].clone();
+    let other = Comment::new(
+        "second thread".to_string(),
+        CommentType::from_id("note"),
+        Some(LineSide::New),
+    );
+    session
+        .get_file_mut(&PathBuf::from("src/main.rs"))
+        .unwrap()
+        .add_line_comment(42, other.clone());
+    crate::review_store::set_thread_resolved(&mut session, &first.id, true).unwrap();
+    crate::review_store::set_thread_resolved(&mut session, &other.id, true).unwrap();
+
+    let mut app = app_for(session);
+    app.diff_state.viewport_width = 80;
+    cursor_on_line_comment(&mut app, 0);
+    assert!(app.toggle_collapsed_thread_at_cursor());
+
+    let thread = line_thread(&app.session);
+    assert!(!app.thread_collapsed(&thread[0]), "the one acted on opens");
+    assert!(
+        app.thread_collapsed(&thread[1]),
+        "its neighbour stays folded"
+    );
+}
+
+#[test]
+fn should_keep_the_thread_where_it_was_on_screen_when_expanding() {
+    // The bug this fixes: expanding scrolled the page and lost the reader.
+    let (mut session, root) = session_with_line_comment();
+    reply(&mut session, &root.id, "a reply");
+    reply(&mut session, &root.id, "another reply");
+    crate::review_store::set_thread_resolved(&mut session, &root.id, true).unwrap();
+    let mut app = app_for(session);
+    app.diff_state.viewport_width = 80;
+    app.rebuild_annotations();
+
+    let marker_line = app
+        .line_annotations
+        .iter()
+        .position(|a| matches!(a, AnnotatedLine::LineComment { comment_idx: 0, .. }))
+        .expect("marker row");
+    app.diff_state.cursor_line = marker_line;
+    app.diff_state.scroll_offset = marker_line.saturating_sub(3);
+    let screen_row_before = app.diff_state.cursor_line - app.diff_state.scroll_offset;
+
+    assert!(app.toggle_collapsed_thread_at_cursor());
+
+    let screen_row_after = app.diff_state.cursor_line - app.diff_state.scroll_offset;
+    assert_eq!(
+        screen_row_after, screen_row_before,
+        "the thread stays on the same screen row"
+    );
+    // And the cursor is still on that thread, not on whatever row moved into
+    // its old index.
+    assert!(matches!(
+        app.line_annotations.get(app.diff_state.cursor_line),
+        Some(AnnotatedLine::LineComment { comment_idx: 0, .. })
+    ));
+}
+
+#[test]
+fn should_not_offer_hidden_replies_when_jumping_between_comments() {
+    // `m` walks the comment navigator; a settled thread's replies are not on
+    // screen, so stopping on them would jump the cursor to a row that is not
+    // there.
+    let (mut session, root) = session_with_line_comment();
+    reply(&mut session, &root.id, "a reply");
+    crate::review_store::set_thread_resolved(&mut session, &root.id, true).unwrap();
+    let mut app = app_for(session);
+    app.diff_state.viewport_width = 80;
+    app.rebuild_annotations();
+
+    let items = app.build_comment_navigator_items();
+    for item in &items {
+        assert!(
+            item.target_annotation < app.line_annotations.len(),
+            "navigator points at a row that exists"
+        );
+    }
 }

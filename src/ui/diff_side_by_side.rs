@@ -497,6 +497,13 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
     }
 
     for comment in &app.session.review_comments {
+        // The row model skips what is not visible — a settled thread's replies
+        // above all — so drawing it here would put the diff one box lower than
+        // every row index says it is, and the cursor would act on a different
+        // comment than the one under it.
+        if !app.comment_visible(comment) {
+            continue;
+        }
         let is_being_edited =
             app.editing_comment_id.as_ref() == Some(&comment.id) && is_review_comment_mode;
 
@@ -519,7 +526,7 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
             comment_cursor_column = 1 + cursor_info.column;
             comment_input_box_range =
                 Some((line_idx, line_idx + input_lines.len().saturating_sub(1)));
-            let annotations_replaced = App::comment_display_lines(comment, inner.width as usize);
+            let annotations_replaced = ctx.app.comment_rows(comment, inner.width as usize);
             annotation_offset = Some((line_idx, input_lines.len(), annotations_replaced));
 
             for mut input_line in input_lines {
@@ -532,7 +539,7 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
                 line_idx += 1;
             }
         } else {
-            let rows = App::comment_display_lines(comment, ctx.panel_width);
+            let rows = ctx.app.comment_rows(comment, ctx.panel_width);
             if !ctx.box_visible(line_idx, rows) {
                 skip_comment_box(&mut lines, &mut line_idx, rows);
                 continue;
@@ -544,7 +551,7 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
                 None,
                 ctx.panel_width.saturating_sub(1),
                 comment_panel::CommentBadge::for_comment(comment, &app.username),
-                comment.resolved,
+                ctx.app.thread_display(comment),
             );
             for mut comment_line in comment_lines {
                 let indicator = cursor_indicator(line_idx, ctx.current_line_idx);
@@ -711,8 +718,7 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
                     comment_cursor_column = 1 + cursor_info.column;
                     comment_input_box_range =
                         Some((line_idx, line_idx + input_lines.len().saturating_sub(1)));
-                    let annotations_replaced =
-                        App::comment_display_lines(comment, inner.width as usize);
+                    let annotations_replaced = ctx.app.comment_rows(comment, inner.width as usize);
                     annotation_offset = Some((line_idx, input_lines.len(), annotations_replaced));
 
                     for mut input_line in input_lines {
@@ -728,7 +734,7 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
                         line_idx += 1;
                     }
                 } else {
-                    let rows = App::comment_display_lines(comment, ctx.panel_width);
+                    let rows = ctx.app.comment_rows(comment, ctx.panel_width);
                     if !ctx.box_visible(line_idx, rows) {
                         skip_comment_box(&mut lines, &mut line_idx, rows);
                         continue;
@@ -740,7 +746,7 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
                         None,
                         ctx.panel_width.saturating_sub(1),
                         comment_panel::CommentBadge::for_comment(comment, &app.username),
-                        comment.resolved,
+                        ctx.app.thread_display(comment),
                     );
                     for mut comment_line in comment_lines {
                         let indicator = cursor_indicator(line_idx, ctx.current_line_idx);
@@ -2109,7 +2115,7 @@ fn add_comments_to_line(
                     );
                     let box_top_row = line_idx;
                     let box_end = line_idx + input_lines.len().saturating_sub(1);
-                    let annotations_replaced = App::comment_display_lines(comment, ctx.panel_width);
+                    let annotations_replaced = ctx.app.comment_rows(comment, ctx.panel_width);
                     cursor_info_out = Some((
                         line_idx + cursor_info.line_offset,
                         1 + cursor_info.column,
@@ -2140,7 +2146,7 @@ fn add_comments_to_line(
                         .line_range
                         .or_else(|| Some(LineRange::single(line_num)));
                     let box_top_row = line_idx;
-                    let rows = App::comment_display_lines(comment, ctx.panel_width);
+                    let rows = ctx.app.comment_rows(comment, ctx.panel_width);
                     // The bar is recorded either way: it is painted above the
                     // box, so it can be on screen while the box itself is not.
                     if !ctx.box_visible(line_idx, rows) {
@@ -2153,7 +2159,7 @@ fn add_comments_to_line(
                             line_range,
                             ctx.panel_width.saturating_sub(1),
                             comment_panel::CommentBadge::for_comment(comment, &ctx.app.username),
-                            comment.resolved,
+                            ctx.app.thread_display(comment),
                         );
                         for mut comment_line in comment_lines {
                             let indicator = cursor_indicator(line_idx, ctx.current_line_idx);

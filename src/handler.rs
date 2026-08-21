@@ -109,6 +109,11 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         &["comments hide"],
         CommandKind::Comments(PrCommentsVisibility::Hide),
     ),
+    CommandSpec::new(
+        &["threads resolved"],
+        CommandKind::ShowResolvedThreads(true),
+    ),
+    CommandSpec::new(&["threads open"], CommandKind::ShowResolvedThreads(false)),
     CommandSpec::new(&["resolve"], CommandKind::SetThreadResolved(true)),
     CommandSpec::new(&["unresolve"], CommandKind::SetThreadResolved(false)),
 ];
@@ -166,6 +171,8 @@ enum CommandKind {
     ThemePicker,
     /// Settle (or reopen) the local comment thread under the cursor.
     SetThreadResolved(bool),
+    /// Show settled threads in full, or collapse them to their marker row.
+    ShowResolvedThreads(bool),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1024,6 +1031,10 @@ fn dispatch_command(app: &mut App, kind: CommandKind) -> CommandAfterDispatch {
             app.set_thread_resolved_at_cursor(resolved);
             CommandAfterDispatch::ExitCommandMode
         }
+        CommandKind::ShowResolvedThreads(show) => {
+            app.set_show_resolved_threads(show);
+            CommandAfterDispatch::ExitCommandMode
+        }
     }
 }
 
@@ -1665,6 +1676,11 @@ pub fn handle_diff_action(app: &mut App, action: Action) {
         Action::MouseScrollDown(n) => app.scroll_view_down(n),
         Action::MouseScrollUp(n) => app.scroll_view_up(n),
         Action::SelectFile => {
+            // Enter on a settled thread folds it open or shut; the gap
+            // handling below ignores comment rows, so this goes first.
+            if app.toggle_collapsed_thread_at_cursor() {
+                return;
+            }
             if let Some(hit) = app.get_gap_at_cursor() {
                 match hit {
                     GapCursorHit::Expander(gap_id, dir) => {
