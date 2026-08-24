@@ -19,7 +19,7 @@ Full reference. Press `?` inside tuicr for an in-app version of this list.
 | `{N}{motion}` | Vim-style count prefix — repeats `j` / `k` / `h` / `l` / `{` / `}` / `[` / `]` `N` times |
 | `{` / `}` | Jump to previous / next file |
 | `[` / `]` | Jump to previous / next hunk |
-| `m` / `M` | Jump to next / previous comment |
+| `m` / `M` | Jump to next / previous comment. Settled threads are skipped while folded; `<leader>R` brings them back into the rotation |
 | `/` | Search within diff (case-insensitive); matches on diff content are highlighted and the status bar shows the `[current/total]` position (headers, comments, and PR info are searchable but not highlighted) |
 | `n` / `N` | Next / previous search match (wraps around) |
 | `Esc` | Clear search-match highlighting; the pattern is kept so `n` / `N` still work |

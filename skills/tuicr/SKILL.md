@@ -263,7 +263,8 @@ tuicr review resolve --repo /path/to/repo --session <slug> --comment-id <id>
 ```
 
 Resolve a thread when you have finished the work it asked for and nothing is
-left to discuss — it dims in the user's diff and drops out of your loop. Be
+left to discuss — it folds away in the user's diff, drops out of their `m`/`M`
+comment iteration, and drops out of your loop. Be
 conservative: leave the thread open when you answered with a question, when you
 declined the request, or when the user may still want to push back. Resolving
 your own answer is not a way to close a disagreement. The user can reopen a

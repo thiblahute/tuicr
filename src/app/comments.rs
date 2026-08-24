@@ -205,6 +205,14 @@ impl App {
                 continue;
             }
 
+            // A settled thread that is folded away is not work: `m`/`M` and the
+            // navigator both walk this list, so skipping it here is what makes
+            // iterating visit only what still wants an answer. Expanding the
+            // thread puts it back in the rotation.
+            if self.annotation_in_collapsed_thread(annotation) {
+                continue;
+            }
+
             if let Some(item) = self.comment_navigator_item_for_key(key.clone(), idx) {
                 items.push(item);
                 last_key = Some(key);
@@ -212,6 +220,22 @@ impl App {
         }
 
         items
+    }
+
+    /// Test hook for `annotation_comment_id`, which is private to the module.
+    #[cfg(test)]
+    pub(in crate::app) fn annotation_comment_id_for_test(
+        &self,
+        annotation: &AnnotatedLine,
+    ) -> Option<&str> {
+        self.annotation_comment_id(annotation)
+    }
+
+    /// True when this row belongs to a settled thread that is currently folded.
+    fn annotation_in_collapsed_thread(&self, annotation: &AnnotatedLine) -> bool {
+        self.annotation_comment_id(annotation)
+            .and_then(|id| self.session.find_comment(id))
+            .is_some_and(|comment| self.thread_collapsed(comment))
     }
 
     pub fn has_comment_navigator_items(&self) -> bool {
