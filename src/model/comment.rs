@@ -208,6 +208,13 @@ pub struct Comment {
     /// settled after all. Old session JSON rehydrates as `false`.
     #[serde(default)]
     pub resolved: bool,
+    /// True when the code this comment was written against is gone: after an
+    /// amend or rebase, no line matching `line_context` could be found in the
+    /// file any more. The comment is never dropped — it renders as outdated so
+    /// the reader can still read it and decide — mirroring how a forge marks a
+    /// review thread whose diff moved on.
+    #[serde(default)]
+    pub outdated: bool,
 }
 
 impl Comment {
@@ -227,6 +234,7 @@ impl Comment {
             commit_id: None,
             in_reply_to: None,
             resolved: false,
+            outdated: false,
         }
     }
 
@@ -252,6 +260,7 @@ impl Comment {
             commit_id: None,
             in_reply_to: None,
             resolved: false,
+            outdated: false,
         }
     }
 

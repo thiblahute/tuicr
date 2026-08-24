@@ -1426,3 +1426,122 @@ fn should_anchor_a_comment_by_content_not_only_by_line_number() {
     assert_eq!(context.content, "let x = 1;", "the line's text is stored");
     assert_eq!(context.new_line, Some(42));
 }
+
+/// A file whose line 42 says `text`, with `pad` context lines before it — used
+/// to simulate an amend that shifts the commented line.
+fn file_with_line_at(path: &str, text: &str, at: u32) -> DiffFile {
+    let lines: Vec<DiffLine> = (1..=at)
+        .map(|n| DiffLine {
+            origin: LineOrigin::Addition,
+            content: if n == at {
+                text.to_string()
+            } else {
+                format!("filler {n}")
+            },
+            old_lineno: None,
+            new_lineno: Some(n),
+            highlighted_spans: None,
+        })
+        .collect();
+    let hunks = vec![DiffHunk {
+        header: format!("@@ -1,{at} +1,{at} @@"),
+        lines,
+        old_start: 1,
+        old_count: at,
+        new_start: 1,
+        new_count: at,
+    }];
+    let content_hash = DiffFile::compute_content_hash(&hunks);
+    DiffFile {
+        old_path: None,
+        new_path: Some(PathBuf::from(path)),
+        status: FileStatus::Modified,
+        hunks,
+        is_binary: false,
+        is_too_large: false,
+        is_commit_message: false,
+        content_hash,
+    }
+}
+
+#[test]
+fn should_follow_a_comment_when_an_amend_moves_its_line() {
+    let (session, _root) = session_with_line_comment();
+    let mut app = app_for(session);
+    // The comment was made on `let x = 1;` at line 42.
+    let path = PathBuf::from("src/main.rs");
+    let comment = app.session.files[&path].line_comments[&42][0].clone();
+    let mut anchored = comment.clone();
+    anchored.line_context = Some(crate::model::LineContext {
+        new_line: Some(42),
+        old_line: None,
+        content: "let x = 1;".to_string(),
+    });
+    app.session
+        .get_file_mut(&path)
+        .unwrap()
+        .line_comments
+        .insert(42, vec![anchored]);
+
+    // An amend inserted three lines above it: the same code now sits at 45.
+    app.diff_files = vec![file_with_line_at("src/main.rs", "let x = 1;", 45)];
+    app.reanchor_comments();
+
+    let review = &app.session.files[&path];
+    assert!(!review.line_comments.contains_key(&42), "left its old line");
+    let moved = &review.line_comments[&45][0];
+    assert_eq!(moved.id, comment.id, "same comment, new line");
+    assert!(!moved.outdated);
+}
+
+#[test]
+fn should_mark_a_comment_outdated_when_its_code_is_gone() {
+    let (session, _root) = session_with_line_comment();
+    let mut app = app_for(session);
+    let path = PathBuf::from("src/main.rs");
+    let mut anchored = app.session.files[&path].line_comments[&42][0].clone();
+    anchored.line_context = Some(crate::model::LineContext {
+        new_line: Some(42),
+        old_line: None,
+        content: "let x = 1;".to_string(),
+    });
+    app.session
+        .get_file_mut(&path)
+        .unwrap()
+        .line_comments
+        .insert(42, vec![anchored]);
+
+    // The amend deleted that line entirely.
+    app.diff_files = vec![file_with_line_at("src/main.rs", "something else", 42)];
+    app.reanchor_comments();
+
+    let stranded = &app.session.files[&path].line_comments[&42][0];
+    assert!(stranded.outdated, "marked, not dropped");
+    assert_eq!(stranded.content, "handle the empty case");
+}
+
+#[test]
+fn should_leave_comments_alone_in_a_file_absent_from_the_diff() {
+    // A narrowed commit selection hides files; that is not the code dying.
+    let (session, _root) = session_with_line_comment();
+    let mut app = app_for(session);
+    app.diff_files = vec![file_with_line_at("src/other.rs", "unrelated", 3)];
+
+    app.reanchor_comments();
+
+    let review = &app.session.files[&PathBuf::from("src/main.rs")];
+    assert!(review.line_comments[&42].iter().all(|c| !c.outdated));
+}
+
+#[test]
+fn should_not_call_a_pre_anchor_comment_outdated() {
+    // Comments written before content anchoring have nothing to match on.
+    let (session, _root) = session_with_line_comment();
+    let mut app = app_for(session);
+    app.diff_files = vec![file_with_line_at("src/main.rs", "totally different", 42)];
+
+    app.reanchor_comments();
+
+    let kept = &app.session.files[&PathBuf::from("src/main.rs")].line_comments[&42][0];
+    assert!(!kept.outdated, "no anchor recorded — keep it where it is");
+}

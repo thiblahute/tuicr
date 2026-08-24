@@ -1165,6 +1165,9 @@ struct CommentOutput {
     /// Whether this comment's thread is settled. Callers answering a review
     /// skip resolved threads.
     resolved: bool,
+    /// True when the code this comment was written against is gone — an amend
+    /// or rebase moved past it. The comment still stands; its anchor does not.
+    outdated: bool,
     content: String,
 }
 
@@ -1217,6 +1220,7 @@ impl CommentOutput {
             created_at: comment.created_at.to_rfc3339(),
             in_reply_to: comment.in_reply_to.clone(),
             resolved: comment.resolved,
+            outdated: comment.outdated,
             content: comment.content.clone(),
         }
     }
