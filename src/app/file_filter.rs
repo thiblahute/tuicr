@@ -49,9 +49,30 @@ impl App {
     /// reviewed files can be hidden: counting a hidden reviewed file as
     /// not-shown would collapse the progress fraction to `0/n`.
     pub fn file_passes_filter(&self, file: &DiffFile) -> bool {
-        self.file_matches_patterns(file)
-            && (self.file_filter.show_reviewed
-                || !self.session.is_file_reviewed(file.display_path()))
+        if !self.file_matches_patterns(file) {
+            return false;
+        }
+        if self.file_filter.show_reviewed {
+            return true;
+        }
+        let path = file.display_path();
+        // Hiding reviewed files means "show me what is left", and an open
+        // comment thread is something left: ticking a file off does not settle
+        // the conversations on it. Hiding those would take the reader's own
+        // unanswered comments off the screen, and `m` walks what is on screen.
+        !self.session.is_file_reviewed(path) || self.file_has_open_threads(path)
+    }
+
+    /// True when this file still carries a comment thread nobody settled.
+    /// Replies do not count on their own — a thread is open or not as a whole.
+    pub fn file_has_open_threads(&self, path: &std::path::PathBuf) -> bool {
+        self.session.files.get(path).is_some_and(|review| {
+            review
+                .file_comments
+                .iter()
+                .chain(review.line_comments.values().flatten())
+                .any(|comment| !comment.is_reply() && !comment.resolved)
+        })
     }
 
     /// `file_passes_filter` by index, for the loops that only carry an index.
@@ -108,11 +129,29 @@ impl App {
                 "All {total} files reviewed \u{00b7} :set reviewed shows them again"
             ));
         } else {
-            self.set_message(format!(
+            let kept = self.reviewed_files_kept_for_open_threads();
+            let mut message = format!(
                 "Hiding {hidden} reviewed \u{00b7} {} of {total} shown",
                 total - hidden
-            ));
+            );
+            if kept > 0 {
+                message.push_str(&format!(" \u{00b7} {kept} kept for open comments"));
+            }
+            self.set_message(message);
         }
+    }
+
+    /// Reviewed files still on screen because a thread on them is open.
+    fn reviewed_files_kept_for_open_threads(&self) -> usize {
+        self.diff_files
+            .iter()
+            .filter(|file| {
+                let path = file.display_path();
+                self.session.is_file_reviewed(path)
+                    && self.file_has_open_threads(path)
+                    && self.file_matches_patterns(file)
+            })
+            .count()
     }
 
     /// Indices of the files surviving the current filters, in tree order.

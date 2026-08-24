@@ -218,7 +218,7 @@ In command mode,
 | `:set commits!` | Toggle inline commit selector |
 | `:set reviewed` | Show files already marked reviewed |
 | `:set noreviewed` | Hide files already marked reviewed |
-| `:set reviewed!` / `:reviewed` | Toggle files already marked reviewed |
+| `:set reviewed!` / `:reviewed` | Toggle files already marked reviewed (files with an open comment thread stay visible) |
 | `:submit agent` | Hand the review to a waiting agent (nothing is pushed, nothing locks) |
 | `:resolve` | Settle the comment thread at the cursor — it dims, and `tuicr review comments` reports it `resolved` |
 | `:unresolve` | Reopen the thread at the cursor |

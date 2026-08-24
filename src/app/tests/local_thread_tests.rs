@@ -946,3 +946,49 @@ fn should_skip_settled_threads_when_iterating_comments() {
         "expanded threads are visitable again"
     );
 }
+
+#[test]
+fn should_keep_a_reviewed_file_visible_while_a_thread_on_it_is_open() {
+    // Ticking a file off does not settle the conversations on it: hiding it
+    // would take the reader's own unanswered comments off the screen, and
+    // `m` only reaches what is on screen.
+    let (session, _root) = session_with_line_comment();
+    let mut app = app_for(session);
+    let path = PathBuf::from("src/main.rs");
+    app.session.get_file_mut(&path).unwrap().reviewed = true;
+    app.set_show_reviewed(false);
+
+    assert!(app.file_has_open_threads(&path));
+    assert!(
+        app.file_passes_filter(&app.diff_files[0]),
+        "a reviewed file with an open thread stays on screen"
+    );
+}
+
+#[test]
+fn should_hide_a_reviewed_file_once_its_threads_are_settled() {
+    let (mut session, root) = session_with_line_comment();
+    reply(&mut session, &root.id, "fixed");
+    crate::review_store::set_thread_resolved(&mut session, &root.id, true).unwrap();
+    let mut app = app_for(session);
+    let path = PathBuf::from("src/main.rs");
+    app.session.get_file_mut(&path).unwrap().reviewed = true;
+    app.set_show_reviewed(false);
+
+    assert!(!app.file_has_open_threads(&path));
+    assert!(
+        !app.file_passes_filter(&app.diff_files[0]),
+        "reviewed and nothing open — now it is really done"
+    );
+}
+
+#[test]
+fn should_not_count_a_reply_as_an_open_thread_on_its_own() {
+    // A reply belongs to its root's thread; resolving the thread settles both.
+    let (mut session, root) = session_with_line_comment();
+    reply(&mut session, &root.id, "answered");
+    crate::review_store::set_thread_resolved(&mut session, &root.id, true).unwrap();
+    let app = app_for(session);
+
+    assert!(!app.file_has_open_threads(&PathBuf::from("src/main.rs")));
+}
