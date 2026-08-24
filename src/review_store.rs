@@ -418,6 +418,7 @@ pub fn reply_to_comment_in_session(
             // state — a lone unresolved member of a settled thread would
             // render as an orphan box under the collapsed marker.
             resolved: if request.reopen { false } else { root.resolved },
+            outdated: root.outdated,
         };
         // After the last comment already in this thread, so replies read in
         // posted order and the thread never interleaves with its neighbours.

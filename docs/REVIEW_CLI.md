@@ -180,7 +180,10 @@ it: a new message means it was not settled after all.
 In the TUI a settled thread collapses to a single `▸ resolved (n replies)`
 marker row; `<leader>R` (or `:threads resolved`) shows them in full again.
 
-`resolved` appears on every entry of `review comments`. A caller answering a
+`resolved` and `outdated` appear on every entry of `review comments`.
+`outdated` means the code the comment was written against is gone — an amend or
+rebase moved past it — so the comment still stands but its anchor does not.
+Answer it from its text rather than assuming the line still says what it said. A caller answering a
 review should skip resolved threads.
 
 ## JSON Input

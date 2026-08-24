@@ -788,6 +788,107 @@ impl App {
     /// worker fetches off-thread, so it has no such guarantee. Callers
     /// reached from a background result must check relevance first, which
     /// `poll_diff_watch_changes` does via `diff_watch_result_is_stale`.
+    /// How far from its recorded line a comment will chase its own text. An
+    /// amend usually shifts a line by a handful; searching the whole file would
+    /// happily rebind a comment to an identical line (`}`, `};`) somewhere
+    /// unrelated, which is worse than admitting the anchor is gone.
+    const REANCHOR_WINDOW: u32 = 60;
+
+    /// Re-bind line comments to the code they were written against after the
+    /// diff changed underneath them, and mark the ones whose code is gone.
+    ///
+    /// Line numbers alone drift silently: amend a commit and line 42 is
+    /// somebody else's code. Each comment carries the text it was made on
+    /// (`line_context`), so this looks for that text near where it used to be
+    /// and moves the comment to it. Nothing found means the code is gone — the
+    /// comment is marked `outdated`, never dropped.
+    ///
+    /// Files missing from the current diff are left alone: with a narrowed
+    /// commit selection a file is absent because it is not being shown, not
+    /// because its lines died.
+    pub(in crate::app) fn reanchor_comments(&mut self) {
+        for file in &self.diff_files {
+            let path = file.display_path().clone();
+            let Some(review) = self.session.files.get_mut(&path) else {
+                continue;
+            };
+
+            let mut moved: Vec<(u32, Comment)> = Vec::new();
+            let mut lines: Vec<u32> = review.line_comments.keys().copied().collect();
+            lines.sort_unstable();
+
+            for line in lines {
+                let Some(comments) = review.line_comments.get_mut(&line) else {
+                    continue;
+                };
+                let mut kept: Vec<Comment> = Vec::new();
+                for mut comment in comments.drain(..) {
+                    match Self::find_anchor(file, &comment, line) {
+                        Some(found) if found == line => {
+                            comment.outdated = false;
+                            kept.push(comment);
+                        }
+                        Some(found) => {
+                            comment.outdated = false;
+                            if let Some(range) = comment.line_range.as_mut() {
+                                let span = range.end.saturating_sub(range.start);
+                                *range =
+                                    crate::model::LineRange::new(found.saturating_sub(span), found);
+                            }
+                            moved.push((found, comment));
+                        }
+                        None => {
+                            comment.outdated = true;
+                            kept.push(comment);
+                        }
+                    }
+                }
+                *comments = kept;
+            }
+
+            review.line_comments.retain(|_, v| !v.is_empty());
+            for (line, comment) in moved {
+                review.line_comments.entry(line).or_default().push(comment);
+            }
+        }
+    }
+
+    /// The line in `file` this comment belongs to now: its recorded line when
+    /// the text still matches, otherwise the nearest line carrying that text
+    /// within `REANCHOR_WINDOW`. `None` when the text is gone, and when the
+    /// comment predates content anchoring — an old comment has nothing to
+    /// match on, so it keeps its line rather than being called outdated.
+    fn find_anchor(file: &DiffFile, comment: &Comment, line: u32) -> Option<u32> {
+        let Some(context) = comment.line_context.as_ref() else {
+            return Some(line);
+        };
+        let side = comment.side.unwrap_or_default();
+        let mut best: Option<u32> = None;
+        for hunk in &file.hunks {
+            for diff_line in &hunk.lines {
+                let lineno = match side {
+                    LineSide::Old => diff_line.old_lineno,
+                    LineSide::New => diff_line.new_lineno,
+                };
+                let Some(lineno) = lineno else { continue };
+                if diff_line.content != context.content {
+                    continue;
+                }
+                if lineno == line {
+                    return Some(line);
+                }
+                if lineno.abs_diff(line) > Self::REANCHOR_WINDOW {
+                    continue;
+                }
+                // Nearest wins; ties go to the earlier line for determinism.
+                if best.is_none_or(|b| (lineno.abs_diff(line), lineno) < (b.abs_diff(line), b)) {
+                    best = Some(lineno);
+                }
+            }
+        }
+        best
+    }
+
     fn apply_diff_files(&mut self, diff_files: Vec<DiffFile>) -> (usize, usize) {
         let current_path = self.current_file_path().cloned();
         let prev_file_idx = self.diff_state.current_file_idx;
@@ -811,6 +912,7 @@ impl App {
         }
 
         self.diff_files = diff_files;
+        self.reanchor_comments();
         self.clear_expanded_gaps();
 
         self.sort_files_by_directory(false);
