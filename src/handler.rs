@@ -95,6 +95,7 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         CommandKind::Submit(SubmitEvent::RequestChanges),
     ),
     CommandSpec::new(&["submit draft"], CommandKind::Submit(SubmitEvent::Draft)),
+    CommandSpec::new(&["submit agent"], CommandKind::SubmitToAgent),
     CommandSpec::new(&["summary"], CommandKind::Summary),
     CommandSpec::new(
         &["comments unresolved"],
@@ -171,6 +172,8 @@ enum CommandKind {
     SetThreadResolved(bool),
     /// Show settled threads in full, or collapse them to their marker row.
     ShowResolvedThreads(bool),
+    /// Hand the review to a waiting agent.
+    SubmitToAgent,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1012,6 +1015,10 @@ fn dispatch_command(app: &mut App, kind: CommandKind) -> CommandAfterDispatch {
         }
         CommandKind::ShowResolvedThreads(show) => {
             app.set_show_resolved_threads(show);
+            CommandAfterDispatch::ExitCommandMode
+        }
+        CommandKind::SubmitToAgent => {
+            app.submit_to_agent();
             CommandAfterDispatch::ExitCommandMode
         }
     }

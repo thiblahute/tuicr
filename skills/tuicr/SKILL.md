@@ -177,10 +177,28 @@ Treat these comments as the user's review feedback:
 - `note`: answer or acknowledge
 - `praise`: no action required
 
-If you are waiting during an active review, poll this command about every 30
-seconds and compare comment IDs with the previous result. Read immediately when
-the user says comments are ready. Stop polling once the user says the review is
-done or your tooling would block other work.
+### Waiting for a round
+
+Do not poll. Wait for the user to hand the review over:
+
+```bash
+tuicr review watch --repo /path/to/repo --session <slug>
+```
+
+It blocks until the user runs `:submit agent` in the TUI, then prints the
+session's comments with an `outcome` of `handoff`. **Run it in the background**
+so you stay free to work; you will be woken when it returns. Other outcomes:
+`timeout` (nothing happened — start another watch if the review is still open),
+`gone` (the session was discarded — stop waiting), and `changed` if you passed
+`--any`.
+
+Prefer the default over `--any`: a review is written in pieces, and waking on
+every saved comment means answering half a thought. Tell the user the command
+if they do not know it — a handoff they never make looks to them like an agent
+that ignored their review.
+
+If the user says comments are ready in chat instead, just read them with
+`tuicr review comments`; the handoff is a convenience, not a requirement.
 
 An empty result does not by itself mean the review didn't happen. On exit,
 tuicr always prints a line like `tuicr-summary: reviewed 3/3 files, 0 comments

@@ -116,6 +116,12 @@ pub struct ReviewSession {
     pub commit_selection_range: Option<(usize, usize)>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// When the reviewer last handed this review to an agent (`:submit agent`).
+    /// `tuicr review watch` blocks until this moves, which is how the reviewer
+    /// says "I am done, go" rather than the agent guessing from edits in
+    /// flight. Older session JSON rehydrates as `None`.
+    #[serde(default)]
+    pub agent_request: Option<DateTime<Utc>>,
     #[serde(default)]
     pub review_comments: Vec<Comment>,
     pub files: HashMap<PathBuf, FileReview>,
@@ -143,6 +149,7 @@ impl ReviewSession {
             commit_selection_range: None,
             created_at: now,
             updated_at: now,
+            agent_request: None,
             review_comments: Vec::new(),
             files: HashMap::new(),
             session_notes: None,

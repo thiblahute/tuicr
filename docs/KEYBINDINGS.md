@@ -219,6 +219,7 @@ In command mode,
 | `:set reviewed` | Show files already marked reviewed |
 | `:set noreviewed` | Hide files already marked reviewed |
 | `:set reviewed!` / `:reviewed` | Toggle files already marked reviewed |
+| `:submit agent` | Hand the review to a waiting agent (nothing is pushed, nothing locks) |
 | `:resolve` | Settle the comment thread at the cursor — it dims, and `tuicr review comments` reports it `resolved` |
 | `:unresolve` | Reopen the thread at the cursor |
 | `:clear` | Clear all comments |

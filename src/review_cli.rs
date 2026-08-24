@@ -74,6 +74,12 @@ fn run_with_writer(command: ReviewCommand, out: &mut impl Write) -> Result<()> {
             unresolve,
             repo,
         } => set_resolved(&session, &repo, &comment_id, !unresolve, out),
+        ReviewCommand::Watch {
+            session,
+            any,
+            timeout_secs,
+            repo,
+        } => watch_session(&session, &repo, any, timeout_secs, out),
         ReviewCommand::Comments { session, repo } => show_comments(&session, &repo, out),
     }
 }
@@ -554,6 +560,83 @@ fn set_resolved(
             TuicrError::InvalidInput("thread root was not found in the saved session".to_string())
         })?;
     serde_json::to_writer_pretty(&mut *out, &output)?;
+    writeln!(out)?;
+    Ok(())
+}
+
+/// How long between reads of the session file while watching. Short enough to
+/// feel immediate, long enough to be free.
+const WATCH_POLL: std::time::Duration = std::time::Duration::from_millis(400);
+
+/// What ended a watch, so the caller can tell "here is your work" from
+/// "nothing happened".
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum WatchOutcome {
+    /// The reviewer ran `:submit agent`.
+    Handoff,
+    /// `--any`: the session changed.
+    Changed,
+    /// Nothing happened before `--timeout`.
+    Timeout,
+    /// The session file went away — the review was discarded.
+    Gone,
+}
+
+#[derive(Debug, Serialize)]
+struct WatchOutput {
+    outcome: WatchOutcome,
+    comments: Vec<CommentOutput>,
+}
+
+/// Block until the reviewer hands the review over (or the session changes,
+/// with `--any`), then print its comments.
+///
+/// The point of waiting on an explicit handoff rather than on any edit is that
+/// a review is written in pieces: waking on every saved comment would have the
+/// agent answering half a thought.
+fn watch_session(
+    session: &str,
+    repo: &Path,
+    any: bool,
+    timeout_secs: u64,
+    out: &mut impl Write,
+) -> Result<()> {
+    let store = ReviewStore::new();
+    let session_ref = resolve_session_ref(&store, repo, session)?;
+    let baseline = store.get_review(&session_ref)?;
+    let baseline_request = baseline.agent_request;
+    let baseline_updated = baseline.updated_at;
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
+    let (outcome, session_data) = loop {
+        if std::time::Instant::now() >= deadline {
+            break (WatchOutcome::Timeout, store.get_review(&session_ref).ok());
+        }
+        std::thread::sleep(WATCH_POLL);
+
+        // A session that disappears mid-watch is not an error: the reviewer
+        // discarded it, and the caller should stop waiting rather than fail.
+        let Ok(current) = store.get_review(&session_ref) else {
+            if session_ref.path().exists() {
+                continue;
+            }
+            break (WatchOutcome::Gone, None);
+        };
+
+        if current.agent_request != baseline_request {
+            break (WatchOutcome::Handoff, Some(current));
+        }
+        if any && current.updated_at != baseline_updated {
+            break (WatchOutcome::Changed, Some(current));
+        }
+    };
+
+    let comments = session_data
+        .as_ref()
+        .map(collect_comments)
+        .unwrap_or_default();
+    serde_json::to_writer_pretty(&mut *out, &WatchOutput { outcome, comments })?;
     writeln!(out)?;
     Ok(())
 }

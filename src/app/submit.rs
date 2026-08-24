@@ -28,7 +28,9 @@ impl App {
         };
 
         let DiffSource::PullRequest(pr) = &self.diff_source else {
-            self.set_warning(":submit only applies in PR mode");
+            self.set_warning(
+                ":submit only applies in PR mode — :submit agent hands it to an agent",
+            );
             return;
         };
         if pr.is_read_only() {
@@ -147,9 +149,46 @@ impl App {
     /// Comment/Approve/Request changes/Draft (or cancels); the picked event
     /// then runs through preflight with `skip_confirm = true` so no extra
     /// confirmation modal follows.
+    /// Hand this review to an agent: stamp the session so a waiting
+    /// `tuicr review watch` returns. Deliberately not the forge submit path —
+    /// nothing is pushed and nothing locks, because the conversation carries
+    /// on in the thread afterwards.
+    pub fn submit_to_agent(&mut self) {
+        self.session.agent_request = Some(chrono::Utc::now());
+        self.dirty = true;
+        match self.save_current_session_merging_external() {
+            Ok(_) => {
+                let waiting = self.unresolved_thread_count();
+                self.set_message(match waiting {
+                    0 => "Sent to the agent".to_string(),
+                    1 => "Sent to the agent — 1 open thread".to_string(),
+                    n => format!("Sent to the agent — {n} open threads"),
+                });
+            }
+            Err(e) => self.set_error(format!("Could not hand off the review: {e}")),
+        }
+    }
+
+    /// Threads still open, so the handoff message can say what is being sent.
+    fn unresolved_thread_count(&self) -> usize {
+        self.session
+            .review_comments
+            .iter()
+            .chain(self.session.files.values().flat_map(|review| {
+                review
+                    .file_comments
+                    .iter()
+                    .chain(review.line_comments.values().flatten())
+            }))
+            .filter(|c| !c.is_reply() && !c.resolved)
+            .count()
+    }
+
     pub fn start_submit_action_picker(&mut self) {
         if !matches!(self.diff_source, DiffSource::PullRequest(_)) {
-            self.set_warning(":submit only applies in PR mode");
+            self.set_warning(
+                ":submit only applies in PR mode — :submit agent hands it to an agent",
+            );
             return;
         }
         self.submit_picker_cursor = 0;

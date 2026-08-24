@@ -2289,8 +2289,8 @@ fn should_cycle_backward_through_command_matches() {
     app.command_buffer = "submit".to_string();
     // when
     crate::handler::handle_command_action(&mut app, crate::input::Action::CompleteCommandReverse);
-    // then
-    assert_eq!(app.command_buffer, "submit draft");
+    // then — reverse completion lands on the last registered `submit` variant
+    assert_eq!(app.command_buffer, "submit agent");
 }
 
 #[test]

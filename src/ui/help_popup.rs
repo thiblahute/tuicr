@@ -800,6 +800,13 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(vec![
             Span::styled(
+                "  :submit agent",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  Hand the review to a waiting agent"),
+        ]),
+        Line::from(vec![
+            Span::styled(
                 "  :resolve  ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),

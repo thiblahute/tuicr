@@ -32,6 +32,7 @@ tuicr review comments --session agavra/tuicr@main/worktree
 tuicr review comments --session gh:slatedb/slatedb/pr/1745
 tuicr review reply --session agavra/tuicr@main/worktree --comment-id <ID> "Fixed."
 tuicr review resolve --session agavra/tuicr@main/worktree --comment-id <ID>
+tuicr review watch --session agavra/tuicr@main/worktree
 ```
 
 All `tuicr review` commands emit JSON by default. Timestamps are RFC3339 strings
@@ -123,6 +124,28 @@ it appears in the reviewer's diff without any action on their part.
 
 `in_reply_to` is accepted as an alias for `comment_id`, so an entry read from
 `review comments` can be echoed back with its own text.
+
+## Wait For A Review
+
+`watch` blocks until the reviewer hands the review over with `:submit agent`
+in the TUI, then prints the session's comments:
+
+```bash
+tuicr review watch --session agavra/tuicr@main/worktree
+tuicr review watch --session agavra/tuicr@main/worktree --any --timeout 600
+```
+
+It is meant to be run in the background by an agent, so the reviewer decides
+when a round is ready instead of the agent polling and answering half-written
+thoughts. Output carries an `outcome`:
+
+- `handoff` — the reviewer ran `:submit agent`; `comments` holds the review
+- `changed` — `--any` only: the session changed at all
+- `timeout` — nothing happened before `--timeout` (default 1800s)
+- `gone` — the session file was removed, so stop waiting
+
+`--any` returns on any edit, which is simpler but wakes on every saved comment.
+`--timeout` exists so a forgotten watcher does not outlive the review.
 
 ## Resolve Threads
 

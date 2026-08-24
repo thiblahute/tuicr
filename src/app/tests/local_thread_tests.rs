@@ -871,3 +871,25 @@ fn should_not_offer_hidden_replies_when_jumping_between_comments() {
         );
     }
 }
+
+#[test]
+fn should_stamp_the_session_when_handing_the_review_to_an_agent() {
+    let (session, _root) = session_with_line_comment();
+    let mut app = app_for(session);
+    assert!(app.session.agent_request.is_none());
+
+    app.submit_to_agent();
+
+    // The stamp is what a waiting `review watch` keys off.
+    assert!(app.session.agent_request.is_some());
+    // Handing off is not forge submit: nothing locks, so the conversation can
+    // carry on in the thread.
+    assert!(line_thread(&app.session).iter().all(|c| !c.is_locked()));
+
+    let first = app.session.agent_request;
+    app.submit_to_agent();
+    assert_ne!(
+        app.session.agent_request, first,
+        "a second handoff moves the stamp, so a fresh watch fires again"
+    );
+}

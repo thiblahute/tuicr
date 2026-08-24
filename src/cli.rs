@@ -312,6 +312,30 @@ pub enum ReviewCommand {
         repo: PathBuf,
     },
 
+    /// Block until the reviewer hands the review over, then print its
+    /// comments. Intended to be run in the background by an agent.
+    Watch {
+        /// Session slug from `tuicr review list` (local or PR), or path to a
+        /// session JSON file.
+        #[arg(long, value_name = "SESSION")]
+        session: String,
+
+        /// Return on any change to the session instead of waiting for an
+        /// explicit `:submit agent`. Every saved comment wakes the caller.
+        #[arg(long, action = ArgAction::SetTrue)]
+        any: bool,
+
+        /// Give up after this many seconds so a forgotten watcher does not
+        /// outlive the review.
+        #[arg(long = "timeout", value_name = "SECONDS", default_value_t = 1800)]
+        timeout_secs: u64,
+
+        /// Repo selector used to resolve a local session slug (path or
+        /// `owner/repo`). PR slugs and JSON paths resolve without it.
+        #[arg(long, value_name = "PATH|OWNER/REPO", default_value = ".")]
+        repo: PathBuf,
+    },
+
     /// Print comments stored in a persisted session.
     #[command(alias = "get")]
     Comments {
