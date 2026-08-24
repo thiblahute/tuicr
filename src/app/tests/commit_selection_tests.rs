@@ -439,6 +439,7 @@ fn should_comment_on_a_commit_only_file_after_narrowing_the_commit_pane() {
             content: "this landed two commits ago".to_string(),
             comment_type: CommentType::from_id("note"),
             author: "user".to_string(),
+            line_context: None,
             commit_id: None,
         },
     );
@@ -725,6 +726,7 @@ fn should_comment_on_the_commit_message_of_a_commit_chosen_from_the_target_selec
             content: "spell out why, not what".to_string(),
             comment_type: CommentType::None,
             author: "user".to_string(),
+            line_context: None,
             commit_id: None,
         },
     );

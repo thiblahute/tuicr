@@ -1397,3 +1397,32 @@ fn should_scroll_with_the_wheel_while_composing() {
     assert_eq!(app.comment_buffer, "half a thought");
     assert_eq!(app.input_mode, InputMode::Comment);
 }
+
+#[test]
+fn should_anchor_a_comment_by_content_not_only_by_line_number() {
+    // Coordinates alone drift: after an amend inserts a line above, line 42 is
+    // different code. The stored text is what lets a reload find it again.
+    let (session, _root) = session_with_line_comment();
+    let mut app = app_for(session);
+    app.line_annotations = vec![AnnotatedLine::DiffLine {
+        file_idx: 0,
+        hunk_idx: 0,
+        line_idx: 0,
+        old_lineno: None,
+        new_lineno: Some(42),
+    }];
+    app.diff_state.cursor_line = 0;
+    app.diff_state.current_file_idx = 0;
+
+    crate::handler::handle_diff_action(&mut app, crate::input::Action::AddLineComment);
+    app.comment_buffer = "this needs a guard".to_string();
+    app.save_comment();
+
+    let saved = line_thread(&app.session)
+        .into_iter()
+        .find(|c| c.content == "this needs a guard")
+        .expect("comment saved");
+    let context = saved.line_context.expect("line context recorded");
+    assert_eq!(context.content, "let x = 1;", "the line's text is stored");
+    assert_eq!(context.new_line, Some(42));
+}

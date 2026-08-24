@@ -201,13 +201,7 @@ fn add_comment(
     let author = resolve_cli_author(request_parts.username, config.as_ref());
     let comment = store.add_comment(
         &session_ref,
-        AddCommentRequest {
-            target: target.clone(),
-            content: request_parts.content,
-            comment_type,
-            author,
-            commit_id: None,
-        },
+        AddCommentRequest::new(target.clone(), request_parts.content, comment_type, author),
     )?;
     let output = CommentOutput::from_target(&target, &comment);
     serde_json::to_writer_pretty(&mut *out, &output)?;
@@ -1572,6 +1566,7 @@ mod tests {
                     content: "check this".to_string(),
                     comment_type: CommentType::from_id("issue"),
                     author: "review-agent".to_string(),
+                    line_context: None,
                     commit_id: None,
                 },
             )
@@ -1674,6 +1669,7 @@ mod tests {
                     comment_type: CommentType::from_id("isue"),
                     author: "Codex".to_string(),
                     commit_id: None,
+                    line_context: None,
                 },
             )
             .expect("an unconfigured type must not block the write");
@@ -1767,6 +1763,7 @@ mod tests {
                     content: "check this".to_string(),
                     comment_type: CommentType::from_id("issue"),
                     author: comment::DEFAULT_AUTHOR.to_string(),
+                    line_context: None,
                     commit_id: None,
                 },
             )
