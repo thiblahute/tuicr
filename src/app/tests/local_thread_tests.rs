@@ -893,3 +893,56 @@ fn should_stamp_the_session_when_handing_the_review_to_an_agent() {
         "a second handoff moves the stamp, so a fresh watch fires again"
     );
 }
+
+#[test]
+fn should_skip_settled_threads_when_iterating_comments() {
+    // `m` walks the navigator items; a settled thread is not work, so it drops
+    // out of the rotation while it is folded.
+    let mut session = session_with_line_comment().0;
+    let open = line_thread(&session)[0].clone();
+    let settled = Comment::new(
+        "already handled".to_string(),
+        CommentType::from_id("note"),
+        Some(LineSide::New),
+    );
+    session
+        .get_file_mut(&PathBuf::from("src/main.rs"))
+        .unwrap()
+        .add_line_comment(42, settled.clone());
+    crate::review_store::set_thread_resolved(&mut session, &settled.id, true).unwrap();
+
+    let mut app = app_for(session);
+    app.diff_state.viewport_width = 80;
+    app.rebuild_annotations();
+
+    let ids: Vec<String> = app
+        .build_comment_navigator_items()
+        .iter()
+        .filter_map(|item| {
+            app.line_annotations
+                .get(item.target_annotation)
+                .and_then(|a| app.annotation_comment_id_for_test(a))
+                .map(str::to_string)
+        })
+        .collect();
+    assert!(ids.contains(&open.id), "the open thread is still reachable");
+    assert!(!ids.contains(&settled.id), "the settled one is skipped");
+
+    // Showing settled threads puts them back: what is on screen is what `m`
+    // visits.
+    app.set_show_resolved_threads(true);
+    let ids: Vec<String> = app
+        .build_comment_navigator_items()
+        .iter()
+        .filter_map(|item| {
+            app.line_annotations
+                .get(item.target_annotation)
+                .and_then(|a| app.annotation_comment_id_for_test(a))
+                .map(str::to_string)
+        })
+        .collect();
+    assert!(
+        ids.contains(&settled.id),
+        "expanded threads are visitable again"
+    );
+}
