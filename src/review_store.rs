@@ -224,6 +224,11 @@ pub struct AddCommentRequest {
     /// picking a sensible default (`Comment::DEFAULT_AUTHOR`) when none is
     /// supplied.
     pub author: String,
+    /// The commented line's text and both line numbers, when the target is a
+    /// line or range. A later reload finds the line again by content when an
+    /// amend moves it; without it, coordinates drift silently onto whatever
+    /// took the line's place. `None` for file- and review-level comments.
+    pub line_context: Option<crate::model::LineContext>,
     /// Commit SHA to stamp on the comment when it was created while the
     /// inline commit selector showed exactly one commit. `None` for
     /// review-level comments and full-range selections. Library callers
@@ -248,6 +253,29 @@ pub struct ReplyRequest {
     /// is the later word, and an agent's "done" confirmation quietly joins
     /// the settled record instead of undoing it.
     pub reopen: bool,
+}
+
+impl AddCommentRequest {
+    /// A comment with no anchor beyond its target — what every caller outside
+    /// the diff view can supply. Only the TUI knows the text of the line being
+    /// commented on, or which commit the selector is showing; the CLI has no
+    /// diff loaded and cannot know either, so it should not have to say so
+    /// field by field.
+    pub fn new(
+        target: CommentTarget,
+        content: String,
+        comment_type: CommentType,
+        author: String,
+    ) -> Self {
+        Self {
+            target,
+            content,
+            comment_type,
+            author,
+            line_context: None,
+            commit_id: None,
+        }
+    }
 }
 
 /// Where a new local draft comment should be attached.
@@ -304,6 +332,7 @@ pub fn add_comment_to_session(
             let review = file_review_mut(session, &path)?;
             let mut comment =
                 Comment::new(content, request.comment_type, Some(side)).with_author(author);
+            comment.line_context = request.line_context;
             if let Some(sha) = &commit_id {
                 comment = comment.with_commit_id(sha.clone());
             }
@@ -315,6 +344,7 @@ pub fn add_comment_to_session(
             let mut comment =
                 Comment::new_with_range(content, request.comment_type, Some(side), range)
                     .with_author(author);
+            comment.line_context = request.line_context;
             if let Some(sha) = &commit_id {
                 comment = comment.with_commit_id(sha.clone());
             }
@@ -516,13 +546,12 @@ mod tests {
 
         let comment = add_comment_to_session(
             &mut session,
-            AddCommentRequest {
-                target: CommentTarget::Review,
-                content: "looks good".to_string(),
-                comment_type: CommentType::from_id("praise"),
-                author: crate::model::comment::DEFAULT_AUTHOR.to_string(),
-                commit_id: None,
-            },
+            AddCommentRequest::new(
+                CommentTarget::Review,
+                "looks good".to_string(),
+                CommentType::from_id("praise"),
+                crate::model::comment::DEFAULT_AUTHOR.to_string(),
+            ),
         )
         .unwrap();
 
@@ -542,6 +571,7 @@ mod tests {
                 content: "file note".to_string(),
                 comment_type: CommentType::from_id("note"),
                 author: crate::model::comment::DEFAULT_AUTHOR.to_string(),
+                line_context: None,
                 commit_id: None,
             },
         )
@@ -567,6 +597,7 @@ mod tests {
                 content: "range note".to_string(),
                 comment_type: CommentType::from_id("suggestion"),
                 author: crate::model::comment::DEFAULT_AUTHOR.to_string(),
+                line_context: None,
                 commit_id: None,
             },
         )
@@ -589,6 +620,7 @@ mod tests {
                 content: "note".to_string(),
                 comment_type: CommentType::from_id("note"),
                 author: crate::model::comment::DEFAULT_AUTHOR.to_string(),
+                line_context: None,
                 commit_id: None,
             },
         )
@@ -635,6 +667,7 @@ mod tests {
                     content: "line note".to_string(),
                     comment_type: CommentType::from_id("note"),
                     author: crate::model::comment::DEFAULT_AUTHOR.to_string(),
+                    line_context: None,
                     commit_id: None,
                 },
             )
@@ -660,6 +693,7 @@ mod tests {
                 content: content.to_string(),
                 comment_type: CommentType::from_id("issue"),
                 author: author.to_string(),
+                line_context: None,
                 commit_id: None,
             },
         )
@@ -762,13 +796,12 @@ mod tests {
         let mut session = test_session(PathBuf::from("/repo"));
         let root = add_comment_to_session(
             &mut session,
-            AddCommentRequest {
-                target: CommentTarget::Review,
-                content: "overall looks good".to_string(),
-                comment_type: CommentType::None,
-                author: "user".to_string(),
-                commit_id: None,
-            },
+            AddCommentRequest::new(
+                CommentTarget::Review,
+                "overall looks good".to_string(),
+                CommentType::None,
+                "user".to_string(),
+            ),
         )
         .unwrap();
 

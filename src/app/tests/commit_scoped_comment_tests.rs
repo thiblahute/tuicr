@@ -221,6 +221,7 @@ fn add_comment_to_session_stamps_commit_id_when_provided() {
             content: "scoped note".to_string(),
             comment_type: CommentType::from_id("note"),
             author: "user".to_string(),
+            line_context: None,
             commit_id: Some("abc123".to_string()),
         },
     )
@@ -269,6 +270,7 @@ fn add_comment_to_session_leaves_commit_id_none_when_not_provided() {
             content: "unscoped note".to_string(),
             comment_type: CommentType::from_id("note"),
             author: "user".to_string(),
+            line_context: None,
             commit_id: None,
         },
     )

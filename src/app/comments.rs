@@ -1363,6 +1363,30 @@ impl App {
         self.comment_scroll_detached = false;
     }
 
+    /// The text of the line a comment is being anchored to, plus both line
+    /// numbers. Stored on the comment so a later reload can find the line
+    /// again by *content* when an amend moves it — coordinates alone drift
+    /// silently onto whatever took the line's place.
+    fn line_context_for(&self, line: u32, side: LineSide) -> Option<crate::model::LineContext> {
+        let file = self.current_file()?;
+        for hunk in &file.hunks {
+            for diff_line in &hunk.lines {
+                let matches = match side {
+                    LineSide::Old => diff_line.old_lineno == Some(line),
+                    LineSide::New => diff_line.new_lineno == Some(line),
+                };
+                if matches {
+                    return Some(crate::model::LineContext {
+                        new_line: diff_line.new_lineno,
+                        old_line: diff_line.old_lineno,
+                        content: diff_line.content.clone(),
+                    });
+                }
+            }
+        }
+        None
+    }
+
     pub fn save_comment(&mut self) {
         if self.comment_buffer.trim().is_empty() {
             self.set_message("Comment cannot be empty");
@@ -1454,6 +1478,7 @@ impl App {
                 content,
                 comment_type: self.comment_type.clone(),
                 author: self.username.clone(),
+                line_context: None,
                 commit_id: None,
             };
             message = match add_comment_to_session(&mut self.session, request) {
@@ -1485,11 +1510,19 @@ impl App {
                 )
             };
 
+            // Anchor by content as well as coordinates, so a later amend that
+            // moves this line can still find it.
+            let line_context = match (self.comment_line_range, self.comment_line) {
+                (Some((range, side)), _) => self.line_context_for(range.end, side),
+                (None, Some((line, side))) => self.line_context_for(line, side),
+                _ => None,
+            };
             let request = AddCommentRequest {
                 target,
                 content,
                 comment_type: self.comment_type.clone(),
                 author: self.username.clone(),
+                line_context,
                 commit_id: self.commit_id_for_new_comment(),
             };
             message = match add_comment_to_session(&mut self.session, request) {
