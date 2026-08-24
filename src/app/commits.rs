@@ -779,6 +779,10 @@ impl App {
                 replies: self.thread_reply_count(&comment.id),
                 expand_key: self.leader_key,
             }
+        } else if comment.outdated {
+            // Said before settled: a reader needs to know the code moved before
+            // they can judge whether the thread is finished.
+            ThreadDisplay::Outdated
         } else if comment.resolved {
             ThreadDisplay::Resolved
         } else {

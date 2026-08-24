@@ -814,6 +814,7 @@ impl App {
             };
 
             let mut moved: Vec<(u32, Comment)> = Vec::new();
+            let mut stranded: Vec<Comment> = Vec::new();
             let mut lines: Vec<u32> = review.line_comments.keys().copied().collect();
             lines.sort_unstable();
 
@@ -839,17 +840,51 @@ impl App {
                         }
                         None => {
                             comment.outdated = true;
-                            kept.push(comment);
+                            // A line that still exists can host the comment —
+                            // badged, so the reader sees the code moved on. A
+                            // line with no row left would render nowhere at
+                            // all, so the comment moves to the file, where it
+                            // is still readable and still cycles with `m`.
+                            if Self::file_renders_line(file, line, comment.side.unwrap_or_default())
+                            {
+                                kept.push(comment);
+                            } else {
+                                stranded.push(comment);
+                            }
                         }
                     }
                 }
                 *comments = kept;
             }
 
+            // A file comment that was stranded earlier goes back to its line
+            // when the code returns — the same search, in reverse, so an amend
+            // that restores a line restores its comments with it.
+            let mut returning: Vec<(u32, Comment)> = Vec::new();
+            review.file_comments.retain(|comment| {
+                if !comment.outdated {
+                    return true;
+                }
+                let Some(context) = comment.line_context.as_ref() else {
+                    return true;
+                };
+                let home = context.new_line.or(context.old_line).unwrap_or(0);
+                match Self::find_anchor(file, comment, home) {
+                    Some(found) => {
+                        let mut restored = comment.clone();
+                        restored.outdated = false;
+                        returning.push((found, restored));
+                        false
+                    }
+                    None => true,
+                }
+            });
+
             review.line_comments.retain(|_, v| !v.is_empty());
-            for (line, comment) in moved {
+            for (line, comment) in moved.into_iter().chain(returning) {
                 review.line_comments.entry(line).or_default().push(comment);
             }
+            review.file_comments.extend(stranded);
         }
     }
 
@@ -858,6 +893,18 @@ impl App {
     /// within `REANCHOR_WINDOW`. `None` when the text is gone, and when the
     /// comment predates content anchoring — an old comment has nothing to
     /// match on, so it keeps its line rather than being called outdated.
+    /// True when `line` on `side` has a row in this file's diff. A comment on a
+    /// line with no row renders nowhere, which is how comments disappeared
+    /// silently before.
+    fn file_renders_line(file: &DiffFile, line: u32, side: LineSide) -> bool {
+        file.hunks.iter().any(|hunk| {
+            hunk.lines.iter().any(|diff_line| match side {
+                LineSide::Old => diff_line.old_lineno == Some(line),
+                LineSide::New => diff_line.new_lineno == Some(line),
+            })
+        })
+    }
+
     fn find_anchor(file: &DiffFile, comment: &Comment, line: u32) -> Option<u32> {
         let Some(context) = comment.line_context.as_ref() else {
             return Some(line);

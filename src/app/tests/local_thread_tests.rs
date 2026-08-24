@@ -1545,3 +1545,99 @@ fn should_not_call_a_pre_anchor_comment_outdated() {
     let kept = &app.session.files[&PathBuf::from("src/main.rs")].line_comments[&42][0];
     assert!(!kept.outdated, "no anchor recorded — keep it where it is");
 }
+
+#[test]
+fn should_move_a_stranded_comment_to_the_file_so_it_still_shows() {
+    // The amend removed the hunk entirely: line 42 has no row left, so a
+    // comment sitting there would render nowhere and vanish from `m`.
+    let (session, _root) = session_with_line_comment();
+    let mut app = app_for(session);
+    let path = PathBuf::from("src/main.rs");
+    let mut anchored = app.session.files[&path].line_comments[&42][0].clone();
+    anchored.line_context = Some(crate::model::LineContext {
+        new_line: Some(42),
+        old_line: None,
+        content: "let x = 1;".to_string(),
+    });
+    app.session
+        .get_file_mut(&path)
+        .unwrap()
+        .line_comments
+        .insert(42, vec![anchored.clone()]);
+
+    app.diff_files = vec![file_with_line_at("src/main.rs", "unrelated", 3)];
+    app.reanchor_comments();
+
+    let review = &app.session.files[&path];
+    assert!(review.line_comments.is_empty(), "no longer on a dead line");
+    let stranded = &review.file_comments[0];
+    assert_eq!(stranded.id, anchored.id);
+    assert!(stranded.outdated);
+    // It still carries where it came from, so the reader can place it.
+    assert_eq!(stranded.line_context.as_ref().unwrap().new_line, Some(42));
+}
+
+#[test]
+fn should_send_a_stranded_comment_home_when_its_code_comes_back() {
+    let (session, _root) = session_with_line_comment();
+    let mut app = app_for(session);
+    let path = PathBuf::from("src/main.rs");
+    let mut stranded = app.session.files[&path].line_comments[&42][0].clone();
+    stranded.outdated = true;
+    stranded.line_context = Some(crate::model::LineContext {
+        new_line: Some(42),
+        old_line: None,
+        content: "let x = 1;".to_string(),
+    });
+    {
+        let review = app.session.get_file_mut(&path).unwrap();
+        review.line_comments.clear();
+        review.file_comments = vec![stranded.clone()];
+    }
+
+    // Undo the amend: the line is back, two lines lower.
+    app.diff_files = vec![file_with_line_at("src/main.rs", "let x = 1;", 44)];
+    app.reanchor_comments();
+
+    let review = &app.session.files[&path];
+    assert!(review.file_comments.is_empty(), "no longer stranded");
+    let home = &review.line_comments[&44][0];
+    assert_eq!(home.id, stranded.id);
+    assert!(!home.outdated, "and no longer outdated");
+}
+
+#[test]
+fn should_say_outdated_in_the_comment_box() {
+    let (session, _root) = session_with_line_comment();
+    let mut app = app_for(session);
+    let path = PathBuf::from("src/main.rs");
+    app.session
+        .get_file_mut(&path)
+        .unwrap()
+        .line_comments
+        .get_mut(&42)
+        .unwrap()[0]
+        .outdated = true;
+    let comment = app.session.files[&path].line_comments[&42][0].clone();
+
+    let lines = crate::ui::comment_panel::format_comment_lines(
+        &app.theme,
+        crate::ui::comment_panel::CommentTypePresentation {
+            label: "ISSUE".to_string(),
+            color: app.theme.fg_primary,
+        },
+        &comment.content,
+        Some(LineRange::single(42)),
+        80,
+        crate::ui::comment_panel::CommentBadge::for_comment(&comment, "user"),
+        app.thread_display(&comment),
+    );
+    let header: String = lines[0]
+        .spans
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect();
+    assert!(header.contains("outdated"), "{header}");
+    // Not silently mistaken for settled.
+    assert!(!header.contains("resolved"), "{header}");
+}

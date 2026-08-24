@@ -168,6 +168,9 @@ The command emits JSON. Each comment includes fields like:
 - `author`
 - `in_reply_to` (replies only — the id of the comment being answered)
 - `resolved` (the whole thread is settled; skip it)
+- `outdated` (an amend or rebase removed the code it was written against — the
+  comment still stands, its anchor does not; answer from its text and do not
+  assume the line still says what it said)
 - `content`
 
 Treat these comments as the user's review feedback:

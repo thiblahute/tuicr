@@ -535,6 +535,10 @@ pub enum ThreadDisplay {
     Open,
     /// Settled, but shown in full because resolved threads are expanded.
     Resolved,
+    /// The code this comment was written against is gone. Shown in full — the
+    /// text is still the reader's own words — but said plainly, because the
+    /// line beside it is no longer what was being talked about.
+    Outdated,
     /// Settled and hidden: one marker row carrying the reply count and the
     /// leader key that expands it.
     Collapsed { replies: usize, expand_key: char },
@@ -543,6 +547,10 @@ pub enum ThreadDisplay {
 impl ThreadDisplay {
     fn is_resolved(self) -> bool {
         !matches!(self, Self::Open)
+    }
+
+    fn is_outdated(self) -> bool {
+        matches!(self, Self::Outdated)
     }
 }
 
@@ -646,10 +654,15 @@ pub fn format_comment_lines(
         (None, false) => format!("[{}] ", comment_type.label),
     };
     // The root announces the state once; its replies are already dimmed.
+    let state = if display.is_outdated() {
+        "outdated"
+    } else {
+        "resolved"
+    };
     let badge_text = match (resolved, badge.is_reply()) {
         (false, _) | (true, true) => badge_text,
-        (true, false) if badge_text.is_empty() => "[resolved] ".to_string(),
-        (true, false) => badge_text.replacen("] ", " resolved] ", 1),
+        (true, false) if badge_text.is_empty() => format!("[{state}] "),
+        (true, false) => badge_text.replacen("] ", &format!(" {state}] "), 1),
     };
     let badge_width = badge_text.width();
 
