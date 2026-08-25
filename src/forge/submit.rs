@@ -749,6 +749,8 @@ mod tests {
             new_line: new,
             old_line: old,
             content: String::new(),
+            before: Vec::new(),
+            after: Vec::new(),
         });
         c
     }

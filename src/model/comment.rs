@@ -140,6 +140,20 @@ pub struct LineContext {
     pub new_line: Option<u32>,
     pub old_line: Option<u32>,
     pub content: String,
+    /// The lines just above the commented one, oldest first. Shown when the
+    /// comment loses its place: one line rarely says what a remark was about,
+    /// and the code is no longer in the diff to look at.
+    #[serde(default)]
+    pub before: Vec<String>,
+    /// The lines just below, in order.
+    #[serde(default)]
+    pub after: Vec<String>,
+}
+
+impl LineContext {
+    /// How many lines either side are kept. Enough to recognise the code,
+    /// short enough that a detached comment does not become a diff of its own.
+    pub const SURROUNDING: usize = 3;
 }
 
 /// Default author used when a comment is created or deserialized without

@@ -1071,6 +1071,11 @@ fn should_count_the_same_rows_the_renderer_emits_at_any_box_width() {
         new_line: Some(133),
         old_line: None,
         content: "            line_context: None,".to_string(),
+        before: vec![
+            "            author,".to_string(),
+            "            comment_type,".to_string(),
+        ],
+        after: vec!["            commit_id: None,".to_string()],
     });
     for box_width in [28usize, 40, 55, 80, 120] {
         let rendered = crate::ui::comment_panel::format_comment_lines(
@@ -1087,14 +1092,25 @@ fn should_count_the_same_rows_the_renderer_emits_at_any_box_width() {
             rendered.len(),
             "detached comment: model disagrees with the renderer at width {box_width}"
         );
-        let remembered: String = rendered[1]
-            .spans
+        // The commented line is marked, its neighbours are shown around it:
+        // one line alone rarely says what a remark was about.
+        let block: Vec<String> = rendered[1..5]
             .iter()
-            .map(|s| s.content.as_ref())
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
             .collect();
+        // Narrow boxes truncate, so match on the start of each line.
+        assert!(block[0].contains("author,"), "{block:?}");
+        assert!(block[1].contains("comment_type,"), "{block:?}");
         assert!(
-            remembered.contains("was:"),
-            "the line it was written about is shown: {remembered}"
+            block[2].contains('>') && block[2].contains("line_context"),
+            "the commented line is the marked one: {block:?}"
+        );
+        assert!(block[3].contains("commit_id"), "{block:?}");
+        // The block's shared indentation is stripped, or a side pane shows
+        // nothing but leading spaces and an ellipsis.
+        assert!(
+            !block[0].contains("            author"),
+            "shared indent should be stripped: {block:?}"
         );
     }
 
@@ -1717,6 +1733,8 @@ fn should_follow_a_comment_when_an_amend_moves_its_line() {
         new_line: Some(42),
         old_line: None,
         content: "let x = 1;".to_string(),
+        before: Vec::new(),
+        after: Vec::new(),
     });
     app.session
         .get_file_mut(&path)
@@ -1745,6 +1763,8 @@ fn should_mark_a_comment_outdated_when_its_code_is_gone() {
         new_line: Some(42),
         old_line: None,
         content: "let x = 1;".to_string(),
+        before: Vec::new(),
+        after: Vec::new(),
     });
     app.session
         .get_file_mut(&path)
@@ -1808,6 +1828,8 @@ fn should_move_a_stranded_comment_to_the_file_so_it_still_shows() {
         new_line: Some(42),
         old_line: None,
         content: "let x = 1;".to_string(),
+        before: Vec::new(),
+        after: Vec::new(),
     });
     app.session
         .get_file_mut(&path)
@@ -1838,6 +1860,8 @@ fn should_send_a_stranded_comment_home_when_its_code_comes_back() {
         new_line: Some(42),
         old_line: None,
         content: "let x = 1;".to_string(),
+        before: Vec::new(),
+        after: Vec::new(),
     });
     {
         let review = app.session.get_file_mut(&path).unwrap();
@@ -1907,6 +1931,8 @@ fn should_never_leave_a_comment_on_code_it_was_not_written_about() {
         new_line: Some(42),
         old_line: None,
         content: "let x = 1;".to_string(),
+        before: Vec::new(),
+        after: Vec::new(),
     });
     app.session
         .get_file_mut(&path)
