@@ -529,7 +529,7 @@ impl<'a> CommentBadge<'a> {
 }
 
 /// How a comment box should present right now.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ThreadDisplay {
     /// A normal box.
     Open,
@@ -538,24 +538,37 @@ pub enum ThreadDisplay {
     /// The code this comment was written against is gone. Shown in full — the
     /// text is still the reader's own words — and carrying the line it used to
     /// live on, since it no longer renders there.
-    Outdated { was_line: Option<u32> },
+    Outdated {
+        was_line: Option<u32>,
+        /// The line's text as it read when the comment was written. Detached
+        /// from the diff, the comment would otherwise be a remark about code
+        /// the reader can no longer see.
+        was_text: Option<String>,
+    },
     /// Settled and hidden: one marker row carrying the reply count and the
     /// leader key that expands it.
     Collapsed { replies: usize, expand_key: char },
 }
 
 impl ThreadDisplay {
-    fn is_resolved(self) -> bool {
+    fn is_resolved(&self) -> bool {
         !matches!(self, Self::Open)
     }
 
-    fn is_outdated(self) -> bool {
+    fn is_outdated(&self) -> bool {
         matches!(self, Self::Outdated { .. })
     }
 
-    fn was_line(self) -> Option<u32> {
+    fn was_line(&self) -> Option<u32> {
         match self {
-            Self::Outdated { was_line } => was_line,
+            Self::Outdated { was_line, .. } => *was_line,
+            _ => None,
+        }
+    }
+
+    fn was_text(&self) -> Option<&str> {
+        match self {
+            Self::Outdated { was_text, .. } => was_text.as_deref(),
             _ => None,
         }
     }
@@ -709,6 +722,26 @@ pub fn format_comment_lines(
         Span::styled(line_info, styles::dim_style(theme)),
         Span::styled("─".repeat(top_fill), border_style),
     ]));
+
+    // The code the comment was written about, when that code is gone. Without
+    // it a detached comment is a remark with nothing to remark on.
+    if let Some(text) = display.was_text() {
+        let dim = styles::dim_style(theme);
+        let prefix = format!("{BORDER_PREFIX}was: ");
+        let room = width.saturating_sub(prefix.width() + 1);
+        let mut shown = String::new();
+        for ch in text.trim().chars() {
+            if shown.width() + 1 > room {
+                shown.push('\u{2026}');
+                break;
+            }
+            shown.push(ch);
+        }
+        result.push(Line::from(vec![
+            Span::styled(prefix, border_style),
+            Span::styled(shown, dim),
+        ]));
+    }
 
     // Content lines — markdown-highlighted, pre-wrapped at content_area.
     let mut body_lines = markdown_body_lines(theme, content, content_area);

@@ -1063,6 +1063,41 @@ fn should_count_the_same_rows_the_renderer_emits_at_any_box_width() {
         color: app.theme.fg_primary,
     };
 
+    // A detached comment renders one extra row — the line it was written
+    // about — so the model has to count that too, at every width.
+    let mut detached = comment.clone();
+    detached.outdated = true;
+    detached.line_context = Some(crate::model::LineContext {
+        new_line: Some(133),
+        old_line: None,
+        content: "            line_context: None,".to_string(),
+    });
+    for box_width in [28usize, 40, 55, 80, 120] {
+        let rendered = crate::ui::comment_panel::format_comment_lines(
+            &app.theme,
+            presentation.clone(),
+            &detached.content,
+            None,
+            box_width,
+            crate::ui::comment_panel::CommentBadge::Own,
+            app.thread_display(&detached),
+        );
+        assert_eq!(
+            app.comment_rows(&detached, box_width),
+            rendered.len(),
+            "detached comment: model disagrees with the renderer at width {box_width}"
+        );
+        let remembered: String = rendered[1]
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(
+            remembered.contains("was:"),
+            "the line it was written about is shown: {remembered}"
+        );
+    }
+
     // Narrow (a side pane) through wide (full width): the model must agree
     // with the renderer at every width, not just the one it was written for.
     for box_width in [28usize, 40, 55, 80, 120] {
@@ -1115,6 +1150,49 @@ fn should_record_the_revset_so_a_reload_can_re_run_it() {
     assert_eq!(restored.revset.as_deref(), Some("main..HEAD"));
 }
 
+#[test]
+fn should_tell_the_reviewer_when_an_agent_changed_the_code() {
+    let (session, _root) = session_with_line_comment();
+    let mut app = app_for(session);
+    app.pending_agent_update = Some(crate::model::review::AgentUpdate {
+        at: chrono::Utc::now(),
+        message: Some("rebased onto main, dropped the duplicate".to_string()),
+    });
+
+    assert!(app.poll_agent_update_for_test());
+
+    let shown = app.message.clone().expect("a message was shown");
+    assert!(
+        shown.content.contains("rebased onto main"),
+        "{:?}",
+        shown.content
+    );
+    // Naming the command matters: the diff on screen is stale until they run it.
+    assert!(shown.content.contains(":reload"), "{:?}", shown.content);
+    // Announced once, not on every poll.
+    assert!(!app.poll_agent_update_for_test());
+}
+
+#[test]
+fn should_hold_the_announcement_while_a_comment_is_open() {
+    // Interrupting someone mid-comment to say the branch moved would be worse
+    // than telling them a second later.
+    let (session, _root) = session_with_line_comment();
+    let mut app = app_for(session);
+    app.input_mode = InputMode::Comment;
+    app.pending_agent_update = Some(crate::model::review::AgentUpdate {
+        at: chrono::Utc::now(),
+        message: None,
+    });
+
+    assert!(!app.poll_agent_update_for_test());
+    assert!(app.pending_agent_update.is_some(), "kept for later");
+
+    app.input_mode = InputMode::Normal;
+    assert!(app.poll_agent_update_for_test());
+}
+
+#[test]
 #[test]
 fn should_find_a_review_again_after_its_commits_were_rewritten() {
     // Sessions are keyed by their resolved commits, so an amend leaves the
@@ -1391,48 +1469,6 @@ fn should_reattach_a_detached_comment_when_its_commit_is_reviewed_alone() {
         !comments[0].outdated,
         "no longer outdated on its own commit"
     );
-}
-
-#[test]
-fn should_tell_the_reviewer_when_an_agent_changed_the_code() {
-    let (session, _root) = session_with_line_comment();
-    let mut app = app_for(session);
-    app.pending_agent_update = Some(crate::model::review::AgentUpdate {
-        at: chrono::Utc::now(),
-        message: Some("rebased onto main, dropped the duplicate".to_string()),
-    });
-
-    assert!(app.poll_agent_update_for_test());
-
-    let shown = app.message.clone().expect("a message was shown");
-    assert!(
-        shown.content.contains("rebased onto main"),
-        "{:?}",
-        shown.content
-    );
-    // Naming the command matters: the diff on screen is stale until they run it.
-    assert!(shown.content.contains(":reload"), "{:?}", shown.content);
-    // Announced once, not on every poll.
-    assert!(!app.poll_agent_update_for_test());
-}
-
-#[test]
-fn should_hold_the_announcement_while_a_comment_is_open() {
-    // Interrupting someone mid-comment to say the branch moved would be worse
-    // than telling them a second later.
-    let (session, _root) = session_with_line_comment();
-    let mut app = app_for(session);
-    app.input_mode = InputMode::Comment;
-    app.pending_agent_update = Some(crate::model::review::AgentUpdate {
-        at: chrono::Utc::now(),
-        message: None,
-    });
-
-    assert!(!app.poll_agent_update_for_test());
-    assert!(app.pending_agent_update.is_some(), "kept for later");
-
-    app.input_mode = InputMode::Normal;
-    assert!(app.poll_agent_update_for_test());
 }
 
 fn working(message: &str, agent: &str) -> crate::model::review::AgentActivity {

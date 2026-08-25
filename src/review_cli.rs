@@ -1394,17 +1394,16 @@ mod tests {
         let mut session = test_session(PathBuf::from("/repo"));
         let comment = crate::review_store::add_comment_to_session(
             &mut session,
-            AddCommentRequest {
-                target: CommentTarget::Line {
+            AddCommentRequest::new(
+                CommentTarget::Line {
                     path: PathBuf::from("src/main.rs"),
                     line: 42,
                     side: LineSide::New,
                 },
-                content: "why this?".to_string(),
-                comment_type: CommentType::from_id("issue"),
-                author: "thiblahute".to_string(),
-                commit_id: None,
-            },
+                "why this?".to_string(),
+                CommentType::from_id("issue"),
+                "thiblahute".to_string(),
+            ),
         )
         .unwrap();
         (session, comment.id)
@@ -1474,15 +1473,14 @@ mod tests {
         answer(&mut session, &first, "done", AGENT);
         crate::review_store::add_comment_to_session(
             &mut session,
-            AddCommentRequest {
-                target: CommentTarget::File {
+            AddCommentRequest::new(
+                CommentTarget::File {
                     path: PathBuf::from("src/main.rs"),
                 },
-                content: "and this file needs a test".to_string(),
-                comment_type: CommentType::from_id("issue"),
-                author: "thiblahute".to_string(),
-                commit_id: None,
-            },
+                "and this file needs a test".to_string(),
+                CommentType::from_id("issue"),
+                "thiblahute".to_string(),
+            ),
         )
         .unwrap();
 

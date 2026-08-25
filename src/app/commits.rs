@@ -787,6 +787,10 @@ impl App {
                     .line_context
                     .as_ref()
                     .and_then(|c| c.new_line.or(c.old_line)),
+                was_text: comment
+                    .line_context
+                    .as_ref()
+                    .map(|c| c.content.trim_end().to_string()),
             }
         } else if comment.resolved {
             ThreadDisplay::Resolved
