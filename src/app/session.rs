@@ -172,6 +172,7 @@ impl App {
         let previous_path = self.save_current_session_merging_external()?;
 
         self.session.commit_range = Some(commits.clone());
+        Self::clear_stale_commit_scopes(&mut self.session, &commits);
         self.diff_source = DiffSource::CommitRange(commits.clone());
         // `commit_ids` resolves oldest-first; `review_commits` stores
         // newest-first (display mirrors it for `commit_order = ascending`),
@@ -463,9 +464,78 @@ impl App {
     }
 
     /// Load or create a session for a commit range (used by revisions and commit selection).
+    /// Drop commit scoping that a rewrite invalidated.
+    ///
+    /// A comment made while one commit was selected records that SHA, and
+    /// `comment_visible` hides comments whose commit is not in the current
+    /// selection. Amend the branch and every one of those SHAs is gone, so the
+    /// comments vanish from the diff — not deleted, not outdated, just filtered
+    /// out with nothing said. The commit it named no longer exists; the comment
+    /// is about the code, so it becomes unscoped rather than invisible.
+    ///
+    /// Returns how many were unscoped.
+    pub(in crate::app) fn clear_stale_commit_scopes(
+        session: &mut ReviewSession,
+        commits: &[String],
+    ) -> usize {
+        let live: std::collections::HashSet<&str> = commits.iter().map(String::as_str).collect();
+        let mut cleared = 0;
+        let mut unscope = |comment: &mut Comment| {
+            if let Some(id) = comment.commit_id.as_deref()
+                && !live.contains(id)
+            {
+                comment.commit_id = None;
+                cleared += 1;
+            }
+        };
+        for comment in &mut session.review_comments {
+            unscope(comment);
+        }
+        for review in session.files.values_mut() {
+            for comment in &mut review.file_comments {
+                unscope(comment);
+            }
+            for comments in review.line_comments.values_mut() {
+                for comment in comments {
+                    unscope(comment);
+                }
+            }
+        }
+        cleared
+    }
+
+    /// Take over a review opened with the same expression whose commits have
+    /// since been rewritten: re-key it to the current range and drop the copy
+    /// under the old one.
+    ///
+    /// The new file is written before the old one is removed, so a failure
+    /// anywhere leaves the comments on disk under the key they already had.
+    fn adopt_session_for_revset(
+        vcs_info: &VcsInfo,
+        commit_ids: &[String],
+        revset: &str,
+    ) -> Option<ReviewSession> {
+        let (previous_path, mut session) =
+            crate::persistence::storage::find_local_session_by_revset(&vcs_info.root_path, revset)
+                .ok()
+                .flatten()?;
+        if session.commit_range.as_deref() == Some(commit_ids) {
+            return Some(session);
+        }
+        session.commit_range = Some(commit_ids.to_vec());
+        session.base_commit = commit_ids.last()?.clone();
+        Self::clear_stale_commit_scopes(&mut session, commit_ids);
+        let saved = crate::persistence::storage::save_session(&session).ok()?;
+        if saved != previous_path {
+            let _ = crate::persistence::storage::delete_session(&previous_path);
+        }
+        Some(session)
+    }
+
     pub(in crate::app) fn load_or_create_commit_range_session(
         vcs_info: &VcsInfo,
         commit_ids: &[String],
+        revset: Option<&str>,
     ) -> ReviewSession {
         let newest_commit_id = commit_ids.last().unwrap().clone();
         let loaded = load_latest_session_for_context(
@@ -476,7 +546,13 @@ impl App {
             Some(commit_ids),
         )
         .ok()
-        .and_then(|found| found.map(|(_path, session)| session));
+        .and_then(|found| found.map(|(_path, session)| session))
+        // Nothing under this exact range: the commits may have been rewritten
+        // since. The expression is the durable name for a review, so try that
+        // before starting an empty one and stranding the comments.
+        .or_else(|| {
+            revset.and_then(|revset| Self::adopt_session_for_revset(vcs_info, commit_ids, revset))
+        });
 
         let mut session = loaded.unwrap_or_else(|| {
             let mut s = ReviewSession::new(

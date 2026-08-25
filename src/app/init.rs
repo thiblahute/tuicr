@@ -163,7 +163,8 @@ impl App {
                     options.path_filter,
                 )?;
                 let commit_ids = revision_range.commit_ids.to_vec();
-                let session = Self::load_or_create_commit_range_session(&vcs_info, &commit_ids);
+                let session =
+                    Self::load_or_create_commit_range_session(&vcs_info, &commit_ids, Some(base));
                 (
                     diff_files,
                     DiffSource::RevisionDiff {
@@ -325,7 +326,14 @@ impl App {
                 highlighter,
                 options.path_filter,
             )?;
-            let session = Self::load_or_create_commit_range_session(&vcs_info, &commit_ids);
+            let mut session = Self::load_or_create_commit_range_session(
+                &vcs_info,
+                &commit_ids,
+                opened_with_revset.as_deref(),
+            );
+            // Remember the expression, not just what it resolved to: after an
+            // amend the SHAs are gone and only this can find the branch again.
+            session.revset = opened_with_revset.clone();
             // Get commit info for the inline commit selector
             let review_commits = crate::profile::time_with(
                 "startup.selected_commit_info",
