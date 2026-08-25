@@ -214,6 +214,7 @@ impl App {
         //   2. -r only: commit range
         //   3. -w only: working tree directly (skip commit selector)
         //   4. neither: commit selection UI
+        let opened_with_revset = options.revisions.map(str::to_string);
         let revision_range = match options.revisions {
             Some(revisions) => match crate::profile::time_with(
                 "startup.resolve_revision_range",
@@ -243,10 +244,11 @@ impl App {
                     highlighter,
                     options.path_filter,
                 )?;
-                let session = Self::load_or_create_staged_unstaged_and_commits_session(
+                let mut session = Self::load_or_create_staged_unstaged_and_commits_session(
                     &vcs_info,
                     &commit_ids,
                 );
+                session.revset = opened_with_revset.clone();
                 let review_commits: Vec<CommitInfo> = crate::profile::time_with(
                     "startup.selected_commit_info",
                     || vcs.get_commits_info(&commit_ids),

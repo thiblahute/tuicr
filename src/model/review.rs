@@ -122,6 +122,13 @@ pub struct ReviewSession {
     /// flight. Older session JSON rehydrates as `None`.
     #[serde(default)]
     pub agent_request: Option<DateTime<Utc>>,
+    /// The revision expression this review was opened with (`-r main..HEAD`),
+    /// when there was one. `commit_range` holds resolved SHAs, so it cannot
+    /// survive an amend: re-running this is how a reload finds the commits the
+    /// branch has *now*. `None` for selector-picked reviews, where nothing was
+    /// typed to re-run.
+    #[serde(default)]
+    pub revset: Option<String>,
     #[serde(default)]
     pub review_comments: Vec<Comment>,
     pub files: HashMap<PathBuf, FileReview>,
@@ -150,6 +157,7 @@ impl ReviewSession {
             created_at: now,
             updated_at: now,
             agent_request: None,
+            revset: None,
             review_comments: Vec::new(),
             files: HashMap::new(),
             session_notes: None,

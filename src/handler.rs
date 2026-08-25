@@ -1046,6 +1046,19 @@ fn reload_review(app: &mut App) {
             app.set_error(format!("Reload failed: {e}"));
         }
     } else {
+        // A commit-range review is pinned to resolved SHAs. If the branch was
+        // amended under it, re-fetching those same SHAs rebuilds the identical
+        // diff and the reload looks like it did nothing — so re-resolve the
+        // expression first and adopt whatever the branch holds now.
+        let mut adopted = None;
+        if matches!(app.diff_source, app::DiffSource::CommitRange(_))
+            && app.session.revset.is_some()
+        {
+            match app.resolve_revset_to_current_commits() {
+                Ok(count) => adopted = Some(count),
+                Err(e) => app.set_warning(format!("Could not re-resolve the range: {e}")),
+            }
+        }
         match app.reload_diff_files() {
             Ok((count, invalidated)) => {
                 let comment_suffix = match comment_reload {
@@ -1055,12 +1068,21 @@ fn reload_review(app: &mut App) {
                     Ok(_) => String::new(),
                     Err(e) => format!(", comment reload failed: {e}"),
                 };
+                // Say when the commits themselves moved: "reloaded 12 files"
+                // reads as success even when the review is still pinned to
+                // commits the branch no longer has.
+                let range_suffix = match adopted {
+                    Some(commits) => format!(" · now reviewing {commits} commits"),
+                    None => String::new(),
+                };
                 if invalidated > 0 {
                     app.set_message(format!(
-                        "Reloaded {count} files, {invalidated} changed since last review{comment_suffix}"
+                        "Reloaded {count} files, {invalidated} changed since last review{comment_suffix}{range_suffix}"
                     ));
                 } else {
-                    app.set_message(format!("Reloaded {count} files{comment_suffix}"));
+                    app.set_message(format!(
+                        "Reloaded {count} files{comment_suffix}{range_suffix}"
+                    ));
                 }
             }
             Err(e) => app.set_error(format!("Reload failed: {e}")),

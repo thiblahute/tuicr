@@ -640,6 +640,10 @@ pub enum DiffSource {
         /// Resolved endpoints; reloads reuse them so the diff stays stable.
         range: Box<ResolvedRevisionRange<'static>>,
     },
+    /// The commits under review, newest-first. These are resolved SHAs: a
+    /// reload re-fetches exactly them, so a review whose commits were amended
+    /// away reloads into an identical diff. `ReviewSession::revset` carries the
+    /// expression they came from, which is what a reload re-resolves.
     CommitRange(Vec<String>),
     StagedUnstagedAndCommits(Vec<String>),
     /// Remote PR review. Carries identity + base/head SHAs needed for

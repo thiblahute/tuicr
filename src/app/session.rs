@@ -142,6 +142,59 @@ impl App {
         Ok(path)
     }
 
+    /// Re-resolve this review's revision expression and adopt whatever the
+    /// branch holds now, carrying the session — comments and all — across the
+    /// move. Returns the number of commits now under review.
+    ///
+    /// `commit_range` stores resolved SHAs, so a review whose commits were
+    /// amended away reloads into an identical diff: the old objects still
+    /// exist, they are simply no longer the branch. Re-running the expression
+    /// is the only way back. The session file is keyed by the range, so
+    /// adopting a new one also has to move the file, or the comments would be
+    /// left behind under the old key.
+    pub fn resolve_revset_to_current_commits(&mut self) -> Result<usize> {
+        let Some(revset) = self.session.revset.clone() else {
+            return Err(TuicrError::InvalidInput(
+                "this review was opened from the commit selector, so there is no \
+                 revision expression to re-run — reopen it to pick up new commits"
+                    .to_string(),
+            ));
+        };
+
+        let range = self.vcs.resolve_revision_range(&revset)?;
+        let commits = range.commit_ids.to_vec();
+        if commits == self.session.commit_range.clone().unwrap_or_default() {
+            return Ok(commits.len());
+        }
+
+        // Save under the old key first: if anything below fails, the comments
+        // are still on disk where they were.
+        let previous_path = self.save_current_session_merging_external()?;
+
+        self.session.commit_range = Some(commits.clone());
+        self.diff_source = DiffSource::CommitRange(commits.clone());
+        // `commit_ids` resolves oldest-first; `review_commits` stores
+        // newest-first (display mirrors it for `commit_order = ascending`),
+        // so reverse here as every load path does — or the pane comes back
+        // from a reload upside down.
+        self.review_commits = self
+            .vcs
+            .get_commits_info(&commits)
+            .unwrap_or_default()
+            .into_iter()
+            .rev()
+            .collect();
+        self.commit_selection_range = None;
+
+        let new_path = self.save_current_session_merging_external()?;
+        if new_path != previous_path {
+            // The review moved to a new key; drop the copy left under the old
+            // one so `review list` shows this review once, at its new range.
+            crate::persistence::storage::delete_session(&previous_path)?;
+        }
+        Ok(commits.len())
+    }
+
     fn mark_current_session_active_at(&mut self, path: &Path) {
         if let Err(e) = crate::persistence::storage::mark_session_active(&self.session, path) {
             self.set_warning(format!("Failed to mark active review session: {e}"));

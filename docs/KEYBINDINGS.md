@@ -211,7 +211,7 @@ In command mode,
 | `:{N}` | Jump to new-side line N in current file |
 | `:o{N}` | Jump to old-side line N in current file (matches deletions) |
 | `:w` | Save session |
-| `:e` (`:reload`) | Reload diff files |
+| `:e` / `:reload` | Reload the diff. A commit-range review re-resolves the revision it was opened with, so commits amended or added since are picked up; comments follow their code, or are marked `outdated` |
 | `:edit` | Open focused file in `$EDITOR` |
 | `:clip` (`:export`) | Copy review to clipboard |
 | `:copy-url` | Copy the open PR URL to clipboard (PR mode) |
