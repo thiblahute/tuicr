@@ -1114,3 +1114,107 @@ fn should_record_the_revset_so_a_reload_can_re_run_it() {
     let restored: ReviewSession = serde_json::from_str(&json).unwrap();
     assert_eq!(restored.revset.as_deref(), Some("main..HEAD"));
 }
+
+#[test]
+fn should_find_a_review_again_after_its_commits_were_rewritten() {
+    // Sessions are keyed by their resolved commits, so an amend leaves the
+    // review unreachable by that key. Reopening with the same expression has
+    // to find it, or the comments are stranded and the reader starts empty —
+    // which is what happened in a real review.
+    use crate::persistence::storage;
+
+    let dir = tempfile::tempdir().unwrap();
+    storage::set_test_reviews_dir(Some(dir.path().to_path_buf()));
+
+    let (mut session, _root) = session_with_line_comment();
+    session.revset = Some("main..HEAD".to_string());
+    session.commit_range = Some(vec!["oldsha1".to_string()]);
+    session.repo_path = std::env::current_dir().unwrap();
+    storage::save_session(&session).expect("saved under the old range");
+
+    let found = storage::find_local_session_by_revset(&session.repo_path, "main..HEAD")
+        .expect("lookup ran")
+        .expect("the review is found by what it was opened with");
+    assert_eq!(found.1.id, session.id);
+    assert_eq!(
+        found
+            .1
+            .files
+            .values()
+            .map(|f| f.comment_count())
+            .sum::<usize>(),
+        1,
+        "and it still carries its comments"
+    );
+
+    // A different expression must not adopt someone else's review.
+    let other = storage::find_local_session_by_revset(&session.repo_path, "other..HEAD").unwrap();
+    assert!(other.is_none());
+
+    // Reopening after an amend leaves an empty session for the new range, and
+    // it is always the most recent. Adopting *that* would leave the review it
+    // was meant to rescue behind, so work beats recency.
+    let mut empty = ReviewSession::new(
+        session.repo_path.clone(),
+        "newsha".to_string(),
+        Some("main".to_string()),
+        SessionDiffSource::CommitRange,
+    );
+    empty.revset = Some("main..HEAD".to_string());
+    empty.commit_range = Some(vec!["newsha".to_string()]);
+    storage::save_session(&empty).expect("saved the empty one, newer");
+
+    let found = storage::find_local_session_by_revset(&session.repo_path, "main..HEAD")
+        .unwrap()
+        .expect("still finds one");
+    assert_eq!(found.1.id, session.id, "the review with comments wins");
+}
+
+#[test]
+fn should_not_let_a_rewrite_hide_comments_behind_a_dead_commit() {
+    // The failure this pins, seen for real: after an amend the review was
+    // adopted, the comments were re-anchored and marked outdated — and the
+    // pane showed nothing at all. Each comment recorded the commit it was made
+    // against, `comment_visible` hides comments outside the current selection,
+    // and every one of those SHAs had been rewritten away.
+    let (mut session, root) = session_with_line_comment();
+    session
+        .get_file_mut(&PathBuf::from("src/main.rs"))
+        .unwrap()
+        .line_comments
+        .get_mut(&42)
+        .unwrap()[0]
+        .commit_id = Some("deadbeef".to_string());
+    let _ = root;
+
+    let cleared = App::clear_stale_commit_scopes(&mut session, &["c0ffee".to_string()]);
+    assert_eq!(cleared, 1);
+
+    let comment = &session.files[&PathBuf::from("src/main.rs")].line_comments[&42][0];
+    assert!(
+        comment.commit_id.is_none(),
+        "the commit it named is gone, so the comment stops being scoped to it"
+    );
+    assert!(
+        App::comment_visible_with(comment, None),
+        "and it is visible again rather than silently filtered out"
+    );
+}
+
+#[test]
+fn should_keep_commit_scoping_that_is_still_live() {
+    let (mut session, _root) = session_with_line_comment();
+    session
+        .get_file_mut(&PathBuf::from("src/main.rs"))
+        .unwrap()
+        .line_comments
+        .get_mut(&42)
+        .unwrap()[0]
+        .commit_id = Some("c0ffee".to_string());
+
+    let cleared = App::clear_stale_commit_scopes(&mut session, &["c0ffee".to_string()]);
+
+    assert_eq!(cleared, 0, "a commit still under review keeps its scoping");
+    let comment = &session.files[&PathBuf::from("src/main.rs")].line_comments[&42][0];
+    assert_eq!(comment.commit_id.as_deref(), Some("c0ffee"));
+}

@@ -536,6 +536,50 @@ pub fn load_latest_session_for_context(
     Ok(Some((full_path, session)))
 }
 
+/// The most recent local session in this checkout that was opened with
+/// `revset`, whatever range it resolved to at the time.
+///
+/// Sessions are keyed by their resolved commits, so a rewritten history never
+/// matches the session it belongs to: reopening a review after an amend would
+/// silently start an empty one and strand the comments under the old key. The
+/// expression is the stable thing about a review, so it is what finds it again.
+pub fn find_local_session_by_revset(
+    repo_path: &Path,
+    revset: &str,
+) -> Result<Option<(PathBuf, ReviewSession)>> {
+    let reviews_dir = get_reviews_dir()?;
+    maybe_migrate(&reviews_dir)?;
+    let manifest = manifest::load_manifest(&reviews_dir).unwrap_or_default();
+    let canonical = fs::canonicalize(repo_path).unwrap_or_else(|_| repo_path.to_path_buf());
+
+    let mut candidates: Vec<_> = manifest
+        .iter()
+        .filter(|(_, entry)| {
+            matches!(entry.kind, manifest::ManifestKind::Local)
+                && entry.canonical_repo_path.as_deref() == Some(canonical.as_path())
+        })
+        .collect();
+    // A review with work in it wins over a newer empty one. Reopening after an
+    // amend creates an empty session for the new range, and it is always the
+    // most recent — sorting by time alone would adopt that and leave the review
+    // it was supposed to rescue behind.
+    candidates.sort_by_key(|(_, entry)| {
+        let has_work = entry.display.comment_count > 0 || entry.display.reviewed_count > 0;
+        (Reverse(has_work), Reverse(entry.updated_at))
+    });
+
+    for (_, entry) in candidates {
+        let path = reviews_dir.join(&entry.path);
+        let Ok(session) = load_session(&path) else {
+            continue;
+        };
+        if session.revset.as_deref() == Some(revset) {
+            return Ok(Some((path, session)));
+        }
+    }
+    Ok(None)
+}
+
 pub(crate) fn list_sessions_for_selector_in_dir(
     reviews_dir: &Path,
     selector: &Path,
