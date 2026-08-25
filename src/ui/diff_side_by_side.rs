@@ -655,7 +655,9 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
             comment_cursor_column = 1 + cursor_info.column;
             comment_input_box_range =
                 Some((line_idx, line_idx + input_lines.len().saturating_sub(1)));
-            let annotations_replaced = ctx.app.comment_rows(comment, inner.width as usize);
+            let annotations_replaced = ctx
+                .app
+                .comment_rows(comment, inner.width.saturating_sub(1) as usize);
             annotation_offset = Some((line_idx, input_lines.len(), annotations_replaced));
 
             for mut input_line in input_lines {
@@ -668,7 +670,9 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
                 line_idx += 1;
             }
         } else {
-            let rows = ctx.app.comment_rows(comment, ctx.panel_width);
+            let rows = ctx
+                .app
+                .comment_rows(comment, ctx.panel_width.saturating_sub(1));
             if !ctx.box_visible(line_idx, rows) {
                 skip_comment_box(&mut lines, &mut line_idx, rows);
                 continue;
@@ -847,7 +851,9 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
                     comment_cursor_column = 1 + cursor_info.column;
                     comment_input_box_range =
                         Some((line_idx, line_idx + input_lines.len().saturating_sub(1)));
-                    let annotations_replaced = ctx.app.comment_rows(comment, inner.width as usize);
+                    let annotations_replaced = ctx
+                        .app
+                        .comment_rows(comment, inner.width.saturating_sub(1) as usize);
                     annotation_offset = Some((line_idx, input_lines.len(), annotations_replaced));
 
                     for mut input_line in input_lines {
@@ -863,7 +869,9 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
                         line_idx += 1;
                     }
                 } else {
-                    let rows = ctx.app.comment_rows(comment, ctx.panel_width);
+                    let rows = ctx
+                        .app
+                        .comment_rows(comment, ctx.panel_width.saturating_sub(1));
                     if !ctx.box_visible(line_idx, rows) {
                         skip_comment_box(&mut lines, &mut line_idx, rows);
                         continue;
@@ -2337,7 +2345,12 @@ fn add_comments_to_line(
                         .line_range
                         .or_else(|| Some(LineRange::single(line_num)));
                     let box_top_row = line_idx;
-                    let rows = ctx.app.comment_rows(comment, ctx.panel_width);
+                    // `box_width` is what this box is formatted at just below —
+                    // a side pane's box, not the whole panel. Counting rows at
+                    // any other width makes the annotation model disagree with
+                    // the page, and every row beneath it addresses the wrong
+                    // line.
+                    let rows = ctx.app.comment_rows(comment, box_width);
                     // The bar is recorded either way: it is painted above the
                     // box, so it can be on screen while the box itself is not.
                     // Side boxes and commit-message boxes draw no bar, so the
