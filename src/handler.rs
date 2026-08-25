@@ -393,7 +393,7 @@ fn handle_left_click(app: &mut App, pos: Position) {
         app.move_cursor_to_annotation(idx);
         // In side-by-side view, clicking a pane also picks that side so the
         // caret (and a subsequent comment) follows the click.
-        if app.horizontal_keys_switch_side()
+        if app.is_side_by_side()
             && let Some(inner) = app.diff_inner_area
         {
             let side = app.side_at_x(inner, pos.x, LineSide::New);

@@ -238,13 +238,15 @@ impl App {
     }
 
     pub fn scroll_left(&mut self, cols: usize) {
-        // Side-by-side has no horizontal scroll (the keys switch side); keeping
-        // scroll_x at 0 also keeps the per-side comment boxes aligned. This also
-        // catches mouse/trackpad horizontal scroll, which calls here directly.
-        if self.diff_state.wrap_lines || self.horizontal_keys_switch_side() {
+        if self.diff_state.wrap_lines {
             return;
         }
         self.diff_state.scroll_x = self.diff_state.scroll_x.saturating_sub(cols);
+    }
+
+    /// Whether the diff is rendered as two side-by-side panes.
+    pub fn is_side_by_side(&self) -> bool {
+        self.diff_view_mode == DiffViewMode::SideBySide
     }
 
     /// Whether the diff is focused and split into two commentable panes, so
@@ -286,8 +288,7 @@ impl App {
     }
 
     pub fn scroll_right(&mut self, cols: usize) {
-        // See scroll_left: no horizontal scroll in side-by-side view.
-        if self.diff_state.wrap_lines || self.horizontal_keys_switch_side() {
+        if self.diff_state.wrap_lines {
             return;
         }
         let viewport_width = if self.diff_view_mode == DiffViewMode::SideBySide {

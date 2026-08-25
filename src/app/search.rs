@@ -355,7 +355,7 @@ impl App {
                     .and_then(|content| find_char_ci(content, &pattern))
                 {
                     self.diff_state.cursor_col = col;
-                    if self.horizontal_keys_switch_side() {
+                    if self.is_side_by_side() {
                         self.set_cursor_side(side);
                     }
                     break;
