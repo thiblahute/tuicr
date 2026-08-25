@@ -992,3 +992,44 @@ fn should_not_count_a_reply_as_an_open_thread_on_its_own() {
 
     assert!(!app.file_has_open_threads(&PathBuf::from("src/main.rs")));
 }
+
+#[test]
+fn should_count_the_same_rows_the_renderer_emits_at_any_box_width() {
+    // The bug this pins: `comment_rows` takes the width a box is *formatted*
+    // at. Feed it the panel width instead — as the side-by-side renderer did —
+    // and a narrow side box wraps to more rows than the annotation model
+    // believes, so every row below it addresses the wrong line and commenting
+    // on L24 lands on L20.
+    let (session, _root) = session_with_line_comment();
+    let app = app_for(session);
+    let comment = Comment::new(
+        "a comment long enough that the box width decides how many rows it \
+         takes, which is the whole point of this test"
+            .to_string(),
+        CommentType::from_id("issue"),
+        Some(LineSide::New),
+    );
+    let presentation = crate::ui::comment_panel::CommentTypePresentation {
+        label: "ISSUE".to_string(),
+        color: app.theme.fg_primary,
+    };
+
+    // Narrow (a side pane) through wide (full width): the model must agree
+    // with the renderer at every width, not just the one it was written for.
+    for box_width in [28usize, 40, 55, 80, 120] {
+        let rendered = crate::ui::comment_panel::format_comment_lines(
+            &app.theme,
+            presentation.clone(),
+            &comment.content,
+            Some(LineRange::single(42)),
+            box_width,
+            crate::ui::comment_panel::CommentBadge::Own,
+            crate::ui::comment_panel::ThreadDisplay::Open,
+        );
+        assert_eq!(
+            app.comment_rows(&comment, box_width),
+            rendered.len(),
+            "row model disagrees with the renderer at box width {box_width}"
+        );
+    }
+}
