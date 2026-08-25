@@ -205,7 +205,10 @@ impl UnmappableReason {
 pub enum MappedComment {
     Inline(InlineComment),
     Unmappable {
-        comment: Comment,
+        /// Boxed: a `Comment` carries its anchor — the code it was written
+        /// about — so it dwarfs the inline variant, and clippy rightly objects
+        /// to every `MappedComment` paying for the larger one.
+        comment: Box<Comment>,
         file: PathBuf,
         reason: UnmappableReason,
     },
@@ -306,14 +309,14 @@ pub fn map_comment(
 
     if file.is_binary {
         return MappedComment::Unmappable {
-            comment: comment.clone(),
+            comment: Box::new(comment.clone()),
             file: path,
             reason: UnmappableReason::BinaryFile,
         };
     }
     if file.is_too_large {
         return MappedComment::Unmappable {
-            comment: comment.clone(),
+            comment: Box::new(comment.clone()),
             file: path,
             reason: UnmappableReason::TooLargeFile,
         };
@@ -341,7 +344,7 @@ pub fn map_comment(
                 })
             }
             None => MappedComment::Unmappable {
-                comment: comment.clone(),
+                comment: Box::new(comment.clone()),
                 file: path,
                 reason: UnmappableReason::FileLevelNoAnchor,
             },
@@ -349,14 +352,14 @@ pub fn map_comment(
         CommentAnchor::Range => match comment.line_range {
             Some(range) => map_range(comment, file, ctx, range),
             None => MappedComment::Unmappable {
-                comment: comment.clone(),
+                comment: Box::new(comment.clone()),
                 file: path,
                 reason: UnmappableReason::MixedSideRange,
             },
         },
         CommentAnchor::Line { line, side } => match find_line_with_counterpart(file, line, side) {
             None => MappedComment::Unmappable {
-                comment: comment.clone(),
+                comment: Box::new(comment.clone()),
                 file: path,
                 reason: UnmappableReason::LineNotInDiff,
             },
@@ -475,7 +478,7 @@ fn map_range(
         // through the resolver rather than guessing.
         None => {
             return MappedComment::Unmappable {
-                comment: comment.clone(),
+                comment: Box::new(comment.clone()),
                 file: path,
                 reason: UnmappableReason::MixedSideRange,
             };
@@ -487,7 +490,7 @@ fn map_range(
     // a gap), but the start and end must be anchorable.
     if !range_endpoints_present(file, range, side) {
         return MappedComment::Unmappable {
-            comment: comment.clone(),
+            comment: Box::new(comment.clone()),
             file: path,
             reason: UnmappableReason::MixedSideRange,
         };
@@ -751,6 +754,7 @@ mod tests {
             content: String::new(),
             before: Vec::new(),
             after: Vec::new(),
+            commit: None,
         });
         c
     }

@@ -1076,6 +1076,7 @@ fn should_count_the_same_rows_the_renderer_emits_at_any_box_width() {
             "            comment_type,".to_string(),
         ],
         after: vec!["            commit_id: None,".to_string()],
+        commit: None,
     });
     for box_width in [28usize, 40, 55, 80, 120] {
         let rendered = crate::ui::comment_panel::format_comment_lines(
@@ -1487,6 +1488,44 @@ fn should_reattach_a_detached_comment_when_its_commit_is_reviewed_alone() {
     );
 }
 
+#[test]
+fn should_stamp_a_new_comment_context_with_the_head_of_the_range() {
+    // The range view's new side is the head's tree — the one that still holds
+    // the commented line. Stamping the oldest commit pointed context recovery
+    // (and the detached-comment commit gate) at a tree from before the line
+    // existed.
+    let (session, _root) = session_with_line_comment();
+    let mut session = session;
+    session.commit_range = Some(vec!["aaa".to_string(), "bbb".to_string()]);
+    let mut app = app_for(session);
+    app.diff_source = DiffSource::CommitRange(vec!["aaa".to_string(), "bbb".to_string()]);
+
+    app.enter_comment_mode(false, Some((42, LineSide::New)));
+    app.comment_buffer = "about the head's version of this line".to_string();
+    app.save_comment();
+
+    let review = app
+        .session
+        .files
+        .get(&PathBuf::from("src/main.rs"))
+        .unwrap();
+    let stamped = review
+        .line_comments
+        .get(&42)
+        .unwrap()
+        .iter()
+        .find(|c| c.content.starts_with("about the head"))
+        .expect("comment saved");
+    assert_eq!(
+        stamped
+            .line_context
+            .as_ref()
+            .and_then(|c| c.commit.as_deref()),
+        Some("bbb"),
+        "context must name the head of the range, not the oldest commit"
+    );
+}
+
 fn working(message: &str, agent: &str) -> crate::model::review::AgentActivity {
     crate::model::review::AgentActivity {
         at: chrono::Utc::now(),
@@ -1735,6 +1774,7 @@ fn should_follow_a_comment_when_an_amend_moves_its_line() {
         content: "let x = 1;".to_string(),
         before: Vec::new(),
         after: Vec::new(),
+        commit: None,
     });
     app.session
         .get_file_mut(&path)
@@ -1765,6 +1805,7 @@ fn should_mark_a_comment_outdated_when_its_code_is_gone() {
         content: "let x = 1;".to_string(),
         before: Vec::new(),
         after: Vec::new(),
+        commit: None,
     });
     app.session
         .get_file_mut(&path)
@@ -1830,6 +1871,7 @@ fn should_move_a_stranded_comment_to_the_file_so_it_still_shows() {
         content: "let x = 1;".to_string(),
         before: Vec::new(),
         after: Vec::new(),
+        commit: None,
     });
     app.session
         .get_file_mut(&path)
@@ -1862,6 +1904,7 @@ fn should_send_a_stranded_comment_home_when_its_code_comes_back() {
         content: "let x = 1;".to_string(),
         before: Vec::new(),
         after: Vec::new(),
+        commit: None,
     });
     {
         let review = app.session.get_file_mut(&path).unwrap();
@@ -1933,6 +1976,7 @@ fn should_never_leave_a_comment_on_code_it_was_not_written_about() {
         content: "let x = 1;".to_string(),
         before: Vec::new(),
         after: Vec::new(),
+        commit: None,
     });
     app.session
         .get_file_mut(&path)
