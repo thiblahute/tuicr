@@ -1188,6 +1188,211 @@ fn should_keep_commit_scoping_that_is_still_live() {
     assert_eq!(comment.commit_id.as_deref(), Some("c0ffee"));
 }
 
+/// A cumulative diff after fixup commits rewrote the commented lines: the
+/// original content is gone, so re-anchoring strands the comments at file
+/// level as outdated.
+fn diff_file_with_line(path: &str, content: &str) -> DiffFile {
+    let hunks = vec![DiffHunk {
+        header: "@@ -42,1 +42,1 @@".to_string(),
+        lines: vec![DiffLine {
+            origin: LineOrigin::Addition,
+            content: content.to_string(),
+            old_lineno: None,
+            new_lineno: Some(42),
+            highlighted_spans: None,
+        }],
+        old_start: 42,
+        old_count: 1,
+        new_start: 42,
+        new_count: 1,
+    }];
+    let content_hash = DiffFile::compute_content_hash(&hunks);
+    DiffFile {
+        old_path: None,
+        new_path: Some(PathBuf::from(path)),
+        status: FileStatus::Modified,
+        hunks,
+        is_binary: false,
+        is_too_large: false,
+        is_commit_message: false,
+        content_hash,
+    }
+}
+
+/// App mid-review of `aaa` (initial) + `bbb` (its fixup): the reviewer's
+/// comment was written while looking at `aaa`, whose line the fixup rewrote.
+fn app_with_detached_initial_commit_comment() -> App {
+    let (mut session, root) = session_with_line_comment();
+    {
+        let comment = session
+            .get_file_mut(&PathBuf::from("src/main.rs"))
+            .unwrap()
+            .line_comments
+            .get_mut(&42)
+            .unwrap()
+            .iter_mut()
+            .find(|c| c.id == root.id)
+            .unwrap();
+        comment.line_context = Some(crate::model::LineContext {
+            new_line: Some(42),
+            old_line: None,
+            content: "let x = 1;".to_string(),
+            before: Vec::new(),
+            after: Vec::new(),
+            commit: Some("aaa".to_string()),
+        });
+    }
+    session.commit_range = Some(vec!["aaa".to_string(), "bbb".to_string()]);
+    let mut app = app_with_session(session);
+    app.diff_source = DiffSource::CommitRange(vec!["aaa".to_string(), "bbb".to_string()]);
+    // Newest-first, as the pane stores them.
+    app.review_commits = vec![
+        commit_info("bbb", "fixup! the initial commit"),
+        commit_info("aaa", "the initial commit"),
+    ];
+    app.show_commit_selector = true;
+
+    // Reload lands the post-fixup cumulative diff: line 42 no longer reads
+    // as it did when the comment was written.
+    app.apply_diff_files(vec![diff_file_with_line("src/main.rs", "let x = fixed();")]);
+    app
+}
+
+#[test]
+fn should_hide_a_detached_comment_when_only_other_commits_are_selected() {
+    let mut app = app_with_detached_initial_commit_comment();
+
+    // The re-anchor pass stranded the comment at file level, outdated.
+    let review = app
+        .session
+        .files
+        .get(&PathBuf::from("src/main.rs"))
+        .unwrap();
+    assert!(
+        !review.line_comments.contains_key(&42),
+        "detached from its line"
+    );
+    assert_eq!(review.file_comments.len(), 1);
+    assert!(review.file_comments[0].outdated);
+    assert!(review.file_comments[0].commit_id.is_none());
+
+    // Narrow the review to the fixup commit (data index 0, newest-first):
+    // the comment was written on `aaa`, so `bbb`'s view must not show it.
+    app.commit_selection_range = Some((0, 0));
+    app.rebuild_annotations();
+    let shown = app
+        .line_annotations
+        .iter()
+        .any(|a| matches!(a, AnnotatedLine::FileComment { .. }));
+    assert!(
+        !shown,
+        "a comment written on the initial commit must not appear (as outdated) \
+         in the fixup commit's view"
+    );
+
+    // The full selection keeps it visible: detached, but never dropped.
+    app.commit_selection_range = Some((0, 1));
+    app.rebuild_annotations();
+    let shown = app
+        .line_annotations
+        .iter()
+        .any(|a| matches!(a, AnnotatedLine::FileComment { .. }));
+    assert!(
+        shown,
+        "the full-range view still shows the detached comment"
+    );
+
+    // And with no selection at all it stays visible too.
+    app.commit_selection_range = None;
+    app.rebuild_annotations();
+    let shown = app
+        .line_annotations
+        .iter()
+        .any(|a| matches!(a, AnnotatedLine::FileComment { .. }));
+    assert!(shown, "no selector: the detached comment stays visible");
+}
+
+#[test]
+fn should_hide_a_detached_thread_whole_not_just_its_root() {
+    // The agent replied before writing the fixup; the reply clones the
+    // root's context, so the whole thread detaches — and hides — together.
+    let (mut session, root) = session_with_line_comment();
+    {
+        let comment = session
+            .get_file_mut(&PathBuf::from("src/main.rs"))
+            .unwrap()
+            .line_comments
+            .get_mut(&42)
+            .unwrap()
+            .iter_mut()
+            .find(|c| c.id == root.id)
+            .unwrap();
+        comment.line_context = Some(crate::model::LineContext {
+            new_line: Some(42),
+            old_line: None,
+            content: "let x = 1;".to_string(),
+            before: Vec::new(),
+            after: Vec::new(),
+            commit: Some("aaa".to_string()),
+        });
+    }
+    reply(&mut session, &root.id, "fixed in the next commit");
+    session.commit_range = Some(vec!["aaa".to_string(), "bbb".to_string()]);
+    let mut app = app_with_session(session);
+    app.diff_source = DiffSource::CommitRange(vec!["aaa".to_string(), "bbb".to_string()]);
+    app.review_commits = vec![
+        commit_info("bbb", "fixup! the initial commit"),
+        commit_info("aaa", "the initial commit"),
+    ];
+    app.show_commit_selector = true;
+    app.apply_diff_files(vec![diff_file_with_line("src/main.rs", "let x = fixed();")]);
+
+    let review = app
+        .session
+        .files
+        .get(&PathBuf::from("src/main.rs"))
+        .unwrap();
+    assert_eq!(
+        review.file_comments.len(),
+        2,
+        "root and reply both stranded"
+    );
+
+    app.commit_selection_range = Some((0, 0));
+    app.rebuild_annotations();
+    let shown = app
+        .line_annotations
+        .iter()
+        .any(|a| matches!(a, AnnotatedLine::FileComment { .. }));
+    assert!(
+        !shown,
+        "neither the root nor its reply belongs in the fixup view"
+    );
+}
+
+#[test]
+fn should_reattach_a_detached_comment_when_its_commit_is_reviewed_alone() {
+    let mut app = app_with_detached_initial_commit_comment();
+
+    // Narrowing to the initial commit refetches its own diff, where the
+    // commented line still reads exactly as it did.
+    app.commit_selection_range = Some((1, 1));
+    app.apply_diff_files(vec![diff_file_with_line("src/main.rs", "let x = 1;")]);
+
+    let review = app
+        .session
+        .files
+        .get(&PathBuf::from("src/main.rs"))
+        .unwrap();
+    assert!(review.file_comments.is_empty(), "restored off file level");
+    let comments = review.line_comments.get(&42).expect("back on its line");
+    assert_eq!(comments.len(), 1);
+    assert!(
+        !comments[0].outdated,
+        "no longer outdated on its own commit"
+    );
+}
+
 #[test]
 fn should_tell_the_reviewer_when_an_agent_changed_the_code() {
     let (session, _root) = session_with_line_comment();
@@ -1511,13 +1716,22 @@ fn should_mark_a_comment_outdated_when_its_code_is_gone() {
         .line_comments
         .insert(42, vec![anchored]);
 
-    // The amend deleted that line entirely.
+    // The amend replaced that line's code.
     app.diff_files = vec![file_with_line_at("src/main.rs", "something else", 42)];
     app.reanchor_comments();
 
-    let stranded = &app.session.files[&path].line_comments[&42][0];
+    // Detached from line 42: the number survives the amend, the code does not,
+    // and a comment pinned to whatever now occupies it reads as misplaced.
+    let review = &app.session.files[&path];
+    assert!(review.line_comments.is_empty());
+    let stranded = &review.file_comments[0];
     assert!(stranded.outdated, "marked, not dropped");
     assert_eq!(stranded.content, "handle the empty case");
+    assert_eq!(
+        stranded.line_context.as_ref().unwrap().new_line,
+        Some(42),
+        "and it still says where it used to live"
+    );
 }
 
 #[test]
@@ -1683,8 +1897,8 @@ fn should_never_leave_a_comment_on_code_it_was_not_written_about() {
         .get(&42)
         .is_some_and(|cs| cs.iter().any(|c| c.id == comment.id));
     assert!(
-        comment.outdated || !still_at_42,
-        "a comment left on line 42 must be marked outdated — line 42 is not \
-         what it was written about any more"
+        comment.outdated && !still_at_42,
+        "line 42 is not what it was written about any more, so the comment is \
+         marked outdated and detached from it"
     );
 }

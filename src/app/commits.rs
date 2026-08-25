@@ -782,7 +782,12 @@ impl App {
         } else if comment.outdated {
             // Said before settled: a reader needs to know the code moved before
             // they can judge whether the thread is finished.
-            ThreadDisplay::Outdated
+            ThreadDisplay::Outdated {
+                was_line: comment
+                    .line_context
+                    .as_ref()
+                    .and_then(|c| c.new_line.or(c.old_line)),
+            }
         } else if comment.resolved {
             ThreadDisplay::Resolved
         } else {
@@ -821,6 +826,17 @@ impl App {
         commit_set: Option<&std::collections::HashSet<String>>,
     ) -> bool {
         match (&comment.commit_id, commit_set) {
+            // A detached comment carries no scope, but its context says which
+            // commit the code was read from. A selection that leaves that
+            // commit out is a view of other commits' work — fixups on top of
+            // the ones it was written about — and showing the strays there
+            // reads as remarks about code they never meant. The full
+            // selection contains every sha, so "never dropped" still holds.
+            (None, Some(set)) if comment.outdated => comment
+                .line_context
+                .as_ref()
+                .and_then(|context| context.commit.as_ref())
+                .is_none_or(|written_on| set.contains(written_on)),
             (None, _) => true,
             (Some(_), None) => true,
             (Some(sha), Some(set)) => set.contains(sha),

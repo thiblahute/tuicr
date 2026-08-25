@@ -536,9 +536,9 @@ pub enum ThreadDisplay {
     /// Settled, but shown in full because resolved threads are expanded.
     Resolved,
     /// The code this comment was written against is gone. Shown in full — the
-    /// text is still the reader's own words — but said plainly, because the
-    /// line beside it is no longer what was being talked about.
-    Outdated,
+    /// text is still the reader's own words — and carrying the line it used to
+    /// live on, since it no longer renders there.
+    Outdated { was_line: Option<u32> },
     /// Settled and hidden: one marker row carrying the reply count and the
     /// leader key that expands it.
     Collapsed { replies: usize, expand_key: char },
@@ -550,7 +550,14 @@ impl ThreadDisplay {
     }
 
     fn is_outdated(self) -> bool {
-        matches!(self, Self::Outdated)
+        matches!(self, Self::Outdated { .. })
+    }
+
+    fn was_line(self) -> Option<u32> {
+        match self {
+            Self::Outdated { was_line } => was_line,
+            _ => None,
+        }
     }
 }
 
@@ -654,10 +661,12 @@ pub fn format_comment_lines(
         (None, false) => format!("[{}] ", comment_type.label),
     };
     // The root announces the state once; its replies are already dimmed.
-    let state = if display.is_outdated() {
-        "outdated"
-    } else {
-        "resolved"
+    let state = match (display.is_outdated(), display.was_line()) {
+        // Name the line it used to be on: detached from the diff, that is the
+        // only thing that places it.
+        (true, Some(line)) => format!("outdated · was L{line}"),
+        (true, None) => "outdated".to_string(),
+        (false, _) => "resolved".to_string(),
     };
     let badge_text = match (resolved, badge.is_reply()) {
         (false, _) | (true, true) => badge_text,
