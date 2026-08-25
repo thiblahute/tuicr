@@ -202,12 +202,22 @@ impl App {
             .collect();
         self.commit_selection_range = None;
 
+        // Load the new diff and re-anchor *before* saving. Adopting a range
+        // without it writes the comments back at coordinates that belonged to
+        // the old commits: a comment then sits on whatever code took its line,
+        // looking untouched. Leaving this to a later reload made it depend on
+        // the caller, and the one caller that mattered ran it too late.
+        let reanchored = self.reload_diff_files();
+
         let new_path = self.save_current_session_merging_external()?;
         if new_path != previous_path {
             // The review moved to a new key; drop the copy left under the old
             // one so `review list` shows this review once, at its new range.
             crate::persistence::storage::delete_session(&previous_path)?;
         }
+        // Report a diff failure only after the move is complete, so a broken
+        // fetch cannot leave the review split across two keys.
+        reanchored?;
         Ok(commits.len())
     }
 
