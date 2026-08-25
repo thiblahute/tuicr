@@ -573,6 +573,14 @@ impl App {
             if let Some(id) = comment.commit_id.as_deref()
                 && !live.contains(id)
             {
+                // Keep it as provenance before dropping it as scoping: it is
+                // the only handle on the code this comment was written about
+                // once the commit leaves the review.
+                if let Some(context) = comment.line_context.as_mut()
+                    && context.commit.is_none()
+                {
+                    context.commit = Some(id.to_string());
+                }
                 comment.commit_id = None;
                 cleared += 1;
             }

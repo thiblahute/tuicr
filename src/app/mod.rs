@@ -742,7 +742,7 @@ fn bucket_mapping(
             file,
             reason,
         } => unmappable.push(UnmappableItem {
-            comment,
+            comment: *comment,
             file,
             reason,
         }),

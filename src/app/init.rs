@@ -594,6 +594,7 @@ impl App {
             .and_then(|path| SessionFileState::from_path(path).ok());
         let persisted_session_snapshot = session.clone();
 
+        let recheck_anchors = matches!(diff_source, DiffSource::CommitRange(_));
         let mut app = Self {
             theme,
             vcs,
@@ -766,6 +767,18 @@ impl App {
         app.sort_files_by_directory(true);
         app.expand_all_dirs();
         app.populate_file_line_count_cache();
+        // A review reopened after its commits were rewritten arrives with
+        // comments anchored to the old ones. Check them against the diff that
+        // is actually on screen before the first frame, so nothing is shown
+        // sitting on code it was not written about.
+        if recheck_anchors && app.reanchor_comments() > 0 {
+            // Persist it: a re-anchor that lives only in memory leaves
+            // `review comments` telling an agent the old story, and the next
+            // process to read the file would undo the decision.
+            if let Err(e) = app.save_current_session_merging_external() {
+                app.set_warning(format!("Could not save re-anchored comments: {e}"));
+            }
+        }
         app.rebuild_annotations();
         app.detect_forge_repository();
         Ok(app)

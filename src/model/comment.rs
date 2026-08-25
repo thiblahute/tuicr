@@ -148,6 +148,14 @@ pub struct LineContext {
     /// The lines just below, in order.
     #[serde(default)]
     pub after: Vec<String>,
+    /// The commit the file was read from when this comment was written.
+    ///
+    /// Distinct from `Comment::commit_id`, which scopes *visibility* and is
+    /// cleared when a rewrite makes it meaningless. This one is provenance:
+    /// it is how the surrounding code can be fetched later, from the commit
+    /// the reader was actually looking at, so it is never cleared.
+    #[serde(default)]
+    pub commit: Option<String>,
 }
 
 impl LineContext {

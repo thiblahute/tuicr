@@ -1397,6 +1397,16 @@ impl App {
                 content: diff_line.content.clone(),
                 before,
                 after,
+                // Which commit the reader was looking at, so the surrounding
+                // code can be fetched from it later even after a rewrite drops
+                // this file's lines from the diff. `commit_range`'s last entry
+                // is the newest (see `scope_for_new_comment`): the range
+                // view's new side is the head's tree, which is the one that
+                // still holds this line — the oldest commit's usually never
+                // did.
+                commit: self
+                    .commit_id_for_new_comment()
+                    .or_else(|| self.session.commit_range.as_ref()?.last().cloned()),
             });
         }
         None

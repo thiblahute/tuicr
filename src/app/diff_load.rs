@@ -806,7 +806,12 @@ impl App {
     /// Files missing from the current diff are left alone: with a narrowed
     /// commit selection a file is absent because it is not being shown, not
     /// because its lines died.
-    pub(in crate::app) fn reanchor_comments(&mut self) {
+    /// Returns how many comments moved or changed their outdated state, so a
+    /// caller can persist the result: a re-anchor that lives only in memory
+    /// leaves `review comments` telling an agent the old story.
+    pub(in crate::app) fn reanchor_comments(&mut self) -> usize {
+        let mut changed = 0usize;
+        let mut needs_context: Vec<String> = Vec::new();
         for file in &self.diff_files {
             let path = file.display_path().clone();
             let Some(review) = self.session.files.get_mut(&path) else {
@@ -840,6 +845,7 @@ impl App {
                         }
                         None => {
                             comment.outdated = true;
+                            needs_context.push(comment.id.clone());
                             // Detach it from the line. Keeping it there badged
                             // was the wrong call: once the text is gone the
                             // number means nothing, and a comment pinned to
@@ -882,6 +888,91 @@ impl App {
                 review.line_comments.entry(line).or_default().push(comment);
             }
             review.file_comments.extend(stranded);
+        }
+        self.recover_detached_context(&needs_context);
+        changed
+    }
+
+    /// Read the code a just-detached comment was written about from the commit
+    /// it was written on.
+    ///
+    /// The lines recorded when the comment was made are a fallback — three
+    /// either side, and nothing at all for comments written before tuicr kept
+    /// them. The commit is still the better source: it has the whole file, so
+    /// the reader gets real surrounding code rather than whatever happened to
+    /// be captured. It can be gone (garbage-collected, or never local), in
+    /// which case the recorded lines stand and nothing is said about it.
+    fn recover_detached_context(&mut self, comment_ids: &[String]) {
+        if comment_ids.is_empty() {
+            return;
+        }
+        let span = crate::model::LineContext::SURROUNDING as u32;
+        let wanted: std::collections::HashSet<&str> =
+            comment_ids.iter().map(String::as_str).collect();
+
+        let mut fetched: Vec<(String, Vec<String>, String, Vec<String>)> = Vec::new();
+        for (path, review) in &self.session.files {
+            for comment in review
+                .file_comments
+                .iter()
+                .chain(review.line_comments.values().flatten())
+            {
+                if !wanted.contains(comment.id.as_str()) {
+                    continue;
+                }
+                let Some(context) = comment.line_context.as_ref() else {
+                    continue;
+                };
+                let (Some(commit), Some(line)) = (
+                    context.commit.as_deref(),
+                    context.new_line.or(context.old_line),
+                ) else {
+                    continue;
+                };
+                let start = line.saturating_sub(span).max(1);
+                let end = line.saturating_add(span);
+                let Ok(lines) = self.vcs.fetch_context_lines(
+                    path,
+                    crate::model::FileStatus::Modified,
+                    Some(commit),
+                    start,
+                    end,
+                ) else {
+                    continue;
+                };
+                let mut before = Vec::new();
+                let mut after = Vec::new();
+                let mut at = None;
+                for fetched_line in lines {
+                    let lineno = fetched_line.new_lineno.or(fetched_line.old_lineno);
+                    match lineno {
+                        Some(n) if n < line => before.push(fetched_line.content),
+                        Some(n) if n == line => at = Some(fetched_line.content),
+                        _ => after.push(fetched_line.content),
+                    }
+                }
+                if let Some(at) = at {
+                    fetched.push((comment.id.clone(), before, at, after));
+                }
+            }
+        }
+
+        for (id, before, at, after) in fetched {
+            for review in self.session.files.values_mut() {
+                for comment in review
+                    .file_comments
+                    .iter_mut()
+                    .chain(review.line_comments.values_mut().flatten())
+                {
+                    if comment.id == id
+                        && let Some(context) = comment.line_context.as_mut()
+                    {
+                        context.before = before.clone();
+                        context.content = at.clone();
+                        context.after = after.clone();
+                    }
+                }
+            }
         }
     }
 
