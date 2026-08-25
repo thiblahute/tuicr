@@ -840,17 +840,14 @@ impl App {
                         }
                         None => {
                             comment.outdated = true;
-                            // A line that still exists can host the comment —
-                            // badged, so the reader sees the code moved on. A
-                            // line with no row left would render nowhere at
-                            // all, so the comment moves to the file, where it
-                            // is still readable and still cycles with `m`.
-                            if Self::file_renders_line(file, line, comment.side.unwrap_or_default())
-                            {
-                                kept.push(comment);
-                            } else {
-                                stranded.push(comment);
-                            }
+                            // Detach it from the line. Keeping it there badged
+                            // was the wrong call: once the text is gone the
+                            // number means nothing, and a comment pinned to
+                            // whatever code now occupies that line reads as
+                            // misplaced however it is labelled. At file level
+                            // it is honest about having lost its place, still
+                            // readable, and still reached by `m`.
+                            stranded.push(comment);
                         }
                     }
                 }
@@ -893,18 +890,6 @@ impl App {
     /// within `REANCHOR_WINDOW`. `None` when the text is gone, and when the
     /// comment predates content anchoring — an old comment has nothing to
     /// match on, so it keeps its line rather than being called outdated.
-    /// True when `line` on `side` has a row in this file's diff. A comment on a
-    /// line with no row renders nowhere, which is how comments disappeared
-    /// silently before.
-    fn file_renders_line(file: &DiffFile, line: u32, side: LineSide) -> bool {
-        file.hunks.iter().any(|hunk| {
-            hunk.lines.iter().any(|diff_line| match side {
-                LineSide::Old => diff_line.old_lineno == Some(line),
-                LineSide::New => diff_line.new_lineno == Some(line),
-            })
-        })
-    }
-
     fn find_anchor(file: &DiffFile, comment: &Comment, line: u32) -> Option<u32> {
         let Some(context) = comment.line_context.as_ref() else {
             return Some(line);
@@ -936,7 +921,7 @@ impl App {
         best
     }
 
-    fn apply_diff_files(&mut self, diff_files: Vec<DiffFile>) -> (usize, usize) {
+    pub(in crate::app) fn apply_diff_files(&mut self, diff_files: Vec<DiffFile>) -> (usize, usize) {
         let current_path = self.current_file_path().cloned();
         let prev_file_idx = self.diff_state.current_file_idx;
         let prev_cursor_line = self.diff_state.cursor_line;
