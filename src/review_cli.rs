@@ -80,6 +80,11 @@ fn run_with_writer(command: ReviewCommand, out: &mut impl Write) -> Result<()> {
             timeout_secs,
             repo,
         } => watch_session(&session, &repo, any, timeout_secs, out),
+        ReviewCommand::Update {
+            session,
+            message,
+            repo,
+        } => announce_update(&session, &repo, message, out),
         ReviewCommand::Comments { session, repo } => show_comments(&session, &repo, out),
     }
 }
@@ -637,6 +642,50 @@ fn watch_session(
         .map(collect_comments)
         .unwrap_or_default();
     serde_json::to_writer_pretty(&mut *out, &WatchOutput { outcome, comments })?;
+    writeln!(out)?;
+    Ok(())
+}
+
+#[derive(Debug, Serialize)]
+struct UpdateOutput {
+    session: String,
+    announced_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message: Option<String>,
+}
+
+/// Stamp the session so the reviewer's open TUI can say the branch moved.
+///
+/// The counterpart of `:submit agent`: that is the reviewer handing work over,
+/// this is the agent handing it back. Without it the reviewer discovers a
+/// rewritten branch by reloading and seeing nothing change, which reads as a
+/// broken reload rather than a moved branch.
+fn announce_update(
+    session: &str,
+    repo: &Path,
+    message: Option<String>,
+    out: &mut impl Write,
+) -> Result<()> {
+    let store = ReviewStore::new();
+    let session_ref = resolve_session_ref(&store, repo, session)?;
+    let mut session_data = store.get_review(&session_ref)?;
+    let message = message
+        .map(|text| text.trim().to_string())
+        .filter(|text| !text.is_empty());
+    let announced = crate::model::review::AgentUpdate {
+        at: chrono::Utc::now(),
+        message: message.clone(),
+    };
+    session_data.agent_update = Some(announced.clone());
+    session_data.updated_at = announced.at;
+    store.save_review(&session_data)?;
+
+    let output = UpdateOutput {
+        session: session.to_string(),
+        announced_at: announced.at.to_rfc3339(),
+        message,
+    };
+    serde_json::to_writer_pretty(&mut *out, &output)?;
     writeln!(out)?;
     Ok(())
 }

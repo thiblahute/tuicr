@@ -1218,3 +1218,45 @@ fn should_keep_commit_scoping_that_is_still_live() {
     let comment = &session.files[&PathBuf::from("src/main.rs")].line_comments[&42][0];
     assert_eq!(comment.commit_id.as_deref(), Some("c0ffee"));
 }
+
+#[test]
+fn should_tell_the_reviewer_when_an_agent_changed_the_code() {
+    let (session, _root) = session_with_line_comment();
+    let mut app = app_for(session);
+    app.pending_agent_update = Some(crate::model::review::AgentUpdate {
+        at: chrono::Utc::now(),
+        message: Some("rebased onto main, dropped the duplicate".to_string()),
+    });
+
+    assert!(app.poll_agent_update_for_test());
+
+    let shown = app.message.clone().expect("a message was shown");
+    assert!(
+        shown.content.contains("rebased onto main"),
+        "{:?}",
+        shown.content
+    );
+    // Naming the command matters: the diff on screen is stale until they run it.
+    assert!(shown.content.contains(":reload"), "{:?}", shown.content);
+    // Announced once, not on every poll.
+    assert!(!app.poll_agent_update_for_test());
+}
+
+#[test]
+fn should_hold_the_announcement_while_a_comment_is_open() {
+    // Interrupting someone mid-comment to say the branch moved would be worse
+    // than telling them a second later.
+    let (session, _root) = session_with_line_comment();
+    let mut app = app_for(session);
+    app.input_mode = InputMode::Comment;
+    app.pending_agent_update = Some(crate::model::review::AgentUpdate {
+        at: chrono::Utc::now(),
+        message: None,
+    });
+
+    assert!(!app.poll_agent_update_for_test());
+    assert!(app.pending_agent_update.is_some(), "kept for later");
+
+    app.input_mode = InputMode::Normal;
+    assert!(app.poll_agent_update_for_test());
+}

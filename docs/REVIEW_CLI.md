@@ -33,6 +33,7 @@ tuicr review comments --session gh:slatedb/slatedb/pr/1745
 tuicr review reply --session agavra/tuicr@main/worktree --comment-id <ID> "Fixed."
 tuicr review resolve --session agavra/tuicr@main/worktree --comment-id <ID>
 tuicr review watch --session agavra/tuicr@main/worktree
+tuicr review update --session agavra/tuicr@main/worktree --message "fixed both, rebased"
 ```
 
 All `tuicr review` commands emit JSON by default. Timestamps are RFC3339 strings
@@ -146,6 +147,21 @@ thoughts. Output carries an `outcome`:
 
 `--any` returns on any edit, which is simpler but wakes on every saved comment.
 `--timeout` exists so a forgotten watcher does not outlive the review.
+
+## Announce A Change
+
+`update` tells a review that the code under it moved, so the reviewer is
+prompted to reload instead of finding out by reloading into nothing:
+
+```bash
+tuicr review update --session <slug> --message "rebased onto main, dropped the duplicate commit"
+```
+
+The counterpart of `:submit agent`: that is the reviewer handing work over, this
+is the agent handing it back. An open TUI polls the session file anyway, so it
+raises the message on its next tick — verbatim, which is why a real sentence
+beats "updated". The reviewer then runs `:reload`, which re-resolves the review's
+revision expression and re-anchors the comments.
 
 ## Resolve Threads
 

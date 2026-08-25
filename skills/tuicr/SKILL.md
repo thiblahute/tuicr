@@ -256,6 +256,26 @@ Rules for the loop:
 `in_reply_to`) alongside `content`, which is convenient for batching a round of
 replies from a script.
 
+### After you change the code
+
+When you have rewritten, amended, or added commits under a review the user has
+open, say so:
+
+```bash
+tuicr review update --repo /path/to/repo --session <slug> \
+  --message "fixed both comments, amended into the original commits"
+```
+
+Their diff is stale until they reload, and nothing else tells them — a review
+pinned to commits you amended away reloads into an identical diff, which reads
+as a broken reload rather than a moved branch. Write a real sentence: it is
+shown to them verbatim.
+
+Launch reviews with an explicit revision when you can
+(`tuicr-wrapper-zellij.sh /path/to/repo -- -r main..HEAD`). A review opened that
+way re-resolves its range on `:reload`; one opened from the commit selector is
+pinned to the commits it started with and cannot follow the branch.
+
 ### Resolving
 
 ```bash

@@ -86,6 +86,17 @@ pub enum SessionDiffSource {
     Pristine,
 }
 
+/// An agent's announcement that it changed the code under review.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentUpdate {
+    pub at: DateTime<Utc>,
+    /// What the agent did, in its own words. Shown to the reviewer verbatim,
+    /// so "rebased onto main, dropped the duplicate commit" beats a bare
+    /// "updated".
+    #[serde(default)]
+    pub message: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReviewSession {
     pub id: String,
@@ -129,6 +140,12 @@ pub struct ReviewSession {
     /// typed to re-run.
     #[serde(default)]
     pub revset: Option<String>,
+    /// The last time an agent said it changed the code under this review
+    /// (`tuicr review update`), with whatever it wanted to say about it. The
+    /// TUI polls the session file anyway, so this is how the reviewer learns
+    /// the branch moved instead of finding out by reloading into nothing.
+    #[serde(default)]
+    pub agent_update: Option<AgentUpdate>,
     #[serde(default)]
     pub review_comments: Vec<Comment>,
     pub files: HashMap<PathBuf, FileReview>,
@@ -158,6 +175,7 @@ impl ReviewSession {
             updated_at: now,
             agent_request: None,
             revset: None,
+            agent_update: None,
             review_comments: Vec::new(),
             files: HashMap::new(),
             session_notes: None,

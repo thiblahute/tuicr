@@ -221,14 +221,38 @@ impl App {
             return false;
         }
 
-        match self.reload_persisted_session_if_changed(false) {
+        let merged = match self.reload_persisted_session_if_changed(false) {
             Ok(0) => false,
             Ok(_) => true,
             Err(err) => {
                 self.set_warning(format!("Review reload failed: {err}"));
                 true
             }
+        };
+        self.announce_pending_agent_update() || merged
+    }
+
+    /// Surface an agent's "I changed the code" announcement, once, when the
+    /// reviewer is not mid-comment. It names `:reload` because the diff on
+    /// screen is stale until they do — the whole point of the announcement.
+    #[cfg(test)]
+    pub(in crate::app) fn poll_agent_update_for_test(&mut self) -> bool {
+        self.announce_pending_agent_update()
+    }
+
+    fn announce_pending_agent_update(&mut self) -> bool {
+        if self.input_mode == InputMode::Comment {
+            return false;
         }
+        let Some(update) = self.pending_agent_update.take() else {
+            return false;
+        };
+        let message = match update.message.as_deref() {
+            Some(text) => format!("Agent: {text} · :reload to see it"),
+            None => "Agent changed the code under review · :reload to see it".to_string(),
+        };
+        self.set_warning(message);
+        true
     }
 
     /// True while any forge background fetch (PR list/open/reload/threads/
@@ -267,6 +291,13 @@ impl App {
         }
 
         let latest = crate::persistence::storage::load_session(&path)?;
+        // An agent announcing that it changed the code is not a comment merge:
+        // it needs saying out loud, because the diff on screen is now stale and
+        // nothing else would tell the reader.
+        if latest.agent_update.is_some() && latest.agent_update != self.session.agent_update {
+            self.session.agent_update = latest.agent_update.clone();
+            self.pending_agent_update = latest.agent_update.clone();
+        }
         let before_count = Self::comment_count(&self.session);
         let changed = Self::merge_external_session_changes(
             &mut self.session,

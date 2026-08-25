@@ -1251,6 +1251,10 @@ pub struct App {
     /// thread collapses to its root's first line, marked `▸ resolved`, so the
     /// diff shows what still needs attention without losing the record.
     pub show_resolved_threads: bool,
+    /// An agent's announcement that the code under review changed, waiting to
+    /// be shown. Held rather than shown immediately so it survives until the
+    /// reviewer is out of the comment editor.
+    pub pending_agent_update: Option<crate::model::review::AgentUpdate>,
     /// Roots of settled threads whose visibility differs from
     /// `show_resolved_threads` — Enter flips one thread rather than the whole
     /// review, which would insert rows above the cursor and throw the page.
