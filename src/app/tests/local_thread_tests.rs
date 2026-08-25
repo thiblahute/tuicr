@@ -8,11 +8,50 @@ use crate::vcs::traits::VcsType;
 
 struct DummyVcs {
     info: VcsInfo,
+    commits: Vec<crate::vcs::CommitInfo>,
+    /// What `resolve_revision_range` answers, oldest-first — the order the
+    /// real resolver documents. `None` keeps the trait's unsupported error.
+    resolved_range: Option<Vec<String>>,
 }
 
 impl VcsBackend for DummyVcs {
     fn info(&self) -> &VcsInfo {
         &self.info
+    }
+    fn get_commits_info(&self, ids: &[String]) -> Result<Vec<crate::vcs::CommitInfo>> {
+        // In the requested order, as the real backend answers.
+        Ok(ids
+            .iter()
+            .filter_map(|id| {
+                self.commits
+                    .iter()
+                    .find(|commit| commit.short_id == *id || commit.id == *id)
+                    .cloned()
+            })
+            .collect())
+    }
+    fn resolve_revision_range(
+        &self,
+        _revisions: &str,
+    ) -> Result<crate::vcs::traits::ResolvedRevisionRange<'static>> {
+        match &self.resolved_range {
+            Some(ids) => Ok(
+                crate::vcs::traits::ResolvedRevisionRange::from_owned_commit_ids(
+                    ids.clone(),
+                    crate::vcs::traits::RevisionDiffTarget::CommitList,
+                ),
+            ),
+            None => Err(TuicrError::UnsupportedOperation(
+                "no resolved range configured".into(),
+            )),
+        }
+    }
+    fn get_commit_range_diff(
+        &self,
+        _revision_range: &crate::vcs::traits::ResolvedRevisionRange<'_>,
+        _highlighter: &SyntaxHighlighter,
+    ) -> Result<Vec<DiffFile>> {
+        Ok(vec![diff_file("src/main.rs")])
     }
     fn get_working_tree_diff(&self, _highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
         Err(TuicrError::NoChanges)
@@ -68,6 +107,14 @@ fn diff_file(path: &str) -> DiffFile {
 }
 
 fn app_with_session(session: ReviewSession) -> App {
+    app_with_session_and_vcs(session, Vec::new(), None)
+}
+
+fn app_with_session_and_vcs(
+    session: ReviewSession,
+    commits: Vec<crate::vcs::CommitInfo>,
+    resolved_range: Option<Vec<String>>,
+) -> App {
     let vcs_info = VcsInfo {
         root_path: PathBuf::from("/repo"),
         head_commit: "head".to_string(),
@@ -77,6 +124,8 @@ fn app_with_session(session: ReviewSession) -> App {
     App::build(
         Box::new(DummyVcs {
             info: vcs_info.clone(),
+            commits,
+            resolved_range,
         }),
         vcs_info,
         Theme::dark(),
@@ -1032,4 +1081,36 @@ fn should_count_the_same_rows_the_renderer_emits_at_any_box_width() {
             "row model disagrees with the renderer at box width {box_width}"
         );
     }
+}
+
+#[test]
+fn should_refuse_to_re_resolve_a_selector_opened_review() {
+    // Nothing was typed to re-run, so there is no honest way to guess what the
+    // reader meant. Say so rather than silently reloading the same commits.
+    let (session, _root) = session_with_line_comment();
+    let mut app = app_for(session);
+    app.session.revset = None;
+
+    let err = app.resolve_revset_to_current_commits().unwrap_err();
+    let TuicrError::InvalidInput(message) = &err else {
+        panic!("expected InvalidInput, got {err:?}");
+    };
+    assert!(message.contains("commit selector"), "{message}");
+    assert!(message.contains("reopen"), "{message}");
+}
+
+#[test]
+fn should_record_the_revset_so_a_reload_can_re_run_it() {
+    // The regression this whole change is about: a session that only knows its
+    // resolved SHAs cannot find the branch again after an amend.
+    let (mut session, _root) = session_with_line_comment();
+    session.revset = Some("main..HEAD".to_string());
+    session.commit_range = Some(vec!["deadbeef".to_string()]);
+    let app = app_for(session);
+
+    assert_eq!(app.session.revset.as_deref(), Some("main..HEAD"));
+    // And it survives a round trip through storage, or a restart loses it.
+    let json = serde_json::to_string(&app.session).unwrap();
+    let restored: ReviewSession = serde_json::from_str(&json).unwrap();
+    assert_eq!(restored.revset.as_deref(), Some("main..HEAD"));
 }
