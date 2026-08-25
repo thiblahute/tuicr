@@ -1641,3 +1641,50 @@ fn should_say_outdated_in_the_comment_box() {
     // Not silently mistaken for settled.
     assert!(!header.contains("resolved"), "{header}");
 }
+
+#[test]
+fn should_never_leave_a_comment_on_code_it_was_not_written_about() {
+    // The failure this pins, seen for real: history was rewritten under an
+    // open review, the range was adopted, and a comment stayed at its old line
+    // number — now unrelated code — reported as perfectly current. Either it
+    // follows its text or it says `outdated`; sitting silently on someone
+    // else's line is the one outcome that must not happen.
+    let (session, _root) = session_with_line_comment();
+    let mut app = app_for(session);
+    let path = PathBuf::from("src/main.rs");
+    let mut anchored = app.session.files[&path].line_comments[&42][0].clone();
+    anchored.line_context = Some(crate::model::LineContext {
+        new_line: Some(42),
+        old_line: None,
+        content: "let x = 1;".to_string(),
+    });
+    app.session
+        .get_file_mut(&path)
+        .unwrap()
+        .line_comments
+        .insert(42, vec![anchored]);
+
+    // The amend replaced that line's code; line 42 still exists, saying
+    // something else entirely.
+    app.diff_files = vec![file_with_line_at("src/main.rs", "let y = 2;", 42)];
+    app.reanchor_comments();
+
+    let review = &app.session.files[&path];
+    let survivors: Vec<_> = review
+        .line_comments
+        .values()
+        .flatten()
+        .chain(review.file_comments.iter())
+        .collect();
+    assert_eq!(survivors.len(), 1, "the comment is never dropped");
+    let comment = survivors[0];
+    let still_at_42 = review
+        .line_comments
+        .get(&42)
+        .is_some_and(|cs| cs.iter().any(|c| c.id == comment.id));
+    assert!(
+        comment.outdated || !still_at_42,
+        "a comment left on line 42 must be marked outdated — line 42 is not \
+         what it was written about any more"
+    );
+}
