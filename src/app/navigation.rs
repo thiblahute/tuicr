@@ -1530,11 +1530,20 @@ impl App {
             .split('\n')
             .map(|line| crate::ui::comment_panel::wrap_segments(line, content_area).len())
             .sum();
-        // A detached comment carries one extra row: the line it was written
-        // about, which no longer exists in the diff. The renderer emits it, so
-        // the model has to count it or every row below drifts.
-        let remembered_line = usize::from(comment.outdated && comment.line_context.is_some());
-        2 + visual_lines + remembered_line // borders + body + remembered line
+        // A detached comment carries the code it was written about — the line
+        // and its neighbours — which no longer exists in the diff. The
+        // renderer emits those rows, so the model counts them through the same
+        // helper, or every row below the box drifts.
+        let remembered = if comment.outdated {
+            comment
+                .line_context
+                .as_ref()
+                .map(|c| 1 + c.before.len() + c.after.len())
+                .unwrap_or(0)
+        } else {
+            0
+        };
+        2 + visual_lines + remembered // borders + body + remembered code
     }
 
     /// Width `format_comment_lines` is called with for a line comment on

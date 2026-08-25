@@ -528,6 +528,23 @@ impl<'a> CommentBadge<'a> {
     }
 }
 
+/// The code a detached comment was written against: the line itself and the
+/// lines that surrounded it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RememberedCode {
+    pub before: Vec<String>,
+    pub line: String,
+    pub after: Vec<String>,
+}
+
+impl RememberedCode {
+    /// Rows this block occupies. The row model and the renderer both go
+    /// through here, so a box's height cannot come out different in the two.
+    pub fn rows(&self) -> usize {
+        1 + self.before.len() + self.after.len()
+    }
+}
+
 /// How a comment box should present right now.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ThreadDisplay {
@@ -540,10 +557,11 @@ pub enum ThreadDisplay {
     /// live on, since it no longer renders there.
     Outdated {
         was_line: Option<u32>,
-        /// The line's text as it read when the comment was written. Detached
-        /// from the diff, the comment would otherwise be a remark about code
-        /// the reader can no longer see.
-        was_text: Option<String>,
+        /// The code as it read when the comment was written: the commented
+        /// line and its neighbours. Detached from the diff, the comment would
+        /// otherwise be a remark about code the reader can no longer see, and
+        /// one line on its own rarely says what it was about.
+        was_text: Option<RememberedCode>,
     },
     /// Settled and hidden: one marker row carrying the reply count and the
     /// leader key that expands it.
@@ -566,9 +584,9 @@ impl ThreadDisplay {
         }
     }
 
-    fn was_text(&self) -> Option<&str> {
+    fn was_text(&self) -> Option<&RememberedCode> {
         match self {
-            Self::Outdated { was_text, .. } => was_text.as_deref(),
+            Self::Outdated { was_text, .. } => was_text.as_ref(),
             _ => None,
         }
     }
@@ -725,22 +743,45 @@ pub fn format_comment_lines(
 
     // The code the comment was written about, when that code is gone. Without
     // it a detached comment is a remark with nothing to remark on.
-    if let Some(text) = display.was_text() {
+    if let Some(code) = display.was_text() {
         let dim = styles::dim_style(theme);
-        let prefix = format!("{BORDER_PREFIX}was: ");
-        let room = width.saturating_sub(prefix.width() + 1);
-        let mut shown = String::new();
-        for ch in text.trim().chars() {
-            if shown.width() + 1 > room {
-                shown.push('\u{2026}');
-                break;
+        // The commented line is marked; its neighbours are there to make it
+        // recognisable, not to be read as the subject.
+        // Strip the indentation the block shares: in a side pane, deeply
+        // indented code would otherwise be all leading spaces and an ellipsis.
+        // Relative indentation inside the block is kept, so the shape reads.
+        let shared_indent = code
+            .before
+            .iter()
+            .chain(std::iter::once(&code.line))
+            .chain(code.after.iter())
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| line.len() - line.trim_start().len())
+            .min()
+            .unwrap_or(0);
+        let rows = code
+            .before
+            .iter()
+            .map(|line| ("  ", line))
+            .chain(std::iter::once((" >", &code.line)))
+            .chain(code.after.iter().map(|line| ("  ", line)));
+        for (marker, text) in rows {
+            let text = &text[shared_indent.min(text.len())..];
+            let prefix = format!("{BORDER_PREFIX}{marker} ");
+            let room = width.saturating_sub(prefix.width() + 1);
+            let mut shown = String::new();
+            for ch in text.trim_end().chars() {
+                if shown.width() + 1 > room {
+                    shown.push('\u{2026}');
+                    break;
+                }
+                shown.push(ch);
             }
-            shown.push(ch);
+            result.push(Line::from(vec![
+                Span::styled(prefix, border_style),
+                Span::styled(shown, dim),
+            ]));
         }
-        result.push(Line::from(vec![
-            Span::styled(prefix, border_style),
-            Span::styled(shown, dim),
-        ]));
     }
 
     // Content lines — markdown-highlighted, pre-wrapped at content_area.

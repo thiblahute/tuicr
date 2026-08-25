@@ -131,6 +131,8 @@ fn line_comment(side: LineSide, new: Option<u32>, old: Option<u32>) -> Comment {
         new_line: new,
         old_line: old,
         content: String::new(),
+        before: Vec::new(),
+        after: Vec::new(),
     });
     c
 }

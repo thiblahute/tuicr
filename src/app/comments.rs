@@ -1369,20 +1369,35 @@ impl App {
     /// silently onto whatever took the line's place.
     fn line_context_for(&self, line: u32, side: LineSide) -> Option<crate::model::LineContext> {
         let file = self.current_file()?;
+        let span = crate::model::LineContext::SURROUNDING;
         for hunk in &file.hunks {
-            for diff_line in &hunk.lines {
-                let matches = match side {
-                    LineSide::Old => diff_line.old_lineno == Some(line),
-                    LineSide::New => diff_line.new_lineno == Some(line),
-                };
-                if matches {
-                    return Some(crate::model::LineContext {
-                        new_line: diff_line.new_lineno,
-                        old_line: diff_line.old_lineno,
-                        content: diff_line.content.clone(),
-                    });
-                }
-            }
+            let found = hunk.lines.iter().position(|diff_line| match side {
+                LineSide::Old => diff_line.old_lineno == Some(line),
+                LineSide::New => diff_line.new_lineno == Some(line),
+            });
+            let Some(idx) = found else { continue };
+            let diff_line = &hunk.lines[idx];
+            // Take the neighbours from the same hunk: they are the code the
+            // reader was looking at, which is what makes the remark legible
+            // once the diff no longer contains it.
+            let before = hunk.lines[idx.saturating_sub(span)..idx]
+                .iter()
+                .map(|l| l.content.clone())
+                .collect();
+            let after = hunk
+                .lines
+                .iter()
+                .skip(idx + 1)
+                .take(span)
+                .map(|l| l.content.clone())
+                .collect();
+            return Some(crate::model::LineContext {
+                new_line: diff_line.new_lineno,
+                old_line: diff_line.old_lineno,
+                content: diff_line.content.clone(),
+                before,
+                after,
+            });
         }
         None
     }
