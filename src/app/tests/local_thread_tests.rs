@@ -2081,6 +2081,66 @@ fn should_keep_a_commit_message_comment_when_the_amend_rewrote_its_line() {
 }
 
 #[test]
+fn should_show_the_lost_code_once_for_the_whole_thread() {
+    // Every message in a detached thread is marked outdated together, so the
+    // block of code they are about was printed above each one — the same six
+    // lines, as many times as the thread was long.
+    let (mut session, root) = session_with_line_comment();
+    let answer = reply(&mut session, &root.id, "done");
+    let mut app = app_for(session);
+    let path = PathBuf::from("src/main.rs");
+    for comment in app
+        .session
+        .get_file_mut(&path)
+        .unwrap()
+        .line_comments
+        .get_mut(&42)
+        .unwrap()
+    {
+        comment.outdated = true;
+        comment.line_context = Some(crate::model::LineContext {
+            new_line: Some(42),
+            old_line: None,
+            content: "let x = 1;".to_string(),
+            before: vec!["fn main() {".to_string()],
+            after: vec!["}".to_string()],
+            commit: None,
+        });
+    }
+    let thread = line_thread(&app.session);
+    let (root, answer) = (
+        thread.iter().find(|c| c.id == root.id).unwrap(),
+        thread.iter().find(|c| c.id == answer.id).unwrap(),
+    );
+
+    use crate::ui::comment_panel::ThreadDisplay;
+    assert!(
+        matches!(
+            app.thread_display(root),
+            ThreadDisplay::Outdated {
+                was_text: Some(_),
+                ..
+            }
+        ),
+        "the root says what the thread was about"
+    );
+    assert!(
+        matches!(
+            app.thread_display(answer),
+            ThreadDisplay::Outdated { was_text: None, .. }
+        ),
+        "the reply below it does not say it again"
+    );
+    // And the row model agrees, or every row under the box drifts.
+    assert_eq!(
+        App::comment_display_lines_for_box(root, 60, false)
+            - App::comment_display_lines_for_box(answer, 60, false),
+        3,
+        "three rows of remembered code, on the root alone"
+    );
+}
+
+#[test]
 fn should_finish_a_migration_that_already_half_landed() {
     // The comments were carried over once and the old copies came back from
     // disk. Carrying them again must clear the husk, not double what is there.
