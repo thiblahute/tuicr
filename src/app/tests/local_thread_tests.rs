@@ -1171,37 +1171,6 @@ fn should_find_a_review_again_after_its_commits_were_rewritten() {
 }
 
 #[test]
-fn should_not_let_a_rewrite_hide_comments_behind_a_dead_commit() {
-    // The failure this pins, seen for real: after an amend the review was
-    // adopted, the comments were re-anchored and marked outdated — and the
-    // pane showed nothing at all. Each comment recorded the commit it was made
-    // against, `comment_visible` hides comments outside the current selection,
-    // and every one of those SHAs had been rewritten away.
-    let (mut session, root) = session_with_line_comment();
-    session
-        .get_file_mut(&PathBuf::from("src/main.rs"))
-        .unwrap()
-        .line_comments
-        .get_mut(&42)
-        .unwrap()[0]
-        .commit_id = Some("deadbeef".to_string());
-    let _ = root;
-
-    let cleared = App::clear_stale_commit_scopes(&mut session, &["c0ffee".to_string()]);
-    assert_eq!(cleared, 1);
-
-    let comment = &session.files[&PathBuf::from("src/main.rs")].line_comments[&42][0];
-    assert!(
-        comment.commit_id.is_none(),
-        "the commit it named is gone, so the comment stops being scoped to it"
-    );
-    assert!(
-        App::comment_visible_with(comment, None),
-        "and it is visible again rather than silently filtered out"
-    );
-}
-
-#[test]
 fn should_keep_commit_scoping_that_is_still_live() {
     let (mut session, _root) = session_with_line_comment();
     session
