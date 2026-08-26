@@ -94,6 +94,17 @@ impl App {
         };
         self.diff_files.insert(0, commit_msg_file);
         self.session.add_diff_file(&self.diff_files[0]);
+
+        // Only now is the message a file with a path, and startup builds the
+        // app — anchoring included — before it knows which commit is under
+        // review. Comments carried over from an earlier generation of this
+        // message could not be placed until this moment, and skipping it is
+        // how they used to disappear.
+        if self.reanchor_comments() > 0
+            && let Err(e) = self.save_current_session_merging_external()
+        {
+            self.set_warning(format!("Could not save re-anchored comments: {e}"));
+        }
     }
 
     pub(in crate::app) fn is_staged_commit(commit: &CommitInfo) -> bool {
@@ -809,8 +820,185 @@ impl App {
     /// Returns how many comments moved or changed their outdated state, so a
     /// caller can persist the result: a re-anchor that lives only in memory
     /// leaves `review comments` telling an agent the old story.
+    /// A commit-message comment is keyed by a path that embeds the commit's
+    /// short id, so an amend leaves it under a path the diff no longer has:
+    /// invisible, unreachable, not even badged outdated, because the re-anchor
+    /// pass only walks files that are on screen. Move those comments onto the
+    /// message under review now and let that pass place them — it finds the
+    /// line whose text survived, or marks the comment outdated like any other
+    /// lost anchor. A new commit on top arrives here too, and matching on
+    /// content gives the same honest answer without asking the VCS about
+    /// ancestry.
+    ///
+    /// Returns how many comments moved, so the caller persists the merge even
+    /// when every one of them lands back on its old line.
+    ///
+    /// The `path:line@commit` anchor rework removes the need for this: a
+    /// comment would name its commit instead of hiding it inside a path.
+    fn migrate_commit_message_comments(&mut self) -> usize {
+        let Some((current, status, content_hash)) = self
+            .diff_files
+            .iter()
+            .find(|file| file.is_commit_message)
+            .map(|file| (file.display_path().clone(), file.status, file.content_hash))
+        else {
+            return 0;
+        };
+        if !self.session.files.contains_key(&current) {
+            self.session.add_file(current.clone(), status, content_hash);
+        }
+
+        // A message still under review keeps its own comments, even when
+        // another commit's message is the one on screen: narrowing a range to
+        // one commit must not drag every other commit's thread along with it.
+        let under_review: std::collections::HashSet<&str> = self
+            .review_commits
+            .iter()
+            .map(|commit| commit.short_id.as_str())
+            .collect();
+        let candidates: Vec<PathBuf> = self
+            .session
+            .files
+            .keys()
+            .filter(|path| **path != current)
+            .filter(|path| {
+                Self::commit_message_short_id(path)
+                    .is_some_and(|short_id| !under_review.contains(short_id))
+            })
+            .cloned()
+            .collect();
+        let stale = self.same_commit_across_amends(&current, candidates);
+
+        // Collected before anything is cleared: a comment must not be dropped
+        // on the way across. One that is already at the destination is left
+        // behind rather than copied — an interrupted migration should finish,
+        // not double what it moved.
+        let arrived: std::collections::HashSet<String> = self
+            .session
+            .files
+            .get(&current)
+            .map(|review| {
+                review
+                    .file_comments
+                    .iter()
+                    .chain(review.line_comments.values().flatten())
+                    .map(|comment| comment.id.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let mut moving: Vec<(Option<u32>, Comment)> = Vec::new();
+        let mut emptied = 0usize;
+        for path in &stale {
+            let Some(review) = self.session.files.get(path) else {
+                continue;
+            };
+            emptied += review.comment_count();
+            let here = review.file_comments.iter().map(|c| (None, c)).chain(
+                review
+                    .line_comments
+                    .iter()
+                    .flat_map(|(line, comments)| comments.iter().map(move |c| (Some(*line), c))),
+            );
+            moving.extend(
+                here.filter(|(_, comment)| !arrived.contains(&comment.id))
+                    .map(|(line, comment)| (line, comment.clone())),
+            );
+        }
+        if emptied == 0 {
+            return 0;
+        }
+
+        let Some(target) = self.session.files.get_mut(&current) else {
+            return 0;
+        };
+        for (line, comment) in moving {
+            match line {
+                Some(line) => target.line_comments.entry(line).or_default().push(comment),
+                None => target.file_comments.push(comment),
+            }
+        }
+        let moved = emptied;
+
+        for path in stale {
+            let Some(review) = self.session.files.get_mut(&path) else {
+                continue;
+            };
+            review.file_comments.clear();
+            review.line_comments.clear();
+            // The husk describes a message that will never be shown again, but
+            // it is dropped only once nothing is left in it: throwing away
+            // review state to tidy up has cost this branch data before.
+            if !review.reviewed && review.reviewed_hunks.is_empty() {
+                self.session.files.remove(&path);
+            }
+        }
+        moved
+    }
+
+    /// Of the commit messages that left the review, the ones that are earlier
+    /// generations of the message now on screen.
+    ///
+    /// Being gone from the review is not enough: `HEAD^..HEAD` still means "the
+    /// last commit" after a commit is added on top, and the message it used to
+    /// mean is then gone for a reason that has nothing to do with an amend.
+    /// Moving those comments would file them under a commit they were never
+    /// about, which is worse than not showing them.
+    ///
+    /// The summary is what an amend keeps and a different commit does not
+    /// share, and the rewritten object is still readable, so it can answer the
+    /// question the pseudo path cannot. A commit that no longer resolves is
+    /// long rewritten and has nowhere else to belong. An amend that rewords the
+    /// summary looks like a different commit here and its comments stay put,
+    /// out of view — the `path:line@commit` rework is what fixes that properly.
+    fn same_commit_across_amends(&self, current: &Path, candidates: Vec<PathBuf>) -> Vec<PathBuf> {
+        if candidates.is_empty() {
+            return candidates;
+        }
+        // The summary is line one of the message on screen. Reading it there
+        // rather than from `review_commits` keeps this working during startup,
+        // where the commit list is filled in after the first anchoring pass.
+        let Some(summary) = self
+            .diff_files
+            .iter()
+            .find(|file| file.is_commit_message && file.display_path() == current)
+            .and_then(|file| file.hunks.first())
+            .and_then(|hunk| hunk.lines.first())
+            .map(|line| line.content.as_str())
+        else {
+            return Vec::new();
+        };
+
+        let ids: Vec<String> = candidates
+            .iter()
+            .filter_map(|path| Self::commit_message_short_id(path))
+            .map(str::to_string)
+            .collect();
+        let known = self.vcs.get_commits_info(&ids).unwrap_or_default();
+
+        candidates
+            .into_iter()
+            .filter(|path| {
+                let Some(short_id) = Self::commit_message_short_id(path) else {
+                    return false;
+                };
+                match known.iter().find(|commit| commit.short_id == short_id) {
+                    Some(commit) => commit.summary == summary,
+                    None => true,
+                }
+            })
+            .collect()
+    }
+
+    /// The short id a commit-message pseudo path was built from, or `None` for
+    /// any other file.
+    fn commit_message_short_id(path: &Path) -> Option<&str> {
+        let name = path.to_str()?;
+        name.strip_prefix("Commit Message (")?.strip_suffix(')')
+    }
+
     pub(in crate::app) fn reanchor_comments(&mut self) -> usize {
-        let mut changed = 0usize;
+        let changed = self.migrate_commit_message_comments();
         let mut needs_context: Vec<String> = Vec::new();
         for file in &self.diff_files {
             let path = file.display_path().clone();

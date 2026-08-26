@@ -1209,80 +1209,6 @@ fn should_hold_the_announcement_while_a_comment_is_open() {
     assert!(app.poll_agent_update_for_test());
 }
 
-#[test]
-#[test]
-fn should_find_a_review_again_after_its_commits_were_rewritten() {
-    // Sessions are keyed by their resolved commits, so an amend leaves the
-    // review unreachable by that key. Reopening with the same expression has
-    // to find it, or the comments are stranded and the reader starts empty —
-    // which is what happened in a real review.
-    use crate::persistence::storage;
-
-    let dir = tempfile::tempdir().unwrap();
-    storage::set_test_reviews_dir(Some(dir.path().to_path_buf()));
-
-    let (mut session, _root) = session_with_line_comment();
-    session.revset = Some("main..HEAD".to_string());
-    session.commit_range = Some(vec!["oldsha1".to_string()]);
-    session.repo_path = std::env::current_dir().unwrap();
-    storage::save_session(&session).expect("saved under the old range");
-
-    let found = storage::find_local_session_by_revset(&session.repo_path, "main..HEAD")
-        .expect("lookup ran")
-        .expect("the review is found by what it was opened with");
-    assert_eq!(found.1.id, session.id);
-    assert_eq!(
-        found
-            .1
-            .files
-            .values()
-            .map(|f| f.comment_count())
-            .sum::<usize>(),
-        1,
-        "and it still carries its comments"
-    );
-
-    // A different expression must not adopt someone else's review.
-    let other = storage::find_local_session_by_revset(&session.repo_path, "other..HEAD").unwrap();
-    assert!(other.is_none());
-
-    // Reopening after an amend leaves an empty session for the new range, and
-    // it is always the most recent. Adopting *that* would leave the review it
-    // was meant to rescue behind, so work beats recency.
-    let mut empty = ReviewSession::new(
-        session.repo_path.clone(),
-        "newsha".to_string(),
-        Some("main".to_string()),
-        SessionDiffSource::CommitRange,
-    );
-    empty.revset = Some("main..HEAD".to_string());
-    empty.commit_range = Some(vec!["newsha".to_string()]);
-    storage::save_session(&empty).expect("saved the empty one, newer");
-
-    let found = storage::find_local_session_by_revset(&session.repo_path, "main..HEAD")
-        .unwrap()
-        .expect("still finds one");
-    assert_eq!(found.1.id, session.id, "the review with comments wins");
-}
-
-#[test]
-fn should_keep_commit_scoping_that_is_still_live() {
-    let (mut session, _root) = session_with_line_comment();
-    session
-        .get_file_mut(&PathBuf::from("src/main.rs"))
-        .unwrap()
-        .line_comments
-        .get_mut(&42)
-        .unwrap()[0]
-        .commit_id = Some("c0ffee".to_string());
-
-    let cleared = App::clear_stale_commit_scopes(&mut session, &["c0ffee".to_string()]);
-
-    assert_eq!(cleared, 0, "a commit still under review keeps its scoping");
-    let comment = &session.files[&PathBuf::from("src/main.rs")].line_comments[&42][0];
-    assert_eq!(comment.commit_id.as_deref(), Some("c0ffee"));
-}
-
 /// A cumulative diff after fixup commits rewrote the commented lines: the
 /// original content is gone, so re-anchoring strands the comments at file
 /// level as outdated.
@@ -1609,92 +1535,6 @@ fn should_drop_a_stale_claim_when_the_review_is_handed_over_again() {
 }
 
 #[test]
-fn should_let_the_reader_look_around_while_composing() {
-    // Writing a comment usually means checking another part of the file. Until
-    // now the only way was to cancel the comment and start again.
-    let (session, _root) = session_with_line_comment();
-    let mut app = app_for(session);
-    app.diff_state.viewport_height = 20;
-    app.input_mode = InputMode::Comment;
-    app.comment_buffer = "half a thought".to_string();
-    app.comment_cursor = app.comment_buffer.len();
-    let before = app.diff_state.scroll_offset;
-
-    crate::handler::handle_comment_action(&mut app, crate::input::Action::PageDown);
-
-    assert_ne!(app.diff_state.scroll_offset, before, "the diff moved");
-    assert!(
-        app.comment_scroll_detached,
-        "and the renderer must stop dragging the editor back into view"
-    );
-    // The comment itself is untouched: this is looking around, not leaving.
-    assert_eq!(app.comment_buffer, "half a thought");
-    assert_eq!(app.input_mode, InputMode::Comment);
-}
-
-#[test]
-fn should_bring_the_editor_back_when_the_reader_types_again() {
-    // Typing into a box that is off screen is worse than losing the place you
-    // scrolled to.
-    let (session, _root) = session_with_line_comment();
-    let mut app = app_for(session);
-    app.input_mode = InputMode::Comment;
-    app.comment_scroll_detached = true;
-
-    crate::handler::handle_comment_action(&mut app, crate::input::Action::InsertChar('x'));
-
-    assert!(!app.comment_scroll_detached);
-    assert_eq!(app.comment_buffer, "x");
-}
-
-#[test]
-fn should_start_every_editor_attached() {
-    let (session, _root) = session_with_line_comment();
-    let mut app = app_for(session);
-    app.comment_scroll_detached = true;
-    app.exit_comment_mode();
-    assert!(!app.comment_scroll_detached, "closing resets it");
-
-    app.comment_scroll_detached = true;
-    app.enter_comment_mode(false, Some((42, LineSide::New)));
-    assert!(
-        !app.comment_scroll_detached,
-        "a new comment starts with the editor in view"
-    );
-}
-
-#[test]
-fn should_scroll_with_the_wheel_while_composing() {
-    // Reaching for the wheel is the first thing anyone does to look at other
-    // code; it was being dropped entirely while the editor was open.
-    use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
-    let (session, _root) = session_with_line_comment();
-    let mut app = app_for(session);
-    app.diff_state.viewport_height = 20;
-    app.diff_state.scroll_offset = 10;
-    app.diff_area = Some(ratatui::layout::Rect::new(0, 0, 80, 20));
-    app.input_mode = InputMode::Comment;
-    app.comment_buffer = "half a thought".to_string();
-    let _ = MouseButton::Left;
-
-    crate::handler::handle_mouse_event(
-        &mut app,
-        MouseEvent {
-            kind: MouseEventKind::ScrollUp,
-            column: 10,
-            row: 5,
-            modifiers: KeyModifiers::NONE,
-        },
-    );
-
-    assert!(app.diff_state.scroll_offset < 10, "the view moved");
-    assert!(app.comment_scroll_detached, "and stays where it was put");
-    // Scrolling is looking, not leaving: the comment survives untouched.
-    assert_eq!(app.comment_buffer, "half a thought");
-    assert_eq!(app.input_mode, InputMode::Comment);
-}
-
-#[test]
 fn should_anchor_a_comment_by_content_not_only_by_line_number() {
     // Coordinates alone drift: after an amend inserts a line above, line 42 is
     // different code. The stored text is what lets a reload find it again.
@@ -2007,4 +1847,449 @@ fn should_never_leave_a_comment_on_code_it_was_not_written_about() {
         "line 42 is not what it was written about any more, so the comment is \
          marked outdated and detached from it"
     );
+}
+
+#[test]
+fn should_find_a_review_again_after_its_commits_were_rewritten() {
+    // Sessions are keyed by their resolved commits, so an amend leaves the
+    // review unreachable by that key. Reopening with the same expression has
+    // to find it, or the comments are stranded and the reader starts empty —
+    // which is what happened in a real review.
+    use crate::persistence::storage;
+
+    let dir = tempfile::tempdir().unwrap();
+    storage::set_test_reviews_dir(Some(dir.path().to_path_buf()));
+
+    let (mut session, _root) = session_with_line_comment();
+    session.revset = Some("main..HEAD".to_string());
+    session.commit_range = Some(vec!["oldsha1".to_string()]);
+    session.repo_path = std::env::current_dir().unwrap();
+    storage::save_session(&session).expect("saved under the old range");
+
+    let found = storage::find_local_session_by_revset(&session.repo_path, "main..HEAD")
+        .expect("lookup ran")
+        .expect("the review is found by what it was opened with");
+    assert_eq!(found.1.id, session.id);
+    assert_eq!(
+        found
+            .1
+            .files
+            .values()
+            .map(|f| f.comment_count())
+            .sum::<usize>(),
+        1,
+        "and it still carries its comments"
+    );
+
+    // A different expression must not adopt someone else's review.
+    let other = storage::find_local_session_by_revset(&session.repo_path, "other..HEAD").unwrap();
+    assert!(other.is_none());
+
+    // Reopening after an amend leaves an empty session for the new range, and
+    // it is always the most recent. Adopting *that* would leave the review it
+    // was meant to rescue behind, so work beats recency.
+    let mut empty = ReviewSession::new(
+        session.repo_path.clone(),
+        "newsha".to_string(),
+        Some("main".to_string()),
+        SessionDiffSource::CommitRange,
+    );
+    empty.revset = Some("main..HEAD".to_string());
+    empty.commit_range = Some(vec!["newsha".to_string()]);
+    storage::save_session(&empty).expect("saved the empty one, newer");
+
+    let found = storage::find_local_session_by_revset(&session.repo_path, "main..HEAD")
+        .unwrap()
+        .expect("still finds one");
+    assert_eq!(found.1.id, session.id, "the review with comments wins");
+}
+
+#[test]
+fn should_not_let_a_rewrite_hide_comments_behind_a_dead_commit() {
+    // The failure this pins, seen for real: after an amend the review was
+    // adopted, the comments were re-anchored and marked outdated — and the
+    // pane showed nothing at all. Each comment recorded the commit it was made
+    // against, `comment_visible` hides comments outside the current selection,
+    // and every one of those SHAs had been rewritten away.
+    let (mut session, root) = session_with_line_comment();
+    session
+        .get_file_mut(&PathBuf::from("src/main.rs"))
+        .unwrap()
+        .line_comments
+        .get_mut(&42)
+        .unwrap()[0]
+        .commit_id = Some("deadbeef".to_string());
+    let _ = root;
+
+    let cleared = App::clear_stale_commit_scopes(&mut session, &["c0ffee".to_string()]);
+    assert_eq!(cleared, 1);
+
+    let comment = &session.files[&PathBuf::from("src/main.rs")].line_comments[&42][0];
+    assert!(
+        comment.commit_id.is_none(),
+        "the commit it named is gone, so the comment stops being scoped to it"
+    );
+    assert!(
+        App::comment_visible_with(comment, None),
+        "and it is visible again rather than silently filtered out"
+    );
+}
+
+#[test]
+fn should_keep_commit_scoping_that_is_still_live() {
+    let (mut session, _root) = session_with_line_comment();
+    session
+        .get_file_mut(&PathBuf::from("src/main.rs"))
+        .unwrap()
+        .line_comments
+        .get_mut(&42)
+        .unwrap()[0]
+        .commit_id = Some("c0ffee".to_string());
+
+    let cleared = App::clear_stale_commit_scopes(&mut session, &["c0ffee".to_string()]);
+
+    assert_eq!(cleared, 0, "a commit still under review keeps its scoping");
+    let comment = &session.files[&PathBuf::from("src/main.rs")].line_comments[&42][0];
+    assert_eq!(comment.commit_id.as_deref(), Some("c0ffee"));
+}
+
+fn commit_info(short_id: &str, summary: &str) -> crate::vcs::CommitInfo {
+    crate::vcs::CommitInfo {
+        id: short_id.to_string(),
+        short_id: short_id.to_string(),
+        branch_name: None,
+        summary: summary.to_string(),
+        body: None,
+        author: "tester".to_string(),
+        time: chrono::Utc::now(),
+    }
+}
+
+fn commit_message_file(short_id: &str, lines: &[&str]) -> DiffFile {
+    let hunk_lines: Vec<DiffLine> = lines
+        .iter()
+        .enumerate()
+        .map(|(i, text)| DiffLine {
+            origin: LineOrigin::Context,
+            content: (*text).to_string(),
+            old_lineno: None,
+            new_lineno: Some(i as u32 + 1),
+            highlighted_spans: None,
+        })
+        .collect();
+    let hunks = vec![DiffHunk {
+        header: String::new(),
+        lines: hunk_lines,
+        old_start: 0,
+        old_count: 0,
+        new_start: 1,
+        new_count: lines.len() as u32,
+    }];
+    let content_hash = DiffFile::compute_content_hash(&hunks);
+    DiffFile {
+        old_path: None,
+        new_path: Some(PathBuf::from(format!("Commit Message ({short_id})"))),
+        status: FileStatus::Added,
+        hunks,
+        is_binary: false,
+        is_too_large: false,
+        is_commit_message: true,
+        content_hash,
+    }
+}
+
+/// Put a comment on line `line` of the message of commit `short_id`, the way
+/// the app stores one: under a path that embeds the short id.
+fn comment_on_message(app: &mut App, short_id: &str, line: u32, text: &str, body: &str) -> Comment {
+    let path = PathBuf::from(format!("Commit Message ({short_id})"));
+    let mut comment = Comment::new(
+        body.to_string(),
+        CommentType::from_id("issue"),
+        Some(LineSide::New),
+    );
+    comment.line_context = Some(crate::model::LineContext {
+        new_line: Some(line),
+        old_line: None,
+        content: text.to_string(),
+        before: Vec::new(),
+        after: Vec::new(),
+        commit: None,
+    });
+    app.session.add_file(path.clone(), FileStatus::Added, 0);
+    app.session
+        .get_file_mut(&path)
+        .unwrap()
+        .add_line_comment(line, comment.clone());
+    comment
+}
+
+#[test]
+fn should_carry_a_commit_message_comment_across_an_amend() {
+    // The pseudo path embeds the commit's short id, so an amend left the thread
+    // under a path the diff no longer had: unreachable, and not even outdated.
+    let (session, _root) = session_with_line_comment();
+    let mut app = app_for(session);
+    let written = comment_on_message(&mut app, "c82a8fa", 2, "why it changed", "explain this");
+
+    // The amend kept that line, and moved it down by one.
+    app.diff_files = vec![commit_message_file(
+        "2f2f7ae",
+        &["summary", "", "why it changed"],
+    )];
+    app.review_commits = vec![commit_info("2f2f7ae", "summary")];
+    let changed = app.reanchor_comments();
+
+    assert!(changed > 0, "and the move is worth persisting");
+    let new = PathBuf::from("Commit Message (2f2f7ae)");
+    let moved = &app.session.files[&new].line_comments[&3][0];
+    assert_eq!(
+        moved.id, written.id,
+        "same comment, message under review now"
+    );
+    assert!(!moved.outdated, "its line is still there");
+    assert!(
+        !app.session
+            .files
+            .contains_key(&PathBuf::from("Commit Message (c82a8fa)")),
+        "the spent husk goes"
+    );
+}
+
+#[test]
+fn should_keep_a_commit_message_comment_when_the_amend_rewrote_its_line() {
+    let (session, _root) = session_with_line_comment();
+    let mut app = app_for(session);
+    let written = comment_on_message(&mut app, "c82a8fa", 2, "why it changed", "explain this");
+
+    // This time the amend rewrote the line the comment was made on.
+    app.diff_files = vec![commit_message_file("2f2f7ae", &["summary", "", "reworded"])];
+    app.review_commits = vec![commit_info("2f2f7ae", "summary")];
+    app.reanchor_comments();
+
+    // Outdated at file level, as any comment whose code is gone — but on the
+    // message that is on screen, so `m` still reaches it.
+    let review = &app.session.files[&PathBuf::from("Commit Message (2f2f7ae)")];
+    assert!(review.line_comments.is_empty());
+    let stranded = &review.file_comments[0];
+    assert_eq!(stranded.id, written.id);
+    assert!(stranded.outdated, "marked, not dropped");
+    assert_eq!(
+        stranded.line_context.as_ref().unwrap().new_line,
+        Some(2),
+        "and it still says where it used to live"
+    );
+}
+
+#[test]
+fn should_finish_a_migration_that_already_half_landed() {
+    // The comments were carried over once and the old copies came back from
+    // disk. Carrying them again must clear the husk, not double what is there.
+    let (session, _root) = session_with_line_comment();
+    let mut app = app_for(session);
+    let written = comment_on_message(&mut app, "c82a8fa", 3, "why it changed", "explain this");
+    let amended = commit_message_file("2f2f7ae", &["summary", "", "why it changed"]);
+    app.session.add_diff_file(&amended);
+    app.session
+        .get_file_mut(&PathBuf::from("Commit Message (2f2f7ae)"))
+        .unwrap()
+        .add_line_comment(3, written.clone());
+    app.diff_files = vec![amended];
+    app.review_commits = vec![commit_info("2f2f7ae", "summary")];
+
+    app.reanchor_comments();
+
+    let review = &app.session.files[&PathBuf::from("Commit Message (2f2f7ae)")];
+    assert_eq!(review.comment_count(), 1, "one comment, not two");
+    assert!(
+        !app.session
+            .files
+            .contains_key(&PathBuf::from("Commit Message (c82a8fa)")),
+        "and the copy it came from is gone"
+    );
+}
+
+#[test]
+fn should_place_a_carried_comment_when_the_message_arrives() {
+    // Startup builds the app, anchors comments, and only then works out which
+    // commit is under review and puts its message on screen. A migration that
+    // ran only during anchoring would never see the message at all — which is
+    // exactly how this bug survived its first fix.
+    let (session, _root) = session_with_line_comment();
+    let mut app = app_for(session);
+    let written = comment_on_message(&mut app, "c82a8fa", 3, "why it changed", "explain this");
+    app.diff_files = Vec::new();
+    app.review_commits = vec![commit_info("2f2f7ae", "diff: look around while composing")];
+    app.review_commits[0].body = Some("why it changed".to_string());
+
+    app.insert_commit_message_if_single();
+
+    let moved = &app.session.files[&PathBuf::from("Commit Message (2f2f7ae)")].line_comments[&3][0];
+    assert_eq!(moved.id, written.id, "carried onto the message on screen");
+    assert!(!moved.outdated, "and back on the line it was written about");
+}
+
+#[test]
+fn should_not_file_a_comment_under_a_commit_it_was_never_about() {
+    // `HEAD^..HEAD` still means "the last commit" once a commit lands on top,
+    // so the message that left the review did not necessarily leave by amend.
+    let (session, _root) = session_with_line_comment();
+    let mut app = app_for(session);
+    comment_on_message(&mut app, "c82a8fa", 2, "why it changed", "explain this");
+    let old = PathBuf::from("Commit Message (c82a8fa)");
+    // The rewritten object is still readable, and it says what it was about.
+    app.vcs = Box::new(DummyVcs {
+        info: app.vcs_info.clone(),
+        commits: vec![commit_info("c82a8fa", "the commit this comment is about")],
+        resolved_range: None,
+    });
+
+    app.diff_files = vec![commit_message_file(
+        "af9e922",
+        &["something else", "", "unrelated"],
+    )];
+    app.review_commits = vec![commit_info("af9e922", "something else")];
+    app.reanchor_comments();
+
+    assert_eq!(
+        app.session.files[&old].line_comments[&2][0].content, "explain this",
+        "left where it was: out of this view beats filed under the wrong commit"
+    );
+    assert!(
+        app.session
+            .files
+            .get(&PathBuf::from("Commit Message (af9e922)"))
+            .is_none_or(|review| review.comment_count() == 0)
+    );
+}
+
+#[test]
+fn should_not_drag_another_commits_message_comments_along() {
+    // Narrowing a multi-commit review to one commit puts that commit's message
+    // on screen; the other commits are still under review and keep their own.
+    let (session, _root) = session_with_line_comment();
+    let mut app = app_for(session);
+    let written = comment_on_message(&mut app, "aaaaaaa", 2, "why it changed", "explain this");
+    app.review_commits = vec![
+        commit_info("aaaaaaa", "first"),
+        commit_info("bbbbbbb", "second"),
+    ];
+
+    // The reader selected the second commit, so its message is the one shown.
+    app.diff_files = vec![commit_message_file("bbbbbbb", &["second", "", "unrelated"])];
+    app.reanchor_comments();
+
+    let review = &app.session.files[&PathBuf::from("Commit Message (aaaaaaa)")];
+    assert_eq!(
+        review.line_comments[&2][0].id, written.id,
+        "left on the commit it was written about"
+    );
+    assert!(!review.line_comments[&2][0].outdated);
+}
+
+#[test]
+fn should_leave_a_reviewed_husk_standing() {
+    // Dropping review state to tidy up has cost this branch data before.
+    let (session, _root) = session_with_line_comment();
+    let mut app = app_for(session);
+    comment_on_message(&mut app, "c82a8fa", 2, "why it changed", "explain this");
+    let old = PathBuf::from("Commit Message (c82a8fa)");
+    app.session.get_file_mut(&old).unwrap().reviewed = true;
+
+    let amended = commit_message_file("2f2f7ae", &["summary", "", "why it changed"]);
+    app.session.add_diff_file(&amended);
+    app.diff_files = vec![amended];
+    app.review_commits = vec![commit_info("2f2f7ae", "summary")];
+    app.reanchor_comments();
+
+    assert!(app.session.files.contains_key(&old), "husk kept");
+    assert!(
+        app.session.files[&old].line_comments.is_empty(),
+        "but emptied of the comments that moved"
+    );
+}
+
+#[test]
+fn should_let_the_reader_look_around_while_composing() {
+    // Writing a comment usually means checking another part of the file. Until
+    // now the only way was to cancel the comment and start again.
+    let (session, _root) = session_with_line_comment();
+    let mut app = app_for(session);
+    app.diff_state.viewport_height = 20;
+    app.input_mode = InputMode::Comment;
+    app.comment_buffer = "half a thought".to_string();
+    app.comment_cursor = app.comment_buffer.len();
+    let before = app.diff_state.scroll_offset;
+
+    crate::handler::handle_comment_action(&mut app, crate::input::Action::PageDown);
+
+    assert_ne!(app.diff_state.scroll_offset, before, "the diff moved");
+    assert!(
+        app.comment_scroll_detached,
+        "and the renderer must stop dragging the editor back into view"
+    );
+    // The comment itself is untouched: this is looking around, not leaving.
+    assert_eq!(app.comment_buffer, "half a thought");
+    assert_eq!(app.input_mode, InputMode::Comment);
+}
+
+#[test]
+fn should_bring_the_editor_back_when_the_reader_types_again() {
+    // Typing into a box that is off screen is worse than losing the place you
+    // scrolled to.
+    let (session, _root) = session_with_line_comment();
+    let mut app = app_for(session);
+    app.input_mode = InputMode::Comment;
+    app.comment_scroll_detached = true;
+
+    crate::handler::handle_comment_action(&mut app, crate::input::Action::InsertChar('x'));
+
+    assert!(!app.comment_scroll_detached);
+    assert_eq!(app.comment_buffer, "x");
+}
+
+#[test]
+fn should_start_every_editor_attached() {
+    let (session, _root) = session_with_line_comment();
+    let mut app = app_for(session);
+    app.comment_scroll_detached = true;
+    app.exit_comment_mode();
+    assert!(!app.comment_scroll_detached, "closing resets it");
+
+    app.comment_scroll_detached = true;
+    app.enter_comment_mode(false, Some((42, LineSide::New)));
+    assert!(
+        !app.comment_scroll_detached,
+        "a new comment starts with the editor in view"
+    );
+}
+
+#[test]
+fn should_scroll_with_the_wheel_while_composing() {
+    // Reaching for the wheel is the first thing anyone does to look at other
+    // code; it was being dropped entirely while the editor was open.
+    use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+    let (session, _root) = session_with_line_comment();
+    let mut app = app_for(session);
+    app.diff_state.viewport_height = 20;
+    app.diff_state.scroll_offset = 10;
+    app.diff_area = Some(ratatui::layout::Rect::new(0, 0, 80, 20));
+    app.input_mode = InputMode::Comment;
+    app.comment_buffer = "half a thought".to_string();
+    let _ = MouseButton::Left;
+
+    crate::handler::handle_mouse_event(
+        &mut app,
+        MouseEvent {
+            kind: MouseEventKind::ScrollUp,
+            column: 10,
+            row: 5,
+            modifiers: KeyModifiers::NONE,
+        },
+    );
+
+    assert!(app.diff_state.scroll_offset < 10, "the view moved");
+    assert!(app.comment_scroll_detached, "and stays where it was put");
+    // Scrolling is looking, not leaving: the comment survives untouched.
+    assert_eq!(app.comment_buffer, "half a thought");
+    assert_eq!(app.input_mode, InputMode::Comment);
 }
