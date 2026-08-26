@@ -329,8 +329,10 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
             && file_idx == app.diff_state.current_file_idx;
 
         // Show file-level comments right after the header
+        let reply_slot = app.file_comment_reply_slot(path);
+        let mut reply_input_drawn = false;
         if let Some(review) = app.session.files.get(path) {
-            for comment in &review.file_comments {
+            for (comment_idx, comment) in review.file_comments.iter().enumerate() {
                 if !app.comment_visible(comment) {
                     continue;
                 }
@@ -404,11 +406,30 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                         line_idx += 1;
                     }
                 }
+
+                // A reply belongs under the thread it answers, not at the
+                // bottom of every thread in the file.
+                if is_file_comment_mode && reply_slot == Some(comment_idx) {
+                    let drawn = crate::ui::diff_view::push_comment_input(
+                        app,
+                        &mut lines,
+                        &mut line_idx,
+                        comment_width,
+                        current_line_idx,
+                        false,
+                    );
+                    comment_cursor_logical_line = Some(drawn.cursor_line);
+                    comment_cursor_column = drawn.cursor_column;
+                    comment_input_box_range = Some(drawn.box_range);
+                    app.comment_input_annotation_offset = Some((drawn.box_range.0, drawn.rows, 0));
+                    reply_input_drawn = true;
+                }
             }
         }
 
-        // Render inline input for new file-level comment
-        if is_file_comment_mode && app.editing_comment_id.is_none() {
+        // Render inline input for a new file-level comment, or a reply whose
+        // thread is not on screen.
+        if is_file_comment_mode && app.editing_comment_id.is_none() && !reply_input_drawn {
             let (input_lines, cursor_info) = comment_panel::format_comment_input_lines(
                 &app.theme,
                 comment_type_presentation(app, &app.comment_type),
@@ -1739,6 +1760,44 @@ mod remote_comments_snapshot_tests {
             .draw(|frame| render(frame, app))
             .expect("draw frame");
         terminal.backend().buffer().clone()
+    }
+
+    #[test]
+    fn should_draw_a_reply_editor_under_the_thread_it_answers() {
+        // Three detached threads in one file: the editor for a reply to the
+        // first must not open below the third.
+        let file = sample_diff_file();
+        let path = file.display_path().clone();
+        let mut app = make_revision_app(vec![file]);
+        let mut roots = Vec::new();
+        for n in 0..3 {
+            let root = crate::model::Comment::new(
+                format!("question {n}"),
+                crate::model::CommentType::from_id("issue"),
+                None,
+            );
+            roots.push(root.id.clone());
+            app.session
+                .get_file_mut(&path)
+                .unwrap()
+                .file_comments
+                .push(root);
+        }
+        app.rebuild_annotations();
+
+        app.input_mode = InputMode::Comment;
+        app.comment_is_file_level = true;
+        app.local_reply_target = Some(roots[0].clone());
+        app.comment_buffer = "answering the first".to_string();
+        let buffer = draw_unified_diff(&mut app);
+        let text = body_text(&buffer);
+
+        let editor = text.find("answering the first").expect("editor on screen");
+        let second = text.find("question 1").expect("second thread on screen");
+        assert!(
+            editor < second,
+            "the editor opened below later threads:\n{text}"
+        );
     }
 
     fn draw_unified_diff(app: &mut App) -> Buffer {

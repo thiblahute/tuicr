@@ -260,6 +260,63 @@ pub(super) fn diff_stat_title(app: &App) -> Line<'static> {
     ])
 }
 
+/// Where a comment editor was drawn, so the caller can keep the terminal
+/// cursor, the scroll math and the annotation offsets pointing at it.
+pub(super) struct DrawnInput {
+    pub cursor_line: usize,
+    pub cursor_column: u16,
+    pub box_range: (usize, usize),
+    pub rows: usize,
+}
+
+/// Draw the comment editor into `lines` at the current row.
+///
+/// Both diff views draw it in more than one place — over the comment being
+/// edited, under the thread being answered, at the end of a block for a fresh
+/// comment — and every copy has to do the same bookkeeping. One function so
+/// they cannot drift apart.
+pub(super) fn push_comment_input(
+    app: &App,
+    lines: &mut Vec<Line<'static>>,
+    line_idx: &mut usize,
+    width: usize,
+    current_line_idx: usize,
+    editing_existing: bool,
+) -> DrawnInput {
+    let (input_lines, cursor_info) = comment_panel::format_comment_input_lines(
+        &app.theme,
+        comment_type_presentation(app, &app.comment_type),
+        &app.comment_buffer,
+        app.comment_cursor,
+        None,
+        editing_existing,
+        width,
+        app.comment_vim_mode_label()
+            .as_ref()
+            .map(|(t, w)| (t.as_str(), *w)),
+        app.supports_keyboard_enhancement,
+        app.comment_reply_author().as_deref(),
+    );
+    let start = *line_idx;
+    let rows = input_lines.len();
+    let cursor_line = start + cursor_info.line_offset;
+    for mut input_line in input_lines {
+        let indicator = cursor_indicator(*line_idx, current_line_idx);
+        input_line.spans.insert(
+            0,
+            Span::styled(indicator, styles::current_line_indicator_style(&app.theme)),
+        );
+        lines.push(input_line);
+        *line_idx += 1;
+    }
+    DrawnInput {
+        cursor_line,
+        cursor_column: 1 + cursor_info.column,
+        box_range: (start, start + rows.saturating_sub(1)),
+        rows,
+    }
+}
+
 pub(super) fn cursor_indicator(line_idx: usize, current_line_idx: usize) -> &'static str {
     if line_idx == current_line_idx {
         "▶"

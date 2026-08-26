@@ -822,8 +822,10 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
             && file_idx == app.diff_state.current_file_idx;
 
         // Show file-level comments
+        let reply_slot = app.file_comment_reply_slot(path);
+        let mut reply_input_drawn = false;
         if let Some(review) = app.session.files.get(path) {
-            for comment in &review.file_comments {
+            for (comment_idx, comment) in review.file_comments.iter().enumerate() {
                 if !app.comment_visible(comment) {
                     continue;
                 }
@@ -898,11 +900,30 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
                         line_idx += 1;
                     }
                 }
+
+                // A reply belongs under the thread it answers, not at the
+                // bottom of every thread in the file.
+                if is_file_comment_mode && reply_slot == Some(comment_idx) {
+                    let drawn = crate::ui::diff_view::push_comment_input(
+                        app,
+                        &mut lines,
+                        &mut line_idx,
+                        ctx.panel_width.saturating_sub(1),
+                        ctx.current_line_idx,
+                        false,
+                    );
+                    comment_cursor_logical_line = Some(drawn.cursor_line);
+                    comment_cursor_column = drawn.cursor_column;
+                    comment_input_box_range = Some(drawn.box_range);
+                    annotation_offset = Some((drawn.box_range.0, drawn.rows, 0));
+                    reply_input_drawn = true;
+                }
             }
         }
 
-        // Render inline input for new file-level comment
-        if is_file_comment_mode && app.editing_comment_id.is_none() {
+        // Render inline input for a new file-level comment, or a reply whose
+        // thread is not on screen.
+        if is_file_comment_mode && app.editing_comment_id.is_none() && !reply_input_drawn {
             let (input_lines, cursor_info) = comment_panel::format_comment_input_lines(
                 &app.theme,
                 comment_type_presentation(app, &app.comment_type),
@@ -2616,6 +2637,40 @@ mod remote_comments_side_by_side_snapshot_tests {
         .expect("build app");
         app.diff_view_mode = DiffViewMode::SideBySide;
         app
+    }
+
+    /// Side-by-side mirror: the editor is drawn from its own copy of the
+    /// placement wiring, and this family of bug has been side-by-side-only
+    /// before.
+    #[test]
+    fn should_draw_a_reply_editor_under_the_thread_it_answers() {
+        use crate::model::{Comment, CommentType};
+        let mut app = make_pr_app();
+        let path = app.diff_files[0].display_path().clone();
+        let mut roots = Vec::new();
+        for n in 0..3 {
+            let root = Comment::new(format!("question {n}"), CommentType::from_id("issue"), None);
+            roots.push(root.id.clone());
+            app.session
+                .get_file_mut(&path)
+                .unwrap()
+                .file_comments
+                .push(root);
+        }
+        app.rebuild_annotations();
+
+        app.input_mode = InputMode::Comment;
+        app.comment_is_file_level = true;
+        app.local_reply_target = Some(roots[0].clone());
+        app.comment_buffer = "answering the first".to_string();
+        let text = body_text(&draw(&mut app));
+
+        let editor = text.find("answering the first").expect("editor on screen");
+        let second = text.find("question 1").expect("second thread on screen");
+        assert!(
+            editor < second,
+            "the editor opened below later threads:\n{text}"
+        );
     }
 
     fn draw(app: &mut App) -> Buffer {

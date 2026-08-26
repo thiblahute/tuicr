@@ -1063,6 +1063,30 @@ impl App {
         self.comment_scroll_detached = false;
     }
 
+    /// Index in `path`'s file comments that the editor for the reply being
+    /// written belongs after — the same slot the reply itself will be stored
+    /// in, so the box appears in the conversation it answers.
+    ///
+    /// A file with one thread hid this: the editor was drawn after the whole
+    /// block, which reads as answering the last thread on screen. A file full
+    /// of detached threads made it useless.
+    pub fn file_comment_reply_slot(&self, path: &std::path::Path) -> Option<usize> {
+        if !self.comment_is_file_level || self.editing_comment_id.is_some() {
+            return None;
+        }
+        let target = self.local_reply_target.as_deref()?;
+        let review = self.session.files.get(path)?;
+        let root = review
+            .file_comments
+            .iter()
+            .find(|c| c.id == target)
+            .map(|c| c.in_reply_to.as_deref().unwrap_or(&c.id))?;
+        review
+            .file_comments
+            .iter()
+            .rposition(|c| c.id == root || c.in_reply_to.as_deref() == Some(root))
+    }
+
     /// The stored comment a cursor location resolves to.
     fn comment_at_location(&self, location: &CommentLocation) -> Option<&Comment> {
         match location {
