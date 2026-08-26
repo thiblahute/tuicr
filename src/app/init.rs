@@ -661,6 +661,7 @@ impl App {
             show_resolved_threads: false,
             thread_display_overrides: std::collections::HashSet::new(),
             local_reply_target: None,
+            comment_scroll_detached: false,
             visual_selection: None,
             mouse_drag_active: false,
             comment_line_range: None,

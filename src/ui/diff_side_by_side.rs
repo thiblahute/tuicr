@@ -1201,13 +1201,18 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
     app.comment_input_annotation_offset = annotation_offset;
 
     // Auto-scroll so the comment input box stays visible while the user types.
-    scroll_comment_input_into_view(
-        &mut app.diff_state.scroll_offset,
-        comment_input_box_range,
-        comment_cursor_logical_line,
-        inner.height as usize,
-        lines.len(),
-    );
+    // ...unless the reader deliberately scrolled away to look at something
+    // else while composing. Dragging them back every frame is what made the
+    // editor feel like a trap.
+    if !app.comment_scroll_detached {
+        scroll_comment_input_into_view(
+            &mut app.diff_state.scroll_offset,
+            comment_input_box_range,
+            comment_cursor_logical_line,
+            inner.height as usize,
+            lines.len(),
+        );
+    }
 
     let visible_lines_unscrolled: Vec<Line> = lines
         .into_iter()

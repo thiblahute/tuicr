@@ -960,6 +960,27 @@ fn handle_comment_vim_key(app: &mut App, key: crossterm::event::KeyEvent) -> boo
         }
     }
 
+    // Looking around the diff belongs to the app, not the text editor, in vim
+    // mode as much as anywhere else. These keys reach here first, so handle
+    // them here: with `comment_vim` on, the plain comment keymap never runs.
+    match (key.code, ctrl) {
+        (KeyCode::PageUp, _) => {
+            app.comment_scroll_detached = true;
+            app.page_up(app.diff_state.viewport_height);
+            return true;
+        }
+        (KeyCode::PageDown, _) => {
+            app.comment_scroll_detached = true;
+            app.page_down(app.diff_state.viewport_height);
+            return true;
+        }
+        _ => {}
+    }
+
+    // Anything else is going to the editor, so bring it back under the
+    // reader's eyes — the same rule the plain keymap applies to typing.
+    app.comment_scroll_detached = false;
+
     let normal = app.comment_vim_in_normal_mode();
 
     // In Normal mode a first plain Enter/Esc arms a confirm (header shows the

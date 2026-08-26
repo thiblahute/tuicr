@@ -166,9 +166,18 @@ pub fn format_comment_input_lines(
     // modal bindings and a `[MODE]` tag is shown after the type label.
     // Replies have no type, so their hint drops the Tab type-cycling part.
     let hint = match (vim_mode, reply_to) {
-        (Some(_), _) => "(i:insert  Alt-Enter:save  Esc:normal  :w save  :q discard)".to_string(),
-        (None, Some(_)) => format!("(Enter:send {newline_hint}:newline Esc:cancel)"),
-        (None, None) => format!("(Tab/S-Tab:type Enter:save {newline_hint}:newline Esc:cancel)"),
+        (Some(_), _) => {
+            "(i:insert  Alt-Enter:save  Esc:normal  PgUp/PgDn:scroll  :w save  :q discard)"
+                .to_string()
+        }
+        (None, Some(_)) => {
+            format!("(Enter:send {newline_hint}:newline PgUp/PgDn:scroll Esc:cancel)")
+        }
+        (None, None) => {
+            format!(
+                "(Tab/S-Tab:type Enter:save {newline_hint}:newline PgUp/PgDn:scroll Esc:cancel)"
+            )
+        }
     };
     let mut header_spans = vec![
         Span::styled(top_prefix, border_style),

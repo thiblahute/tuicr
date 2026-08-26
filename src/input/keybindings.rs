@@ -394,6 +394,13 @@ fn map_comment_mode(key: KeyEvent) -> Action {
         (KeyCode::Char('u'), KeyModifiers::CONTROL) => Action::ClearLine,
         (KeyCode::Char('b'), KeyModifiers::ALT) => Action::TextCursorWordLeft,
         (KeyCode::Char('f'), KeyModifiers::ALT) => Action::TextCursorWordRight,
+        // Look around the diff without leaving the editor. Composing a comment
+        // often means checking another part of the file, and until now the only
+        // way was to cancel and start again. PageUp/PageDown are the keys the
+        // editor does not already claim, and a page at a time is the size a
+        // reader actually wants; the wheel covers the finer movement.
+        (KeyCode::PageUp, _) => Action::PageUp,
+        (KeyCode::PageDown, _) => Action::PageDown,
         (KeyCode::Char(c), _) => Action::InsertChar(c),
         _ => Action::None,
     }

@@ -1266,6 +1266,11 @@ pub struct App {
     /// (`reply_to_comment_in_session`) — unlike a remote thread reply, nothing
     /// is posted anywhere.
     pub local_reply_target: Option<String>,
+    /// True once the reader scrolled the diff while composing. The renderer
+    /// otherwise drags the editor back into view every frame, so scrolling
+    /// away would snap back before it could be read. Cleared when they type:
+    /// typing blind, with the box off screen, is worse than losing the place.
+    pub comment_scroll_detached: bool,
 
     pub visual_selection: Option<VisualSelection>,
     /// True once the active mouse drag has actually moved off the press cell.
