@@ -378,10 +378,32 @@ impl App {
     ) -> usize {
         let mut changed = 0;
 
+        // A comment that moved to another file is still here, just not where
+        // the file on disk has it. Taking that file back wholesale would bring
+        // a second copy of every comment in it, which is how a re-anchored
+        // thread came back doubled under the path it had left.
+        let held: std::collections::HashSet<String> =
+            Self::collect_stored_comments(current).into_keys().collect();
+
         for (path, latest_review) in &latest.files {
             if !current.files.contains_key(path) {
-                current.files.insert(path.clone(), latest_review.clone());
-                changed += latest_review.comment_count();
+                let mut adopted = latest_review.clone();
+                adopted.file_comments.retain(|c| !held.contains(&c.id));
+                adopted.line_comments.retain(|_, comments| {
+                    comments.retain(|c| !held.contains(&c.id));
+                    !comments.is_empty()
+                });
+                // What is left may be nothing at all: a file whose comments all
+                // moved away is a husk, and re-adding it every save would undo
+                // the tidying that moved them.
+                if adopted.comment_count() == 0
+                    && !adopted.reviewed
+                    && adopted.reviewed_hunks.is_empty()
+                {
+                    continue;
+                }
+                changed += adopted.comment_count();
+                current.files.insert(path.clone(), adopted);
                 continue;
             }
 
