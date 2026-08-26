@@ -1222,16 +1222,21 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
     // Auto-scroll so the comment input box stays visible while the user types.
     // Without this, adding a comment near the bottom/top of the viewport would
     // place the input box off-screen and the user couldn't see what they type.
+    // ...unless the reader deliberately scrolled away to look at something
+    // else while composing. Dragging them back every frame is what made the
+    // editor feel like a trap.
     let wrap = app.diff_state.wrap_lines;
     let viewport_width = inner.width as usize;
-    scroll_comment_input_into_view(
-        &mut app.diff_state.scroll_offset,
-        comment_input_box_range,
-        comment_cursor_logical_line,
-        inner.height as usize,
-        lines.len(),
-        |idx| unified_row_height(&lines, idx, wrap, viewport_width),
-    );
+    if !app.comment_scroll_detached {
+        scroll_comment_input_into_view(
+            &mut app.diff_state.scroll_offset,
+            comment_input_box_range,
+            comment_cursor_logical_line,
+            inner.height as usize,
+            lines.len(),
+            |idx| unified_row_height(&lines, idx, wrap, viewport_width),
+        );
+    }
 
     let visible_lines_unscrolled: Vec<Line> = lines
         .into_iter()

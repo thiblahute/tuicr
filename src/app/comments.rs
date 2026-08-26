@@ -1079,6 +1079,7 @@ impl App {
         self.comment_is_file_level = file_level;
         self.comment_line = line;
         self.comment_reply_target = None;
+        self.comment_scroll_detached = false;
     }
 
     pub fn enter_review_comment_mode(&mut self) {
@@ -1123,6 +1124,7 @@ impl App {
         self.comment_line_range = None;
         self.editing_comment_id = None;
         self.comment_reply_target = Some(thread_idx);
+        self.comment_scroll_detached = false;
     }
 
     /// Open the comment editor as a reply to the local comment at the cursor.
@@ -1159,6 +1161,7 @@ impl App {
         self.editing_comment_id = None;
         self.comment_reply_target = None;
         self.local_reply_target = Some(parent_id);
+        self.comment_scroll_detached = false;
     }
 
     /// Settle (or reopen) the thread the cursor sits on. The whole thread
@@ -1415,6 +1418,7 @@ impl App {
         self.comment_line_range = None;
         self.comment_reply_target = None;
         self.local_reply_target = None;
+        self.comment_scroll_detached = false;
     }
 
     pub fn save_comment(&mut self) {

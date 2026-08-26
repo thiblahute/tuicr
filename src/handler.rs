@@ -220,6 +220,20 @@ pub fn handle_mouse_event(app: &mut App, event: MouseEvent) {
                 }
                 InputMode::Normal if over_diff => handle_diff_action(app, action),
                 InputMode::VisualSelect if over_diff => handle_diff_action(app, action),
+                // The wheel keeps working while a comment is being written.
+                // Reaching for it is the first thing anyone does to look at
+                // other code, and dropping it made the editor feel like a
+                // trap. The comment is untouched: this scrolls the view and
+                // marks it detached, so the renderer stops pulling the editor
+                // back on the next frame.
+                InputMode::Comment if over_diff => {
+                    app.comment_scroll_detached = true;
+                    if scroll_up {
+                        app.scroll_view_up(WHEEL_LINES);
+                    } else {
+                        app.scroll_view_down(WHEEL_LINES);
+                    }
+                }
                 _ => {}
             }
             clear_visual_if_cursor_offscreen(app);
@@ -230,7 +244,12 @@ pub fn handle_mouse_event(app: &mut App, event: MouseEvent) {
             // (FEAT-0012) or abort an active VisualSelect.
             let scroll_left = matches!(event.kind, MouseEventKind::ScrollLeft);
             let over_diff = app.diff_area.is_some_and(|r| r.contains(pos));
-            if over_diff && matches!(app.input_mode, InputMode::Normal | InputMode::VisualSelect) {
+            if over_diff
+                && matches!(
+                    app.input_mode,
+                    InputMode::Normal | InputMode::VisualSelect | InputMode::Comment
+                )
+            {
                 if scroll_left {
                     app.scroll_left(WHEEL_COLS);
                 } else {
@@ -1267,10 +1286,25 @@ pub fn handle_comment_action(app: &mut App, action: Action) {
     ) {
         app.comment_preferred_column = None;
     }
+    // Typing brings the editor back under the reader's eyes: they are writing
+    // again, and writing into a box that is off screen is worse than losing
+    // whatever they had scrolled to.
+    if matches!(action, Action::InsertChar(_) | Action::Paste(_)) {
+        app.comment_scroll_detached = false;
+    }
     match action {
         Action::InsertChar(c) => {
             app.comment_buffer.insert(app.comment_cursor, c);
             app.comment_cursor += c.len_utf8();
+        }
+        // Look around the diff without leaving the editor.
+        Action::PageUp => {
+            app.comment_scroll_detached = true;
+            app.page_up(app.diff_state.viewport_height);
+        }
+        Action::PageDown => {
+            app.comment_scroll_detached = true;
+            app.page_down(app.diff_state.viewport_height);
         }
         Action::Paste(text) => {
             let normalized = text.replace("\r\n", "\n").replace('\r', "\n");

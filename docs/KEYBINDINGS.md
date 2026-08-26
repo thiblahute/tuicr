@@ -204,6 +204,8 @@ from the checkout, never copied.
 
 | Key | Action |
 |-----|--------|
+| `PgUp` / `PgDn` | Scroll the diff while composing, to look at other code |
+| Mouse wheel | Scroll the diff while composing (pointer over the diff) |
 | `Tab` / `Shift-Tab` | Cycle comment type forward / backward (per `comment_types` order) |
 | `Enter` / `Ctrl-Enter` / `Ctrl-s` | Save comment |
 | `Shift-Enter` / `Ctrl-j` | Insert newline |

@@ -1342,3 +1342,89 @@ fn should_drop_a_stale_claim_when_the_review_is_handed_over_again() {
     );
     assert!(app.session.agent_request.is_some());
 }
+
+#[test]
+fn should_let_the_reader_look_around_while_composing() {
+    // Writing a comment usually means checking another part of the file. Until
+    // now the only way was to cancel the comment and start again.
+    let (session, _root) = session_with_line_comment();
+    let mut app = app_for(session);
+    app.diff_state.viewport_height = 20;
+    app.input_mode = InputMode::Comment;
+    app.comment_buffer = "half a thought".to_string();
+    app.comment_cursor = app.comment_buffer.len();
+    let before = app.diff_state.scroll_offset;
+
+    crate::handler::handle_comment_action(&mut app, crate::input::Action::PageDown);
+
+    assert_ne!(app.diff_state.scroll_offset, before, "the diff moved");
+    assert!(
+        app.comment_scroll_detached,
+        "and the renderer must stop dragging the editor back into view"
+    );
+    // The comment itself is untouched: this is looking around, not leaving.
+    assert_eq!(app.comment_buffer, "half a thought");
+    assert_eq!(app.input_mode, InputMode::Comment);
+}
+
+#[test]
+fn should_bring_the_editor_back_when_the_reader_types_again() {
+    // Typing into a box that is off screen is worse than losing the place you
+    // scrolled to.
+    let (session, _root) = session_with_line_comment();
+    let mut app = app_for(session);
+    app.input_mode = InputMode::Comment;
+    app.comment_scroll_detached = true;
+
+    crate::handler::handle_comment_action(&mut app, crate::input::Action::InsertChar('x'));
+
+    assert!(!app.comment_scroll_detached);
+    assert_eq!(app.comment_buffer, "x");
+}
+
+#[test]
+fn should_start_every_editor_attached() {
+    let (session, _root) = session_with_line_comment();
+    let mut app = app_for(session);
+    app.comment_scroll_detached = true;
+    app.exit_comment_mode();
+    assert!(!app.comment_scroll_detached, "closing resets it");
+
+    app.comment_scroll_detached = true;
+    app.enter_comment_mode(false, Some((42, LineSide::New)));
+    assert!(
+        !app.comment_scroll_detached,
+        "a new comment starts with the editor in view"
+    );
+}
+
+#[test]
+fn should_scroll_with_the_wheel_while_composing() {
+    // Reaching for the wheel is the first thing anyone does to look at other
+    // code; it was being dropped entirely while the editor was open.
+    use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+    let (session, _root) = session_with_line_comment();
+    let mut app = app_for(session);
+    app.diff_state.viewport_height = 20;
+    app.diff_state.scroll_offset = 10;
+    app.diff_area = Some(ratatui::layout::Rect::new(0, 0, 80, 20));
+    app.input_mode = InputMode::Comment;
+    app.comment_buffer = "half a thought".to_string();
+    let _ = MouseButton::Left;
+
+    crate::handler::handle_mouse_event(
+        &mut app,
+        MouseEvent {
+            kind: MouseEventKind::ScrollUp,
+            column: 10,
+            row: 5,
+            modifiers: KeyModifiers::NONE,
+        },
+    );
+
+    assert!(app.diff_state.scroll_offset < 10, "the view moved");
+    assert!(app.comment_scroll_detached, "and stays where it was put");
+    // Scrolling is looking, not leaving: the comment survives untouched.
+    assert_eq!(app.comment_buffer, "half a thought");
+    assert_eq!(app.input_mode, InputMode::Comment);
+}
