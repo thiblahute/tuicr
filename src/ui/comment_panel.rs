@@ -545,6 +545,27 @@ impl RememberedCode {
     }
 }
 
+/// The code a comment carries when its anchor is gone, or `None` when it
+/// carries none.
+///
+/// A thread is one conversation about one piece of code, and every message in
+/// it is marked outdated together. Printing the code above each reply repeats
+/// it as many times as the thread is long and buries the reading the reader
+/// came for, so only the root shows it — the replies sit directly underneath.
+///
+/// The renderer and the row model both ask here, or a box's height comes out
+/// different in the two and every row below it drifts.
+pub fn remembered_code(comment: &crate::model::Comment) -> Option<RememberedCode> {
+    if !comment.outdated || comment.is_reply() {
+        return None;
+    }
+    comment.line_context.as_ref().map(|context| RememberedCode {
+        before: context.before.clone(),
+        line: context.content.clone(),
+        after: context.after.clone(),
+    })
+}
+
 /// How a comment box should present right now.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ThreadDisplay {

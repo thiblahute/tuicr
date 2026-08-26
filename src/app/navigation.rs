@@ -1534,15 +1534,9 @@ impl App {
         // and its neighbours — which no longer exists in the diff. The
         // renderer emits those rows, so the model counts them through the same
         // helper, or every row below the box drifts.
-        let remembered = if comment.outdated {
-            comment
-                .line_context
-                .as_ref()
-                .map(|c| 1 + c.before.len() + c.after.len())
-                .unwrap_or(0)
-        } else {
-            0
-        };
+        let remembered = crate::ui::comment_panel::remembered_code(comment)
+            .map(|code| code.rows())
+            .unwrap_or(0);
         2 + visual_lines + remembered // borders + body + remembered code
     }
 

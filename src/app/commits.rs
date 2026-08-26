@@ -787,13 +787,7 @@ impl App {
                     .line_context
                     .as_ref()
                     .and_then(|c| c.new_line.or(c.old_line)),
-                was_text: comment.line_context.as_ref().map(|c| {
-                    crate::ui::comment_panel::RememberedCode {
-                        before: c.before.clone(),
-                        line: c.content.clone(),
-                        after: c.after.clone(),
-                    }
-                }),
+                was_text: crate::ui::comment_panel::remembered_code(comment),
             }
         } else if comment.resolved {
             ThreadDisplay::Resolved
