@@ -200,6 +200,32 @@ that ignored their review.
 If the user says comments are ready in chat instead, just read them with
 `tuicr review comments`; the handoff is a convenience, not a requirement.
 
+### Say you picked it up
+
+The moment a watch returns `handoff` — before reading, before working — tell the
+review you have it:
+
+```bash
+tuicr review working --repo /path/to/repo --session <slug> \
+  --username "Claude Opus 5" --message "reading your six comments"
+```
+
+The user is watching a screen that otherwise cannot tell an agent thinking from
+an agent that never heard them, and the first thing they do about silence is
+submit again. The status bar shows the message verbatim while you work, so make
+it what you are actually doing; run it again to change it during a long round.
+
+It ends by itself when you hand back with `review update`. If you finish without
+touching the code — an answer in the thread, a question, a refusal — end it
+explicitly and say why:
+
+```bash
+tuicr review working --repo /path/to/repo --session <slug> --done \
+  --message "answered in the thread, nothing to reload"
+```
+
+An indicator that just disappears reads as an agent that died.
+
 An empty result does not by itself mean the review didn't happen. On exit,
 tuicr always prints a line like `tuicr-summary: reviewed 3/3 files, 0 comments
 added` to stderr (visible in the pane's scrollback), and `tuicr review list`
@@ -265,6 +291,9 @@ open, say so:
 tuicr review update --repo /path/to/repo --session <slug> \
   --message "fixed both comments, amended into the original commits"
 ```
+
+This also ends the "working" indicator, so `review working --done` is only for
+rounds that change no code.
 
 Their diff is stale until they reload, and nothing else tells them — a review
 pinned to commits you amended away reloads into an identical diff, which reads

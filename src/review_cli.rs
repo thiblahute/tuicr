@@ -80,6 +80,13 @@ fn run_with_writer(command: ReviewCommand, out: &mut impl Write) -> Result<()> {
             timeout_secs,
             repo,
         } => watch_session(&session, &repo, any, timeout_secs, out),
+        ReviewCommand::Working {
+            session,
+            message,
+            username,
+            done,
+            repo,
+        } => announce_working(&session, &repo, message, username, done, out),
         ReviewCommand::Update {
             session,
             message,
@@ -591,6 +598,9 @@ enum WatchOutcome {
 #[derive(Debug, Serialize)]
 struct WatchOutput {
     outcome: WatchOutcome,
+    /// The session that woke, resolved — what was passed may have been a path
+    /// or a prefix, and the next call (`review working`) wants the real name.
+    session: String,
     comments: Vec<CommentOutput>,
 }
 
@@ -641,7 +651,14 @@ fn watch_session(
         .as_ref()
         .map(collect_comments)
         .unwrap_or_default();
-    serde_json::to_writer_pretty(&mut *out, &WatchOutput { outcome, comments })?;
+    serde_json::to_writer_pretty(
+        &mut *out,
+        &WatchOutput {
+            outcome,
+            session: session.to_string(),
+            comments,
+        },
+    )?;
     writeln!(out)?;
     Ok(())
 }
@@ -652,6 +669,67 @@ struct UpdateOutput {
     announced_at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     message: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct WorkingOutput {
+    session: String,
+    working: bool,
+    at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    agent: Option<String>,
+}
+
+/// Say an agent has the review and is working on it — or, with `--done`, that
+/// it has stopped.
+///
+/// `:submit agent` hands the work over and `review update` hands it back; in
+/// between, the reviewer had a still screen that could not tell an agent
+/// thinking from no agent listening. This is the sign of life.
+///
+/// Read-modify-write under the store lock, so a reviewer commenting in the TUI
+/// at the same moment — the normal case right after a handoff — does not lose
+/// their comment to this one field.
+fn announce_working(
+    session: &str,
+    repo: &Path,
+    message: Option<String>,
+    username: Option<String>,
+    done: bool,
+    out: &mut impl Write,
+) -> Result<()> {
+    let store = ReviewStore::new();
+    let session_ref = resolve_session_ref(&store, repo, session)?;
+    let message = message
+        .map(|text| text.trim().to_string())
+        .filter(|text| !text.is_empty());
+    let config = config::load_config()
+        .ok()
+        .and_then(|outcome| outcome.config);
+    let agent = (!done).then(|| resolve_cli_author(username, config.as_ref()));
+    let activity = crate::model::review::AgentActivity {
+        at: chrono::Utc::now(),
+        message: message.clone(),
+        agent: agent.clone(),
+    };
+    let stamped = activity.clone();
+    store.update_session(&session_ref, move |session_data| {
+        crate::review_store::set_agent_working(session_data, stamped, done);
+        Ok(())
+    })?;
+
+    let output = WorkingOutput {
+        session: session.to_string(),
+        working: !done,
+        at: activity.at.to_rfc3339(),
+        message,
+        agent,
+    };
+    serde_json::to_writer_pretty(&mut *out, &output)?;
+    writeln!(out)?;
+    Ok(())
 }
 
 /// Stamp the session so the reviewer's open TUI can say the branch moved.
@@ -668,7 +746,6 @@ fn announce_update(
 ) -> Result<()> {
     let store = ReviewStore::new();
     let session_ref = resolve_session_ref(&store, repo, session)?;
-    let mut session_data = store.get_review(&session_ref)?;
     let message = message
         .map(|text| text.trim().to_string())
         .filter(|text| !text.is_empty());
@@ -676,9 +753,18 @@ fn announce_update(
         at: chrono::Utc::now(),
         message: message.clone(),
     };
-    session_data.agent_update = Some(announced.clone());
-    session_data.updated_at = announced.at;
-    store.save_review(&session_data)?;
+    let stamped = announced.clone();
+    // Under the store lock: the reviewer is usually still reading and
+    // commenting while this lands, and a whole-session write would drop
+    // whatever they saved since it was read.
+    store.update_session(&session_ref, move |session_data| {
+        session_data.agent_update = Some(stamped.clone());
+        // Handing the work back ends the working state, whether or not the
+        // agent remembered to say so.
+        session_data.agent_working = None;
+        session_data.updated_at = stamped.at;
+        Ok(())
+    })?;
 
     let output = UpdateOutput {
         session: session.to_string(),

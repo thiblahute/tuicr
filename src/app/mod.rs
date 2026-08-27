@@ -1921,6 +1921,7 @@ mod reviewed;
 mod search;
 mod session;
 pub mod sessions_tab;
+pub use session::{AGENT_WORKING_LIVE_SECS, AgentWorkingStatus};
 mod submit;
 mod tree;
 mod visual;

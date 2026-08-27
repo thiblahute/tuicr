@@ -113,6 +113,20 @@ impl ReviewStore {
         Ok(comment)
     }
 
+    /// Read-modify-write a session under the store lock, so two writers
+    /// touching different parts of the same review do not overwrite each
+    /// other. Whole-session `save_review` cannot promise that.
+    pub fn update_session(
+        &self,
+        session_ref: &SessionRef,
+        update: impl FnOnce(&mut ReviewSession) -> Result<()>,
+    ) -> Result<ReviewSession> {
+        let reviews_dir = self.reviews_dir()?;
+        let (session, ()) =
+            storage::update_session_in_dir(session_ref.path(), &reviews_dir, update)?;
+        Ok(session)
+    }
+
     /// Save a session through this store's storage root.
     pub fn save_review(&self, session: &ReviewSession) -> Result<SessionRef> {
         let reviews_dir = self.reviews_dir()?;
@@ -408,6 +422,29 @@ pub fn reply_to_comment_in_session(
 /// Naming any member of the thread works — the root, or a reply — because a
 /// thread is settled as a unit. The flag is written to every member so
 /// renderers can mute a box from the comment in hand.
+/// Record that an agent has picked this review up, or — with `done` — that it
+/// has stopped working on it.
+///
+/// Stopping also announces itself: an agent that answered a question without
+/// touching the code has a result to report, and a spinner that simply vanishes
+/// reads as an agent that died.
+pub fn set_agent_working(
+    session: &mut ReviewSession,
+    activity: crate::model::review::AgentActivity,
+    done: bool,
+) {
+    session.updated_at = activity.at;
+    if done {
+        session.agent_working = None;
+        session.agent_update = Some(crate::model::review::AgentUpdate {
+            at: activity.at,
+            message: activity.message,
+        });
+        return;
+    }
+    session.agent_working = Some(activity);
+}
+
 pub fn set_thread_resolved(
     session: &mut ReviewSession,
     comment_id: &str,

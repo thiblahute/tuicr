@@ -413,6 +413,35 @@ pub enum ReviewCommand {
         repo: PathBuf,
     },
 
+    /// Tell a review an agent has picked it up and is working on it, so the
+    /// reviewer sees the handoff land instead of waiting at a still screen.
+    Working {
+        /// Session slug from `tuicr review list` (local or PR), or path to a
+        /// session JSON file.
+        #[arg(long, value_name = "SESSION")]
+        session: String,
+
+        /// What you are doing, in your own words — shown to the reviewer
+        /// verbatim, so "reading your six comments" beats a bare spinner.
+        #[arg(long, value_name = "TEXT")]
+        message: Option<String>,
+
+        /// Which agent is working. Falls back to the config `username`.
+        #[arg(long, value_name = "NAME")]
+        username: Option<String>,
+
+        /// Stop: you are no longer working on this review. Pass `--message`
+        /// with it to say why — a reply with no code change is a result, and
+        /// a spinner that just disappears looks like an agent that died.
+        #[arg(long)]
+        done: bool,
+
+        /// Repo selector used to resolve a local session slug (path or
+        /// `owner/repo`). PR slugs and JSON paths resolve without it.
+        #[arg(long, value_name = "PATH|OWNER/REPO", default_value = ".")]
+        repo: PathBuf,
+    },
+
     /// Tell a review that the code under it changed, so the reviewer is
     /// prompted to reload instead of finding out by reloading into nothing.
     Update {

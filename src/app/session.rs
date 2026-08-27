@@ -1,5 +1,20 @@
 use super::*;
 
+/// How long an agent's "I am working on it" keeps animating. Past this nobody
+/// has renewed the claim, and a spinner would go on promising progress that may
+/// have died with the process that promised it.
+pub const AGENT_WORKING_LIVE_SECS: i64 = 10 * 60;
+
+/// What an agent last said about the review, ready to render.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentWorkingStatus {
+    /// Still inside the window where the claim is worth animating.
+    pub live: bool,
+    pub elapsed_secs: i64,
+    pub message: Option<String>,
+    pub agent: Option<String>,
+}
+
 impl App {
     /// Slug for the currently active session, derived from the session's
     /// embedded fields. Returns `None` if derivation fails (e.g., a local
@@ -255,6 +270,33 @@ impl App {
         true
     }
 
+    /// What an agent last said it was doing on this review, if anything.
+    ///
+    /// The claim comes from a file another process writes, so it can outlive
+    /// the agent that made it. Callers get the age with it and say so rather
+    /// than implying the work is still running.
+    pub fn agent_working_status(&self) -> Option<AgentWorkingStatus> {
+        let activity = self.session.agent_working.as_ref()?;
+        let elapsed = chrono::Utc::now()
+            .signed_duration_since(activity.at)
+            .num_seconds()
+            .max(0);
+        Some(AgentWorkingStatus {
+            live: elapsed < AGENT_WORKING_LIVE_SECS,
+            elapsed_secs: elapsed,
+            message: activity.message.clone(),
+            agent: activity.agent.clone(),
+        })
+    }
+
+    /// True while the agent indicator is still animating, so the main loop
+    /// knows to keep redrawing. It stops once the claim goes quiet: an idle
+    /// redraw rebuilds every line of the diff, and this field can linger.
+    pub fn agent_spinner_running(&self) -> bool {
+        self.agent_working_status()
+            .is_some_and(|status| status.live)
+    }
+
     /// True while any forge background fetch (PR list/open/reload/threads/
     /// submit) is in flight. Used by the main loop to keep redrawing so
     /// spinners animate and results land without waiting for input.
@@ -298,6 +340,12 @@ impl App {
             self.session.agent_update = latest.agent_update.clone();
             self.pending_agent_update = latest.agent_update.clone();
         }
+        // An agent saying it is working, or has stopped, only ever comes from
+        // outside: the file is the whole truth for this field, including when
+        // it goes back to `None`. Taken before the comment merge so the next
+        // save carries what the file says rather than the state this process
+        // started with.
+        self.session.agent_working = latest.agent_working.clone();
         let before_count = Self::comment_count(&self.session);
         let changed = Self::merge_external_session_changes(
             &mut self.session,

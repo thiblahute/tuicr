@@ -97,6 +97,24 @@ pub struct AgentUpdate {
     pub message: Option<String>,
 }
 
+/// An agent saying it has picked the review up and is working on it.
+///
+/// Written from outside the TUI, so it can be stale: an agent that dies mid-run
+/// leaves the last thing it said standing. Readers show `at` rather than
+/// implying the work is still happening.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentActivity {
+    pub at: DateTime<Utc>,
+    /// What it is doing, in its own words — "reading your six comments" tells
+    /// the reviewer more than a spinner does.
+    #[serde(default)]
+    pub message: Option<String>,
+    /// Which agent, when it says. One review is answered by one agent today;
+    /// the name is carried so a screen full of them is not anonymous later.
+    #[serde(default)]
+    pub agent: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReviewSession {
     pub id: String,
@@ -146,6 +164,12 @@ pub struct ReviewSession {
     /// the branch moved instead of finding out by reloading into nothing.
     #[serde(default)]
     pub agent_update: Option<AgentUpdate>,
+    /// Set while an agent is working on the last handoff (`tuicr review
+    /// working`), cleared when it hands back or says it stopped. Between
+    /// `:submit agent` and the first sign of life the reviewer is looking at a
+    /// screen that cannot tell "no agent heard me" from "it is thinking".
+    #[serde(default)]
+    pub agent_working: Option<AgentActivity>,
     #[serde(default)]
     pub review_comments: Vec<Comment>,
     pub files: HashMap<PathBuf, FileReview>,
@@ -174,6 +198,7 @@ impl ReviewSession {
             created_at: now,
             updated_at: now,
             agent_request: None,
+            agent_working: None,
             revset: None,
             agent_update: None,
             review_comments: Vec::new(),

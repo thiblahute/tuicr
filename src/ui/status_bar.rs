@@ -360,6 +360,30 @@ fn mode_label(app: &App) -> String {
 /// (submit/reload/range) > remote-comments loading hint > modified indicator,
 /// else empty. Shared by the bottom status bar and, when it's hidden, the top
 /// header, so transient feedback never disappears with the bar.
+/// `12s`, `3m`, `1h04m` — an age the reviewer can read at a glance in the
+/// width a status bar has.
+fn short_duration(secs: i64) -> String {
+    let secs = secs.max(0);
+    if secs < 60 {
+        return format!("{secs}s");
+    }
+    let minutes = secs / 60;
+    if minutes < 60 {
+        return format!("{minutes}m");
+    }
+    format!("{}h{:02}m", minutes / 60, minutes % 60)
+}
+
+/// Whatever the agent said, cut to what fits beside everything else.
+fn truncate_status(text: &str, max_chars: usize) -> String {
+    let text = text.trim();
+    if text.chars().count() <= max_chars {
+        return text.to_string();
+    }
+    let kept: String = text.chars().take(max_chars.saturating_sub(1)).collect();
+    format!("{}\u{2026}", kept.trim_end())
+}
+
 fn status_right_span(app: &App, theme: &Theme) -> (Span<'static>, usize) {
     if app.message.is_some() {
         build_message_span(app.message.as_ref(), theme)
@@ -424,6 +448,34 @@ fn status_right_span(app: &App, theme: &Theme) -> (Span<'static>, usize) {
             ),
             width,
         )
+    } else if let Some(status) = app.agent_working_status() {
+        // A handoff used to land on a still screen: nothing said whether an
+        // agent had heard it. This is the sign of life, and once it stops
+        // being renewed it says that too rather than spinning forever.
+        let who = status.agent.as_deref().unwrap_or("Agent");
+        let age = short_duration(status.elapsed_secs);
+        let head = if status.live {
+            let glyph = crate::ui::selector::pr_open_spinner_glyph(std::time::Duration::from_secs(
+                status.elapsed_secs.max(0) as u64,
+            ));
+            format!(" {glyph} {who} working {age}")
+        } else {
+            format!(" {who} quiet for {age}")
+        };
+        let content = match status.message.as_deref() {
+            Some(text) => format!("{head} \u{00b7} {} ", truncate_status(text, 44)),
+            None => format!("{head} "),
+        };
+        let width = content.chars().count();
+        let style = if status.live {
+            Style::default()
+                .fg(theme.message_info_fg)
+                .bg(theme.message_info_bg)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme.fg_dim)
+        };
+        (Span::styled(content, style), width)
     } else if app.forge_review_threads_loading {
         let content = " loading remote comments\u{2026} ".to_string();
         let width = content.chars().count();
@@ -474,7 +526,11 @@ pub fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         let mode_span = Span::styled(mode_label(app), styles::mode_style(theme));
 
-        let hints: Cow<'static, str> = if app.message.is_some() {
+        // What an agent is doing right now beats a list of keys the reviewer
+        // already knows — and it is the half that gets clipped otherwise.
+        let hints: Cow<'static, str> = if app.message.is_some()
+            || app.session.agent_working.is_some()
+        {
             Cow::Borrowed("")
         } else if app.file_tree_prompt_editing() {
             // File-tree prompts are a sub-state of Normal, so the mode chip
@@ -819,6 +875,65 @@ mod header_snapshot_tests {
         (0..buffer.area.width)
             .map(|x| buffer[(x, y)].symbol().to_string())
             .collect()
+    }
+
+    #[test]
+    fn should_show_an_agent_working_on_the_review() {
+        let mut app = build_pr_app(pr_source(false, false));
+        crate::review_store::set_agent_working(
+            &mut app.session,
+            crate::model::review::AgentActivity {
+                at: chrono::Utc::now(),
+                message: Some("reading your six comments".to_string()),
+                agent: Some("Claude".to_string()),
+            },
+            false,
+        );
+
+        let buffer = draw_app(&mut app, 120, 12);
+        let text = (0..buffer.area.height)
+            .map(|y| row_text(&buffer, y))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            text.contains("Claude working") && text.contains("reading your six comments"),
+            "the handoff has to show somewhere:\n{text}"
+        );
+    }
+
+    #[test]
+    fn should_render_an_agent_that_has_gone_quiet_without_a_spinner() {
+        let mut app = build_pr_app(pr_source(false, false));
+        crate::review_store::set_agent_working(
+            &mut app.session,
+            crate::model::review::AgentActivity {
+                at: chrono::Utc::now()
+                    - chrono::Duration::seconds(crate::app::AGENT_WORKING_LIVE_SECS + 60),
+                message: None,
+                agent: Some("Claude".to_string()),
+            },
+            false,
+        );
+
+        let buffer = draw_app(&mut app, 120, 12);
+        let text = (0..buffer.area.height)
+            .map(|y| row_text(&buffer, y))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            text.contains("Claude quiet for"),
+            "says so plainly:\n{text}"
+        );
+    }
+
+    #[test]
+    fn should_shorten_an_age_to_what_a_status_bar_can_hold() {
+        assert_eq!(super::short_duration(0), "0s");
+        assert_eq!(super::short_duration(59), "59s");
+        assert_eq!(super::short_duration(60), "1m");
+        assert_eq!(super::short_duration(59 * 60), "59m");
+        assert_eq!(super::short_duration(60 * 60), "1h00m");
+        assert_eq!(super::short_duration(64 * 60 + 30), "1h04m");
     }
 
     #[test]

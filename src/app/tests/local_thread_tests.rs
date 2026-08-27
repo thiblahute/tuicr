@@ -1260,3 +1260,85 @@ fn should_hold_the_announcement_while_a_comment_is_open() {
     app.input_mode = InputMode::Normal;
     assert!(app.poll_agent_update_for_test());
 }
+
+fn working(message: &str, agent: &str) -> crate::model::review::AgentActivity {
+    crate::model::review::AgentActivity {
+        at: chrono::Utc::now(),
+        message: Some(message.to_string()),
+        agent: Some(agent.to_string()),
+    }
+}
+
+#[test]
+fn should_show_that_an_agent_picked_the_review_up() {
+    // Between `:submit agent` and the first reply the screen said nothing, so
+    // a handoff into a dead terminal looked exactly like one being worked on.
+    let (mut session, _root) = session_with_line_comment();
+    crate::review_store::set_agent_working(
+        &mut session,
+        working("reading your six comments", "Claude Opus 5"),
+        false,
+    );
+    let app = app_for(session);
+
+    let status = app.agent_working_status().expect("the reviewer is told");
+    assert!(status.live, "just said, so it animates");
+    assert_eq!(status.message.as_deref(), Some("reading your six comments"));
+    assert_eq!(status.agent.as_deref(), Some("Claude Opus 5"));
+    assert!(app.agent_spinner_running());
+}
+
+#[test]
+fn should_stop_claiming_progress_once_an_agent_goes_quiet() {
+    // The flag is written by another process and outlives it. A spinner that
+    // never stops is a promise nobody is keeping.
+    let (mut session, _root) = session_with_line_comment();
+    let mut stale = working("rebasing", "Claude Opus 5");
+    stale.at =
+        chrono::Utc::now() - chrono::Duration::seconds(crate::app::AGENT_WORKING_LIVE_SECS + 30);
+    crate::review_store::set_agent_working(&mut session, stale, false);
+    let app = app_for(session);
+
+    let status = app.agent_working_status().expect("still worth showing");
+    assert!(!status.live, "but not as progress");
+    assert!(status.elapsed_secs >= crate::app::AGENT_WORKING_LIVE_SECS);
+    assert!(
+        !app.agent_spinner_running(),
+        "and the main loop stops redrawing for it"
+    );
+}
+
+#[test]
+fn should_say_so_when_an_agent_stops_without_changing_code() {
+    // Answering a question is a result. Clearing the flag silently would look
+    // like the agent died on the way.
+    let (mut session, _root) = session_with_line_comment();
+    crate::review_store::set_agent_working(&mut session, working("reading", "Claude"), false);
+    crate::review_store::set_agent_working(
+        &mut session,
+        working("answered in the thread, no code change", "Claude"),
+        true,
+    );
+
+    assert!(session.agent_working.is_none(), "no longer working");
+    assert_eq!(
+        session.agent_update.unwrap().message.as_deref(),
+        Some("answered in the thread, no code change"),
+        "and the reviewer hears why"
+    );
+}
+
+#[test]
+fn should_drop_a_stale_claim_when_the_review_is_handed_over_again() {
+    let (mut session, _root) = session_with_line_comment();
+    crate::review_store::set_agent_working(&mut session, working("reading", "Claude"), false);
+    let mut app = app_for(session);
+
+    app.submit_to_agent();
+
+    assert!(
+        app.session.agent_working.is_none(),
+        "a new handoff is not the old agent's work"
+    );
+    assert!(app.session.agent_request.is_some());
+}

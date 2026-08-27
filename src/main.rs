@@ -450,8 +450,10 @@ fn main() -> anyhow::Result<()> {
 
         // Snapshot before polling so the tick that drains a channel (clearing
         // its rx) still triggers a redraw with the applied result. While work
-        // is pending we redraw every tick anyway so spinners animate.
-        let pr_pending = app.has_pending_pr_work();
+        // is pending we redraw every tick anyway so spinners animate — an
+        // agent that has gone quiet stops counting, because an idle redraw
+        // rebuilds every line of the diff.
+        let keep_animating = app.has_pending_pr_work() || app.agent_spinner_running();
         app.poll_pr_load_events();
         app.poll_pr_open_events();
         app.poll_pr_reload_events();
@@ -462,7 +464,7 @@ fn main() -> anyhow::Result<()> {
         needs_redraw |= app.poll_editor_launches();
         needs_redraw |= app.poll_persisted_session_changes();
         needs_redraw |= app.poll_diff_watch_changes();
-        needs_redraw |= pr_pending;
+        needs_redraw |= keep_animating;
 
         if needs_redraw {
             // Bracket the frame in a synchronized-output pair (CSI ?2026h/l)
