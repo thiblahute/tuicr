@@ -155,6 +155,9 @@ impl App {
     /// on in the thread afterwards.
     pub fn submit_to_agent(&mut self) {
         self.session.agent_request = Some(chrono::Utc::now());
+        // A fresh handoff supersedes whatever an agent last said it was doing:
+        // showing the old one working on the new request would be a lie.
+        self.session.agent_working = None;
         self.dirty = true;
         match self.save_current_session_merging_external() {
             Ok(_) => {
