@@ -77,9 +77,17 @@ fn run_with_writer(command: ReviewCommand, out: &mut impl Write) -> Result<()> {
         ReviewCommand::Watch {
             session,
             any,
+            unanswered,
+            username,
             timeout_secs,
             repo,
-        } => watch_session(&session, &repo, any, timeout_secs, out),
+        } => watch_session(
+            &session,
+            &repo,
+            WatchMode::new(any, unanswered, username),
+            timeout_secs,
+            out,
+        ),
         ReviewCommand::Working {
             session,
             message,
@@ -587,6 +595,8 @@ const WATCH_POLL: std::time::Duration = std::time::Duration::from_millis(400);
 enum WatchOutcome {
     /// The reviewer ran `:submit agent`.
     Handoff,
+    /// `--unanswered`: threads are waiting on the caller.
+    Unanswered,
     /// `--any`: the session changed.
     Changed,
     /// Nothing happened before `--timeout`.
@@ -604,6 +614,27 @@ struct WatchOutput {
     comments: Vec<CommentOutput>,
 }
 
+/// What a watch is waiting for.
+enum WatchMode {
+    /// The explicit handoff, and nothing else.
+    Handoff,
+    /// Any edit at all.
+    Any,
+    /// A thread waiting on this agent — or the handoff, which still means
+    /// "everything, now" and must not be swallowed by a quiet inbox.
+    Unanswered(String),
+}
+
+impl WatchMode {
+    fn new(any: bool, unanswered: bool, username: Option<String>) -> Self {
+        match (unanswered, username) {
+            (true, Some(name)) => Self::Unanswered(name),
+            _ if any => Self::Any,
+            _ => Self::Handoff,
+        }
+    }
+}
+
 /// Block until the reviewer hands the review over (or the session changes,
 /// with `--any`), then print its comments.
 ///
@@ -613,7 +644,7 @@ struct WatchOutput {
 fn watch_session(
     session: &str,
     repo: &Path,
-    any: bool,
+    mode: WatchMode,
     timeout_secs: u64,
     out: &mut impl Write,
 ) -> Result<()> {
@@ -622,6 +653,20 @@ fn watch_session(
     let baseline = store.get_review(&session_ref)?;
     let baseline_request = baseline.agent_request;
     let baseline_updated = baseline.updated_at;
+
+    // Work that is already waiting is work: a watch started after the reviewer
+    // wrote something should not sleep through it.
+    if let WatchMode::Unanswered(agent) = &mode
+        && !unanswered_threads(&baseline, agent).is_empty()
+    {
+        return report_watch(
+            session,
+            WatchOutcome::Unanswered,
+            Some(baseline),
+            &mode,
+            out,
+        );
+    }
 
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
     let (outcome, session_data) = loop {
@@ -639,18 +684,43 @@ fn watch_session(
             break (WatchOutcome::Gone, None);
         };
 
+        // The handoff outranks everything, in every mode. It still means "I am
+        // done, go" — and an inbox that happens to be answered must not
+        // swallow it.
         if current.agent_request != baseline_request {
             break (WatchOutcome::Handoff, Some(current));
         }
-        if any && current.updated_at != baseline_updated {
-            break (WatchOutcome::Changed, Some(current));
+        match &mode {
+            WatchMode::Any if current.updated_at != baseline_updated => {
+                break (WatchOutcome::Changed, Some(current));
+            }
+            WatchMode::Unanswered(agent) if !unanswered_threads(&current, agent).is_empty() => {
+                break (WatchOutcome::Unanswered, Some(current));
+            }
+            _ => {}
         }
     };
 
-    let comments = session_data
-        .as_ref()
-        .map(collect_comments)
-        .unwrap_or_default();
+    report_watch(session, outcome, session_data, &mode, out)
+}
+
+/// Print what the watch woke on. An `unanswered` wake carries only the threads
+/// waiting on the agent; every other outcome carries the whole review, because
+/// a handoff means "all of it".
+fn report_watch(
+    session: &str,
+    outcome: WatchOutcome,
+    session_data: Option<ReviewSession>,
+    mode: &WatchMode,
+    out: &mut impl Write,
+) -> Result<()> {
+    let comments = match (&outcome, mode, session_data.as_ref()) {
+        (WatchOutcome::Unanswered, WatchMode::Unanswered(agent), Some(data)) => {
+            unanswered_threads(data, agent)
+        }
+        (_, _, Some(data)) => collect_comments(data),
+        (_, _, None) => Vec::new(),
+    };
     serde_json::to_writer_pretty(
         &mut *out,
         &WatchOutput {
@@ -868,6 +938,45 @@ fn validate_line(line: u32, name: &str) -> Result<()> {
         )));
     }
     Ok(())
+}
+
+/// The threads waiting on `agent`: not settled, and the last thing said in them
+/// was not said by the agent.
+///
+/// This is what "answer comments as they come in" runs on, and it is computed
+/// from the review itself rather than from a mark the watcher keeps. An agent
+/// that dies mid-round leaves its outstanding threads outstanding, so the next
+/// watch hands them straight back; and an agent cannot wake itself, because its
+/// own reply is what makes a thread answered.
+///
+/// The whole thread comes back, not just the message that needs answering — a
+/// reply written without the conversation above it usually says the wrong
+/// thing. A comment edited after it was answered does not come back: the last
+/// word in it is still the agent's.
+fn unanswered_threads(session: &ReviewSession, agent: &str) -> Vec<CommentOutput> {
+    let comments = collect_comments(session);
+    // Storage keeps a thread's messages together and in posted order, so the
+    // last one in a group is the last word in that thread.
+    let mut threads: Vec<(String, Vec<CommentOutput>)> = Vec::new();
+    for comment in comments {
+        let root = comment
+            .in_reply_to
+            .clone()
+            .unwrap_or_else(|| comment.id.clone());
+        match threads.iter_mut().find(|(id, _)| *id == root) {
+            Some((_, thread)) => thread.push(comment),
+            None => threads.push((root, vec![comment])),
+        }
+    }
+
+    threads
+        .into_iter()
+        .filter(|(_, thread)| match thread.last() {
+            Some(last) => !last.resolved && last.author != agent,
+            None => false,
+        })
+        .flat_map(|(_, thread)| thread)
+        .collect()
 }
 
 fn collect_comments(session: &ReviewSession) -> Vec<CommentOutput> {
@@ -1279,6 +1388,109 @@ mod tests {
         let store = ReviewStore::with_reviews_dir(&reviews);
         let err = resolve_session_ref(&store, Path::new("."), "gh:nope/nope/pr/9999").unwrap_err();
         assert!(matches!(err, TuicrError::InvalidInput(_)));
+    }
+
+    const AGENT: &str = "Claude Opus 5";
+
+    fn session_with_thread() -> (ReviewSession, String) {
+        let mut session = test_session(PathBuf::from("/repo"));
+        let comment = crate::review_store::add_comment_to_session(
+            &mut session,
+            AddCommentRequest {
+                target: CommentTarget::Line {
+                    path: PathBuf::from("src/main.rs"),
+                    line: 42,
+                    side: LineSide::New,
+                },
+                content: "why this?".to_string(),
+                comment_type: CommentType::from_id("issue"),
+                author: "thiblahute".to_string(),
+                commit_id: None,
+            },
+        )
+        .unwrap();
+        (session, comment.id)
+    }
+
+    fn answer(session: &mut ReviewSession, parent: &str, body: &str, author: &str) {
+        crate::review_store::reply_to_comment_in_session(
+            session,
+            ReplyRequest {
+                parent_id: parent.to_string(),
+                content: body.to_string(),
+                author: author.to_string(),
+                reopen: false,
+            },
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn should_hand_back_a_thread_nobody_has_answered() {
+        let (session, _root) = session_with_thread();
+        let waiting = unanswered_threads(&session, AGENT);
+        assert_eq!(waiting.len(), 1);
+        assert_eq!(waiting[0].content, "why this?");
+    }
+
+    #[test]
+    fn should_not_let_an_agent_wake_itself() {
+        // The agent's own reply is what marks a thread answered. Without that
+        // an incremental watch would fire on every reply it wrote.
+        let (mut session, root) = session_with_thread();
+        answer(&mut session, &root, "fixed, amended into the commit", AGENT);
+
+        assert!(unanswered_threads(&session, AGENT).is_empty());
+    }
+
+    #[test]
+    fn should_hand_back_a_thread_the_reviewer_came_back_to() {
+        let (mut session, root) = session_with_thread();
+        answer(&mut session, &root, "fixed", AGENT);
+        answer(
+            &mut session,
+            &root,
+            "not quite — see the second case",
+            "thiblahute",
+        );
+
+        let waiting = unanswered_threads(&session, AGENT);
+        assert_eq!(waiting.len(), 3, "the whole conversation comes back");
+        assert_eq!(waiting[2].content, "not quite — see the second case");
+    }
+
+    #[test]
+    fn should_leave_a_settled_thread_alone() {
+        let (mut session, root) = session_with_thread();
+        crate::review_store::set_thread_resolved(&mut session, &root, true).unwrap();
+
+        assert!(
+            unanswered_threads(&session, AGENT).is_empty(),
+            "resolving is the other way to finish with a thread"
+        );
+    }
+
+    #[test]
+    fn should_hand_back_only_the_threads_still_waiting() {
+        let (mut session, first) = session_with_thread();
+        answer(&mut session, &first, "done", AGENT);
+        crate::review_store::add_comment_to_session(
+            &mut session,
+            AddCommentRequest {
+                target: CommentTarget::File {
+                    path: PathBuf::from("src/main.rs"),
+                },
+                content: "and this file needs a test".to_string(),
+                comment_type: CommentType::from_id("issue"),
+                author: "thiblahute".to_string(),
+                commit_id: None,
+            },
+        )
+        .unwrap();
+
+        let waiting = unanswered_threads(&session, AGENT);
+        assert_eq!(waiting.len(), 1);
+        assert_eq!(waiting[0].content, "and this file needs a test");
     }
 
     #[test]

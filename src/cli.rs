@@ -402,6 +402,19 @@ pub enum ReviewCommand {
         #[arg(long, action = ArgAction::SetTrue)]
         any: bool,
 
+        /// Return as soon as a thread is waiting on you — not settled, and the
+        /// last word in it is not yours — so comments get answered as they are
+        /// written instead of at the end. Prints every outstanding thread, and
+        /// still returns on an explicit `:submit agent`.
+        #[arg(long, action = ArgAction::SetTrue, conflicts_with = "any", requires = "username")]
+        unanswered: bool,
+
+        /// Who you are, so your own replies are not read as threads waiting on
+        /// you. Required by `--unanswered`; there is no safe default, since
+        /// guessing wrong marks the reviewer's comments as answered.
+        #[arg(long, value_name = "NAME")]
+        username: Option<String>,
+
         /// Give up after this many seconds so a forgotten watcher does not
         /// outlive the review.
         #[arg(long = "timeout", value_name = "SECONDS", default_value_t = 1800)]

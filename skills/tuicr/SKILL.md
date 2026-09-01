@@ -175,27 +175,62 @@ Treat these comments as the user's review feedback:
 - `issue`: blocking problem to fix first
 - `suggestion`: consider implementing or explain why not
 - `note`: answer or acknowledge
-- `praise`: no action required
+- `praise`: no action required — except in the incremental loop below, where
+  every thread handed to you needs a reply or a resolve, a one-line
+  acknowledgement included
 
-### Waiting for a round
+### Answering as the user writes
 
-Do not poll. Wait for the user to hand the review over:
+This is the normal loop. Wait for a thread to be waiting on you, answer it,
+wait again:
+
+```bash
+tuicr review watch --repo /path/to/repo --session <slug> \
+  --unanswered --username "Claude Opus 5"
+```
+
+It returns as soon as any thread is unsettled with something other than your own
+words as its last message, with an `outcome` of `unanswered` and every
+outstanding thread — whole, so you answer with the conversation in front of you
+rather than one line out of it. **Run it in the background** and you will be
+woken when it returns. It still returns `handoff` when the user runs
+`:submit agent`: that means the whole review, now, not just the open threads.
+
+**Every thread it hands you gets a reply or a resolve before you watch again.**
+Nothing is remembered between watches — "waiting on you" is computed from the
+review itself — so a thread you decide needs no action stays outstanding and the
+next watch returns instantly with the same thread, forever. A one-line
+acknowledgement is the ack. The flip side is worth having: a round that dies
+half-finished leaves its remaining work outstanding, and the next watch hands it
+straight back.
+
+The one cost of answering early is that the user is still thinking: an early
+comment can be contradicted by one they write two minutes later. Each wake hands
+you *everything* outstanding, which is what keeps that from compounding — by the
+time you answer, you are looking at all of it. When a comment reads like half a
+thought, say so in the reply rather than guessing.
+
+A comment the user edits after you answered it does not come back: the last word
+in the thread is still yours.
+
+### Waiting for a whole round instead
+
+When the user prefers to write the whole review before anything happens, wait
+for the handoff alone:
 
 ```bash
 tuicr review watch --repo /path/to/repo --session <slug>
 ```
 
 It blocks until the user runs `:submit agent` in the TUI, then prints the
-session's comments with an `outcome` of `handoff`. **Run it in the background**
-so you stay free to work; you will be woken when it returns. Other outcomes:
-`timeout` (nothing happened — start another watch if the review is still open),
-`gone` (the session was discarded — stop waiting), and `changed` if you passed
-`--any`.
+session's comments with an `outcome` of `handoff`. Other outcomes: `timeout`
+(nothing happened — start another watch if the review is still open), `gone`
+(the session was discarded — stop waiting), and `changed` if you passed `--any`.
 
-Prefer the default over `--any`: a review is written in pieces, and waking on
-every saved comment means answering half a thought. Tell the user the command
-if they do not know it — a handoff they never make looks to them like an agent
-that ignored their review.
+`--any` wakes on every edit, including your own and including a file being
+marked reviewed; `--unanswered` is the one to reach for instead. Tell the user
+about `:submit agent` if they do not know it — a handoff they never make looks
+to them like an agent that ignored their review.
 
 If the user says comments are ready in chat instead, just read them with
 `tuicr review comments`; the handoff is a convenience, not a requirement.
