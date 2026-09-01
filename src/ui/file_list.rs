@@ -419,6 +419,25 @@ mod tests {
     }
 
     #[test]
+    fn should_keep_reviewed_files_when_searching_the_word_under_the_cursor() {
+        let mut app = app_with(&["src/main.rs", "README.md"]);
+        let reviewed = app
+            .diff_files
+            .iter()
+            .position(|file| file.display_path().display().to_string() == "README.md")
+            .expect("README.md in the diff");
+        app.toggle_reviewed_for_file_idx(reviewed, false);
+        let before = app.diff_files.len();
+        assert_eq!(app.reviewed_count(), 1);
+
+        crate::handler::handle_file_list_action(&mut app, crate::input::Action::SearchWordForward);
+        crate::handler::handle_diff_action(&mut app, crate::input::Action::SearchWordForward);
+
+        assert_eq!(app.reviewed_count(), 1, "still reviewed");
+        assert_eq!(app.diff_files.len(), before, "still there");
+    }
+
+    #[test]
     fn should_leave_the_border_clean_when_no_filter_is_set() {
         let mut app = app_with(&["src/main.rs"]);
 
