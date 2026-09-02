@@ -223,28 +223,50 @@ impl CommentStore {
     ///
     /// This is how a rewritten commit's comments are found again: an amend or
     /// rebase leaves the old sha behind, and the summary is what an amend
-    /// keeps. A summary claimed by more than one dead file is ambiguous and
-    /// left out — showing a thread against the wrong commit is worse than not
-    /// showing it in place.
-    pub fn orphans_by_summary(
+    /// keeps.
+    ///
+    /// `live` is the review's own commits with their summaries, so the
+    /// question asked is "which commit *in this review* was this file written
+    /// against", not "is this summary unique in the repo". The difference is
+    /// not academic: a commit amended twice leaves two dead files sharing one
+    /// summary, and on a real store that is the common case — both are earlier
+    /// generations of the same commit and both belong to it.
+    ///
+    /// What is refused is the other direction: a dead file whose summary
+    /// matches more than one commit in view, where attaching it would mean
+    /// picking one. A thread shown against the wrong commit is worse than one
+    /// shown out of place.
+    pub fn orphans_for(
         &self,
-        live: &[CommentScope],
-    ) -> Result<BTreeMap<String, OrphanScope>> {
+        live: &[(CommentScope, String)],
+    ) -> Result<Vec<(CommentScope, Vec<OrphanScope>)>> {
         let index = self.index()?;
-        let mut by_summary: BTreeMap<String, Vec<IndexRow>> = BTreeMap::new();
+        let here: Vec<&CommentScope> = live.iter().map(|(scope, _)| scope).collect();
+
+        let mut claimed: BTreeMap<String, Vec<OrphanScope>> = BTreeMap::new();
         for row in index.rows {
-            if row.count == 0 || live.contains(&row.scope) {
+            if row.count == 0 || here.contains(&&row.scope) {
                 continue;
             }
             let Some(summary) = row.summary.clone() else {
                 continue;
             };
-            by_summary.entry(summary).or_default().push(row);
+            if live.iter().filter(|(_, s)| *s == summary).count() != 1 {
+                continue;
+            }
+            claimed
+                .entry(summary)
+                .or_default()
+                .push(OrphanScope(row.scope));
         }
-        Ok(by_summary
-            .into_iter()
-            .filter(|(_, rows)| rows.len() == 1)
-            .map(|(summary, mut rows)| (summary, OrphanScope(rows.remove(0).scope)))
+
+        Ok(live
+            .iter()
+            .filter_map(|(scope, summary)| {
+                claimed
+                    .get(summary)
+                    .map(|orphans| (scope.clone(), orphans.clone()))
+            })
             .collect())
     }
 
@@ -475,6 +497,54 @@ mod tests {
     }
 
     #[test]
+    fn should_bring_back_every_earlier_generation_of_a_commit() {
+        // Amended twice, so two dead files carry the same summary. Both are
+        // earlier versions of the commit in view and both hold its comments —
+        // on a real store this is the common case, not the odd one.
+        let dir = tempdir().unwrap();
+        let store = store(dir.path());
+        for sha in ["aaaa1111", "bbbb2222"] {
+            let scope = CommentScope::commit(sha);
+            store
+                .add(
+                    &scope,
+                    Some("diff: look around"),
+                    comment("why?", scope.clone(), 8),
+                )
+                .unwrap();
+        }
+
+        let live = vec![(
+            CommentScope::commit("cccc3333"),
+            "diff: look around".to_string(),
+        )];
+        let found = store.orphans_for(&live).unwrap();
+
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].0, CommentScope::commit("cccc3333"));
+        assert_eq!(found[0].1.len(), 2, "both generations come back");
+    }
+
+    #[test]
+    fn should_refuse_when_a_dead_file_could_belong_to_two_commits_in_view() {
+        // Two commits in the review share a summary, so attaching the dead
+        // file to either would be a guess.
+        let dir = tempdir().unwrap();
+        let store = store(dir.path());
+        let dead = CommentScope::commit("aaaa1111");
+        store
+            .add(&dead, Some("fixup"), comment("x", dead.clone(), 1))
+            .unwrap();
+
+        let live = vec![
+            (CommentScope::commit("bbbb2222"), "fixup".to_string()),
+            (CommentScope::commit("cccc3333"), "fixup".to_string()),
+        ];
+
+        assert!(store.orphans_for(&live).unwrap().is_empty());
+    }
+
+    #[test]
     fn should_find_the_commit_a_rewrite_left_behind() {
         // An amend leaves the old sha holding the comments. The summary is
         // what survives the rewrite, so it is what finds them again.
@@ -489,12 +559,15 @@ mod tests {
             )
             .unwrap();
 
-        let live = vec![CommentScope::commit("cccc3333")];
-        let orphans = store.orphans_by_summary(&live).unwrap();
+        let live = vec![(
+            CommentScope::commit("cccc3333"),
+            "diff: look around".to_string(),
+        )];
+        let orphans = store.orphans_for(&live).unwrap();
 
         assert_eq!(
-            orphans.get("diff: look around"),
-            Some(&OrphanScope(old)),
+            orphans,
+            vec![(CommentScope::commit("cccc3333"), vec![OrphanScope(old)])],
             "the dead file is offered for the commit that replaced it"
         );
     }
@@ -511,12 +584,15 @@ mod tests {
         }
 
         let orphans = store
-            .orphans_by_summary(&[CommentScope::commit("cccc3333")])
+            .orphans_for(&[(
+                CommentScope::commit("cccc3333"),
+                "something else".to_string(),
+            )])
             .unwrap();
 
         assert!(
             orphans.is_empty(),
-            "ambiguous is left out: a thread under the wrong commit is worse than one out of place"
+            "a summary no commit in view carries belongs to another review"
         );
     }
 
