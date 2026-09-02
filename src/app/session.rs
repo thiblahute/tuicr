@@ -1027,7 +1027,14 @@ impl App {
             review.line_comments.clear();
         }
         self.comments_from_earlier = resolved.from_earlier;
-        for comment in resolved.comments {
+        for mut comment in resolved.comments {
+            // A carried comment is shown under the commit its own became, so
+            // narrowing the review to that commit still shows it. Its anchor
+            // is untouched: what it was written on is a fact, and only the
+            // copy in memory says where that commit went.
+            if let Some(under) = resolved.shown_under.get(&comment.id) {
+                comment.commit_id = Some(under.clone());
+            }
             self.place_stored_comment(comment);
         }
     }
