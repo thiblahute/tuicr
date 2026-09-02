@@ -1,3 +1,4 @@
+pub mod comment_store;
 pub mod manifest;
 pub mod storage;
 
