@@ -426,6 +426,19 @@ pub enum ReviewCommand {
         repo: PathBuf,
     },
 
+    /// Copy this machine's review comments into the per-commit store, so a
+    /// comment follows the commit it was written on instead of the range that
+    /// happened to be open.
+    Migrate {
+        /// Report what would move and change nothing.
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Migrate a copy of the review directory instead of the real one.
+        #[arg(long, value_name = "PATH")]
+        reviews_dir: Option<PathBuf>,
+    },
+
     /// Tell a review an agent has picked it up and is working on it, so the
     /// reviewer sees the handoff land instead of waiting at a still screen.
     Working {

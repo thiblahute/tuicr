@@ -88,6 +88,10 @@ fn run_with_writer(command: ReviewCommand, out: &mut impl Write) -> Result<()> {
             timeout_secs,
             out,
         ),
+        ReviewCommand::Migrate {
+            dry_run,
+            reviews_dir,
+        } => migrate_to_store(dry_run, reviews_dir, out),
         ReviewCommand::Working {
             session,
             message,
@@ -150,10 +154,13 @@ fn add_comment(
         eprintln!("{warning}");
     }
     let author = resolve_cli_author(request_parts.username, config.as_ref());
-    let comment = store.add_comment(
-        &session_ref,
-        AddCommentRequest::new(target.clone(), request_parts.content, comment_type, author),
-    )?;
+    let request =
+        AddCommentRequest::new(target.clone(), request_parts.content, comment_type, author);
+    let session_data = store.get_review(&session_ref)?;
+    let comment = match store_for(&session_data) {
+        Some(cstore) => store_add_comment(&cstore, &session_data, request)?,
+        None => store.add_comment(&session_ref, request)?,
+    };
     let output = CommentOutput::from_target(&target, &comment);
     serde_json::to_writer_pretty(&mut *out, &output)?;
     writeln!(out)?;
@@ -276,21 +283,30 @@ fn reply_to_comment(
 
     let store = ReviewStore::new();
     let session_ref = resolve_session_ref(&store, repo, session)?;
-    let parent_id = resolve_comment_id(&store.get_review(&session_ref)?, &parent_id)?;
+    let session_data = store.get_review(&session_ref)?;
     // Same config read the comment path does: the author fallback lives there.
     let config = config::load_config()
         .ok()
         .and_then(|outcome| outcome.config);
     let author = resolve_cli_author(username, config.as_ref());
-    let reply = store.reply_to_comment(
-        &session_ref,
-        ReplyRequest {
-            parent_id,
-            content,
-            author,
-            reopen: false,
-        },
-    )?;
+    let reply = match store_for(&session_data) {
+        Some(cstore) => {
+            let parent_id = resolve_stored_comment_id(&cstore, &session_data, &parent_id)?;
+            store_reply(&cstore, &session_data, &parent_id, content, author)?
+        }
+        None => {
+            let parent_id = resolve_comment_id(&session_data, &parent_id)?;
+            store.reply_to_comment(
+                &session_ref,
+                ReplyRequest {
+                    parent_id,
+                    content,
+                    author,
+                    reopen: false,
+                },
+            )?
+        }
+    };
 
     // Report the reply with its thread's anchor, so callers see where it
     // landed without re-reading the whole session.
@@ -561,8 +577,17 @@ fn set_resolved(
 ) -> Result<()> {
     let store = ReviewStore::new();
     let session_ref = resolve_session_ref(&store, repo, session)?;
-    let comment_id = resolve_comment_id(&store.get_review(&session_ref)?, comment_id)?;
-    let root = store.set_thread_resolved(&session_ref, &comment_id, resolved)?;
+    let session_data = store.get_review(&session_ref)?;
+    let root = match store_for(&session_data) {
+        Some(cstore) => {
+            let comment_id = resolve_stored_comment_id(&cstore, &session_data, comment_id)?;
+            store_set_thread_resolved(&cstore, &comment_id, resolved)?
+        }
+        None => {
+            let comment_id = resolve_comment_id(&session_data, comment_id)?;
+            store.set_thread_resolved(&session_ref, &comment_id, resolved)?
+        }
+    };
 
     // Report the thread's root as `comments` would show it, so the caller sees
     // which thread moved and its new state.
@@ -947,6 +972,355 @@ fn validate_line(line: u32, name: &str) -> Result<()> {
 /// reply written without the conversation above it usually says the wrong
 /// thing. A comment edited after it was answered does not come back: the last
 /// word in it is still the agent's.
+/// Resolve a comment id, or an unambiguous prefix of one, against what this
+/// review shows — which includes comments carried in from commits it has
+/// rewritten, and which the session file does not have.
+fn resolve_stored_comment_id(
+    cstore: &crate::persistence::comment_store::CommentStore,
+    session: &ReviewSession,
+    id_or_prefix: &str,
+) -> Result<String> {
+    let shown = comments_of(session);
+    let exact = shown.iter().find(|c| c.id == id_or_prefix);
+    if let Some(comment) = exact {
+        return Ok(comment.id.clone());
+    }
+    let mut matches = shown.iter().filter(|c| c.id.starts_with(id_or_prefix));
+    match (matches.next(), matches.next()) {
+        (Some(comment), None) => Ok(comment.id.clone()),
+        (Some(_), Some(_)) => Err(TuicrError::InvalidInput(format!(
+            "comment id `{id_or_prefix}` is ambiguous"
+        ))),
+        _ => match cstore.find(id_or_prefix)? {
+            Some(comment) => Ok(comment.id),
+            None => Err(TuicrError::InvalidInput(format!(
+                "no comment with id `{id_or_prefix}`"
+            ))),
+        },
+    }
+}
+
+/// The commit a comment written now belongs to: the head of the range under
+/// review, or the checkout when nothing is committed.
+fn new_comment_scope(session: &ReviewSession) -> (crate::model::CommentScope, Option<String>) {
+    let scopes = scopes_for(session);
+    match scopes.iter().rev().find(|(scope, _)| scope.sha().is_some()) {
+        Some((scope, summary)) => (
+            scope.clone(),
+            Some(summary.clone()).filter(|s| !s.is_empty()),
+        ),
+        None => (
+            crate::model::CommentScope::working_tree(
+                crate::persistence::comment_store::checkout_key(&session.repo_path),
+            ),
+            None,
+        ),
+    }
+}
+
+/// Write a comment straight to the comment store, the way the TUI does.
+fn store_add_comment(
+    cstore: &crate::persistence::comment_store::CommentStore,
+    session: &ReviewSession,
+    request: AddCommentRequest,
+) -> Result<Comment> {
+    let (scope, summary) = new_comment_scope(session);
+    let mut comment = Comment::new(
+        request.content.trim().to_string(),
+        request.comment_type,
+        match &request.target {
+            CommentTarget::Line { side, .. } => Some(*side),
+            CommentTarget::LineRange { side, .. } => Some(*side),
+            _ => None,
+        },
+    );
+    if comment.content.is_empty() {
+        return Err(TuicrError::InvalidInput(
+            "comment cannot be empty".to_string(),
+        ));
+    }
+    comment.author = request.author;
+    comment.commit_id = scope.sha().map(str::to_string);
+    comment.line_context = request.line_context;
+    comment.anchor = Some(match &request.target {
+        CommentTarget::Review => crate::model::CommentAnchor::review(scope.clone()),
+        CommentTarget::File { path } => {
+            crate::model::CommentAnchor::file(scope.clone(), path.clone())
+        }
+        CommentTarget::Line { path, line, side } => {
+            crate::model::CommentAnchor::line(scope.clone(), path.clone(), *line, *side)
+        }
+        CommentTarget::LineRange { path, range, side } => {
+            comment.line_range = Some(*range);
+            crate::model::CommentAnchor::line(scope.clone(), path.clone(), range.end, *side)
+        }
+    });
+    cstore.add(&scope, summary.as_deref(), comment.clone())?;
+    Ok(comment)
+}
+
+/// Reply in the store: the reply joins its root's thread, inherits its anchor
+/// so the conversation stays in one file, and reopens it.
+#[cfg(test)]
+pub(crate) fn store_reply_for_test(
+    cstore: &crate::persistence::comment_store::CommentStore,
+    session: &ReviewSession,
+    parent_id: &str,
+    content: String,
+    author: String,
+) -> Result<Comment> {
+    store_reply(cstore, session, parent_id, content, author)
+}
+
+fn store_reply(
+    cstore: &crate::persistence::comment_store::CommentStore,
+    session: &ReviewSession,
+    parent_id: &str,
+    content: String,
+    author: String,
+) -> Result<Comment> {
+    let content = content.trim().to_string();
+    if content.is_empty() {
+        return Err(TuicrError::InvalidInput(
+            "reply cannot be empty".to_string(),
+        ));
+    }
+    let parent = cstore
+        .find(parent_id)?
+        .ok_or_else(|| TuicrError::InvalidInput(format!("no comment with id `{parent_id}`")))?;
+    let root_id = parent
+        .in_reply_to
+        .clone()
+        .unwrap_or_else(|| parent.id.clone());
+    let root = cstore.find(&root_id)?.unwrap_or(parent);
+
+    let mut reply = Comment::new(content, CommentType::None, root.side);
+    reply.author = author;
+    reply.in_reply_to = Some(root_id.clone());
+    reply.anchor = root.anchor.clone();
+    reply.commit_id = root.commit_id.clone();
+    reply.line_context = root.line_context.clone();
+    reply.line_range = root.line_range;
+    reply.outdated = root.outdated;
+    // A CLI reply was composed against the thread as the agent read it
+    // earlier. When the reader settled the thread meanwhile, their resolve is
+    // the later word: the reply joins the settled record instead of undoing
+    // it — reopening here is how a review came back from :reload with every
+    // settled thread standing open again. The TUI's own reply path still
+    // reopens: there, someone is looking at the thread as they answer it.
+    reply.resolved = root.resolved;
+
+    let scope = root
+        .anchor
+        .as_ref()
+        .map(|anchor| anchor.scope.clone())
+        .unwrap_or_else(|| new_comment_scope(session).0);
+    cstore.add(&scope, None, reply.clone())?;
+    Ok(reply)
+}
+
+/// Settle or reopen a whole thread in the store.
+fn store_set_thread_resolved(
+    cstore: &crate::persistence::comment_store::CommentStore,
+    id: &str,
+    resolved: bool,
+) -> Result<Comment> {
+    let target = cstore
+        .find(id)?
+        .ok_or_else(|| TuicrError::InvalidInput(format!("no comment with id `{id}`")))?;
+    let root_id = target
+        .in_reply_to
+        .clone()
+        .unwrap_or_else(|| target.id.clone());
+    let scope = target
+        .anchor
+        .as_ref()
+        .map(|anchor| anchor.scope.clone())
+        .ok_or_else(|| TuicrError::InvalidInput("comment has no anchor".to_string()))?;
+
+    for comment in cstore.comments_for(std::slice::from_ref(&scope))? {
+        if comment.id == root_id || comment.in_reply_to.as_deref() == Some(root_id.as_str()) {
+            cstore.update_comment(&comment.id, |stored| stored.resolved = resolved)?;
+        }
+    }
+    cstore
+        .find(&root_id)?
+        .ok_or_else(|| TuicrError::InvalidInput("thread root vanished".to_string()))
+}
+
+#[derive(Debug, Serialize)]
+struct MigrateOutput {
+    applied: bool,
+    sessions: usize,
+    comments: usize,
+    stamped_from_range_head: usize,
+    working_tree: usize,
+    with_message: usize,
+    repos: usize,
+    skipped: Vec<String>,
+    diverged: Vec<String>,
+}
+
+/// Copy comments out of the session files and into the per-commit store, then
+/// switch the repositories over.
+///
+/// It verifies before it switches: every session is re-read and compared with
+/// what the store now holds, and a single divergence leaves the repositories
+/// exactly as they were. The session files keep their comments either way, so
+/// undoing this is deleting a directory.
+fn migrate_to_store(
+    dry_run: bool,
+    reviews_dir: Option<PathBuf>,
+    out: &mut impl Write,
+) -> Result<()> {
+    let dir = match reviews_dir {
+        Some(dir) => dir,
+        None => crate::persistence::storage::get_reviews_dir()?,
+    };
+    let report = crate::persistence::migrate_comments::migrate_comments(
+        &dir,
+        !dry_run,
+        &crate::persistence::migrate_comments::GitMessages::default(),
+    )?;
+
+    let mut diverged = Vec::new();
+    let mut repos = 0;
+    if !dry_run {
+        diverged = crate::persistence::migrate_comments::verify_migration(&dir)?
+            .into_iter()
+            .map(|d| format!("{}: {} — {}", d.slug, d.comment_id, d.reason))
+            .collect();
+        if diverged.is_empty() {
+            // Only now do reviews start reading and writing the store.
+            let comments_root = dir.join("comments");
+            if let Ok(entries) = std::fs::read_dir(&comments_root) {
+                for entry in entries.flatten().filter(|e| e.path().is_dir()) {
+                    let key = entry.file_name().to_string_lossy().to_string();
+                    crate::persistence::comment_store::CommentStore::new(&dir, &key).take_over()?;
+                    repos += 1;
+                }
+            }
+        }
+    }
+
+    let output = MigrateOutput {
+        applied: !dry_run && diverged.is_empty(),
+        sessions: report.sessions,
+        comments: report.comments,
+        stamped_from_range_head: report.stamped_from_range_head,
+        working_tree: report.working_tree,
+        with_message: report.with_message,
+        repos,
+        skipped: report
+            .skipped
+            .iter()
+            .map(|s| format!("{}: {}", s.slug, s.reason))
+            .collect(),
+        diverged,
+    };
+    serde_json::to_writer_pretty(&mut *out, &output)?;
+    writeln!(out)?;
+    Ok(())
+}
+
+/// The comment store for a session's repository, when that repository is on
+/// the store.
+///
+/// The CLI and the TUI have to agree about where comments live, or an agent
+/// writes where the reader is not looking.
+fn store_for(session: &ReviewSession) -> Option<crate::persistence::comment_store::CommentStore> {
+    let reviews_dir = crate::persistence::storage::get_reviews_dir().ok()?;
+    let key = match session.pr_session_key.as_ref() {
+        Some(pr) => format!("{}/{}", pr.repository.owner, pr.repository.name),
+        None => {
+            let (owner, repo) = crate::slug::resolve_owner_repo(&session.repo_path).ok()?;
+            match owner {
+                Some(owner) => format!("{owner}/{repo}"),
+                None => repo,
+            }
+        }
+    };
+    let store = crate::persistence::comment_store::CommentStore::new(reviews_dir, &key);
+    store.in_use().then_some(store)
+}
+
+/// The commits a session has in view, with their summaries — the summary is
+/// what finds a thread again once its commit has been rewritten, so it is
+/// worth a `git log` per commit here.
+fn scopes_for(session: &ReviewSession) -> Vec<(crate::model::CommentScope, String)> {
+    use crate::model::review::SessionDiffSource as Source;
+    let mut scopes = Vec::new();
+    if let Some(range) = session.commit_range.as_ref() {
+        for sha in range {
+            let summary = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&session.repo_path)
+                .args(["log", "-1", "--format=%s", sha])
+                .output()
+                .ok()
+                .filter(|out| out.status.success())
+                .and_then(|out| String::from_utf8(out.stdout).ok())
+                .map(|text| text.trim().to_string())
+                .unwrap_or_default();
+            scopes.push((crate::model::CommentScope::commit(sha.clone()), summary));
+        }
+    }
+    if matches!(
+        session.diff_source,
+        Source::WorkingTree
+            | Source::Staged
+            | Source::Unstaged
+            | Source::StagedAndUnstaged
+            | Source::WorkingTreeAndCommits
+            | Source::StagedUnstagedAndCommits
+    ) {
+        scopes.push((
+            crate::model::CommentScope::working_tree(
+                crate::persistence::comment_store::checkout_key(&session.repo_path),
+            ),
+            String::new(),
+        ));
+    }
+    scopes
+}
+
+/// Every comment this session shows: from the store when its repository is on
+/// the store, from the session itself otherwise.
+fn comments_of(session: &ReviewSession) -> Vec<crate::model::Comment> {
+    let Some(store) = store_for(session) else {
+        return session_comments(session);
+    };
+    let scopes = scopes_for(session);
+    let shas: Vec<String> = scopes
+        .iter()
+        .filter_map(|(scope, _)| scope.sha().map(String::from))
+        .collect();
+    let predecessors = crate::vcs::git::lineage::predecessors(&session.repo_path, &shas)
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
+    match crate::persistence::comment_store::resolve_for_review(&store, &scopes, &predecessors) {
+        Ok(resolved) => resolved.comments,
+        Err(_) => session_comments(session),
+    }
+}
+
+/// The comments the session file holds, in the order the review shows them.
+fn session_comments(session: &ReviewSession) -> Vec<crate::model::Comment> {
+    let mut out = session.review_comments.clone();
+    let mut files: Vec<_> = session.files.iter().collect();
+    files.sort_by_key(|(path, _)| path.as_os_str().to_os_string());
+    for (_, review) in files {
+        out.extend(review.file_comments.iter().cloned());
+        let mut lines: Vec<_> = review.line_comments.keys().copied().collect();
+        lines.sort_unstable();
+        for line in lines {
+            out.extend(review.line_comments[&line].iter().cloned());
+        }
+    }
+    out
+}
+
 fn unanswered_threads(session: &ReviewSession, agent: &str) -> Vec<CommentOutput> {
     let comments = collect_comments(session);
     // Storage keeps a thread's messages together and in posted order, so the
@@ -973,7 +1347,41 @@ fn unanswered_threads(session: &ReviewSession, agent: &str) -> Vec<CommentOutput
         .collect()
 }
 
+/// A stored comment's location, read off the anchor that says what it was
+/// written against.
+fn output_from_anchor(comment: &crate::model::Comment) -> CommentOutput {
+    let Some(anchor) = comment.anchor.as_ref() else {
+        return CommentOutput::from_parts("review".to_string(), None, None, None, None, comment);
+    };
+    let path = anchor
+        .path
+        .as_ref()
+        .map(|path| path.to_string_lossy().to_string());
+    let location = match (&path, anchor.line) {
+        (Some(path), Some(line)) => format!("{path}:{line}"),
+        (Some(path), None) => path.clone(),
+        (None, _) => "review".to_string(),
+    };
+    CommentOutput::from_parts(
+        location,
+        path,
+        anchor.line,
+        anchor.line,
+        anchor.line.map(|_| anchor.side),
+        comment,
+    )
+}
+
 fn collect_comments(session: &ReviewSession) -> Vec<CommentOutput> {
+    // Once a repository is on the store, that is where the review's comments
+    // are — including the ones carried in from commits it has since rewritten,
+    // which the session has never heard of.
+    if store_for(session).is_some() {
+        return comments_of(session)
+            .iter()
+            .map(output_from_anchor)
+            .collect();
+    }
     let mut comments = Vec::new();
     for comment in &session.review_comments {
         comments.push(CommentOutput::from_parts(
@@ -1420,6 +1828,211 @@ mod tests {
             },
         )
         .unwrap();
+    }
+
+    /// A session whose repository is on the comment store, with the reviews
+    /// dir pointed at `dir` so the CLI and the assertions agree.
+    fn session_on_store(dir: &std::path::Path, repo: &std::path::Path) -> ReviewSession {
+        crate::persistence::storage::set_test_reviews_dir(Some(dir.to_path_buf()));
+        let mut session = ReviewSession::new(
+            repo.to_path_buf(),
+            "headsha".to_string(),
+            Some("main".to_string()),
+            crate::model::review::SessionDiffSource::CommitRange,
+        );
+        session.commit_range = Some(vec!["aaaa1111".to_string()]);
+        let key = repo.file_name().unwrap().to_string_lossy().to_string();
+        crate::persistence::comment_store::CommentStore::new(dir, &key)
+            .take_over()
+            .unwrap();
+        session
+    }
+
+    #[test]
+    fn should_add_a_cli_comment_to_the_store() {
+        // An agent writing into a migrated repo must write where the reader
+        // reads, or the comment is invisible and erased on the next open.
+        let dir = tempdir().unwrap();
+        let repo = dir.path().join("checkout");
+        std::fs::create_dir_all(&repo).unwrap();
+        let session = session_on_store(dir.path(), &repo);
+        let cstore = store_for(&session).expect("the repo is on the store");
+
+        let written = store_add_comment(
+            &cstore,
+            &session,
+            AddCommentRequest::new(
+                CommentTarget::Line {
+                    path: PathBuf::from("src/main.rs"),
+                    line: 42,
+                    side: LineSide::New,
+                },
+                "from an agent".to_string(),
+                CommentType::from_id("issue"),
+                "Claude".to_string(),
+            ),
+        )
+        .unwrap();
+
+        let held = cstore
+            .comments_for(&[crate::model::CommentScope::commit("aaaa1111")])
+            .unwrap();
+        assert_eq!(held.len(), 1);
+        assert_eq!(held[0].id, written.id);
+        assert_eq!(held[0].anchor.as_ref().unwrap().line, Some(42));
+        assert_eq!(held[0].author, "Claude");
+    }
+
+    #[test]
+    fn should_reply_into_the_stored_thread_without_reopening_it() {
+        let dir = tempdir().unwrap();
+        let repo = dir.path().join("checkout");
+        std::fs::create_dir_all(&repo).unwrap();
+        let session = session_on_store(dir.path(), &repo);
+        let cstore = store_for(&session).unwrap();
+        let root = store_add_comment(
+            &cstore,
+            &session,
+            AddCommentRequest::new(
+                CommentTarget::File {
+                    path: PathBuf::from("src/main.rs"),
+                },
+                "why this?".to_string(),
+                CommentType::from_id("issue"),
+                "user".to_string(),
+            ),
+        )
+        .unwrap();
+        store_set_thread_resolved(&cstore, &root.id, true).unwrap();
+
+        let reply = store_reply(
+            &cstore,
+            &session,
+            &root.id,
+            "because of the empty case".to_string(),
+            "Claude".to_string(),
+        )
+        .unwrap();
+
+        let held = cstore
+            .comments_for(&[crate::model::CommentScope::commit("aaaa1111")])
+            .unwrap();
+        assert_eq!(held.len(), 2, "the thread lives in one file");
+        assert_eq!(reply.in_reply_to.as_deref(), Some(root.id.as_str()));
+        // The reader settled the thread before this reply landed: their
+        // resolve is the later word, and the reply joins the settled record.
+        // Reopening here is how a review came back from :reload with every
+        // settled thread standing open again.
+        assert!(
+            held.iter().all(|c| c.resolved),
+            "a CLI reply must not reopen a thread the reader settled"
+        );
+    }
+
+    #[test]
+    fn should_leave_an_open_thread_open_when_a_cli_reply_lands() {
+        let dir = tempdir().unwrap();
+        let repo = dir.path().join("checkout");
+        std::fs::create_dir_all(&repo).unwrap();
+        let session = session_on_store(dir.path(), &repo);
+        let cstore = store_for(&session).unwrap();
+        let root = store_add_comment(
+            &cstore,
+            &session,
+            AddCommentRequest::new(
+                CommentTarget::File {
+                    path: PathBuf::from("src/main.rs"),
+                },
+                "why this?".to_string(),
+                CommentType::from_id("issue"),
+                "user".to_string(),
+            ),
+        )
+        .unwrap();
+
+        let reply = store_reply(
+            &cstore,
+            &session,
+            &root.id,
+            "because of the empty case".to_string(),
+            "Claude".to_string(),
+        )
+        .unwrap();
+        assert!(!reply.resolved);
+
+        let held = cstore
+            .comments_for(&[crate::model::CommentScope::commit("aaaa1111")])
+            .unwrap();
+        assert!(
+            held.iter().all(|c| !c.resolved),
+            "still an open conversation"
+        );
+    }
+
+    #[test]
+    fn should_resolve_a_stored_thread_through_the_cli() {
+        let dir = tempdir().unwrap();
+        let repo = dir.path().join("checkout");
+        std::fs::create_dir_all(&repo).unwrap();
+        let session = session_on_store(dir.path(), &repo);
+        let cstore = store_for(&session).unwrap();
+        let root = store_add_comment(
+            &cstore,
+            &session,
+            AddCommentRequest::new(
+                CommentTarget::Review,
+                "about the whole change".to_string(),
+                CommentType::from_id("note"),
+                "user".to_string(),
+            ),
+        )
+        .unwrap();
+        store_reply(
+            &cstore,
+            &session,
+            &root.id,
+            "noted".to_string(),
+            "Claude".to_string(),
+        )
+        .unwrap();
+
+        store_set_thread_resolved(&cstore, &root.id, true).unwrap();
+
+        let held = cstore
+            .comments_for(&[crate::model::CommentScope::commit("aaaa1111")])
+            .unwrap();
+        assert_eq!(held.len(), 2);
+        assert!(held.iter().all(|c| c.resolved), "the whole thread settles");
+    }
+
+    #[test]
+    fn should_read_a_migrated_review_through_the_store() {
+        let dir = tempdir().unwrap();
+        let repo = dir.path().join("checkout");
+        std::fs::create_dir_all(&repo).unwrap();
+        let session = session_on_store(dir.path(), &repo);
+        let cstore = store_for(&session).unwrap();
+        store_add_comment(
+            &cstore,
+            &session,
+            AddCommentRequest::new(
+                CommentTarget::Line {
+                    path: PathBuf::from("src/main.rs"),
+                    line: 7,
+                    side: LineSide::New,
+                },
+                "look here".to_string(),
+                CommentType::from_id("issue"),
+                "user".to_string(),
+            ),
+        )
+        .unwrap();
+
+        let shown = collect_comments(&session);
+
+        assert_eq!(shown.len(), 1, "review comments reads the store");
+        assert_eq!(shown[0].location, "src/main.rs:7");
+        assert_eq!(shown[0].start_line, Some(7));
     }
 
     #[test]
