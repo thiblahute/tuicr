@@ -378,6 +378,10 @@ pub struct ResolvedComments {
     /// an earlier version of one that is. The view says so rather than
     /// pretending they were written on what is on screen.
     pub from_earlier: std::collections::HashSet<String>,
+    /// The commit in view each carried comment is shown under. Its anchor
+    /// still names the commit it was written on, which is a fact and does not
+    /// change; this says where that commit went.
+    pub shown_under: std::collections::HashMap<String, String>,
 }
 
 /// Gather a review's comments.
@@ -400,7 +404,7 @@ pub fn resolve_for_review(
 
     let take = |store: &CommentStore,
                 scope: &CommentScope,
-                earlier: bool,
+                under: Option<&CommentScope>,
                 resolved: &mut ResolvedComments,
                 seen_ids: &mut std::collections::HashSet<String>|
      -> Result<()> {
@@ -408,8 +412,13 @@ pub fn resolve_for_review(
             if !seen_ids.insert(comment.id.clone()) {
                 continue;
             }
-            if earlier {
+            if let Some(under) = under {
                 resolved.from_earlier.insert(comment.id.clone());
+                if let Some(sha) = under.sha() {
+                    resolved
+                        .shown_under
+                        .insert(comment.id.clone(), sha.to_string());
+                }
             }
             resolved.comments.push(comment);
         }
@@ -417,7 +426,7 @@ pub fn resolve_for_review(
     };
 
     for (scope, _) in live {
-        take(store, scope, false, &mut resolved, &mut seen_ids)?;
+        take(store, scope, None, &mut resolved, &mut seen_ids)?;
         seen_scopes.push(scope.clone());
     }
 
@@ -428,17 +437,23 @@ pub fn resolve_for_review(
             if seen_scopes.contains(&old_scope) {
                 continue;
             }
-            take(store, &old_scope, true, &mut resolved, &mut seen_ids)?;
+            take(store, &old_scope, Some(scope), &mut resolved, &mut seen_ids)?;
             seen_scopes.push(old_scope);
         }
     }
 
-    for (_, orphans) in store.orphans_for(live)? {
+    for (live_scope, orphans) in store.orphans_for(live)? {
         for OrphanScope(scope) in orphans {
             if seen_scopes.contains(&scope) {
                 continue;
             }
-            take(store, &scope, true, &mut resolved, &mut seen_ids)?;
+            take(
+                store,
+                &scope,
+                Some(&live_scope),
+                &mut resolved,
+                &mut seen_ids,
+            )?;
             seen_scopes.push(scope);
         }
     }
@@ -839,6 +854,71 @@ mod tests {
             !store
                 .update_comment("missing", |c| c.resolved = true)
                 .unwrap()
+        );
+    }
+}
+
+#[cfg(test)]
+mod carried_visibility_tests {
+    use super::*;
+    use crate::model::{CommentAnchor, CommentType, LineSide};
+    use tempfile::tempdir;
+
+    #[test]
+    fn should_show_a_carried_comment_under_the_commit_its_own_became() {
+        // Narrowing the review to one commit filters by commit id, so a
+        // comment carried from an earlier version has to answer with the
+        // commit that is in view — or it vanishes exactly when the reader
+        // looks straight at it.
+        let dir = tempdir().unwrap();
+        let store = CommentStore::new(dir.path(), "agavra/tuicr");
+        let old = CommentScope::commit("aaaa1111");
+        let now = CommentScope::commit("cccc3333");
+        let mut comment = Comment::new(
+            "written on the fixup".to_string(),
+            CommentType::from_id("issue"),
+            Some(LineSide::New),
+        );
+        comment.anchor = Some(CommentAnchor::file(old.clone(), "src/main.rs"));
+        store.add(&old, Some("a change"), comment).unwrap();
+
+        let live = vec![(now, "a change".to_string())];
+        let predecessors = BTreeMap::from([("cccc3333".to_string(), vec!["aaaa1111".to_string()])]);
+        let resolved = resolve_for_review(&store, &live, &predecessors).unwrap();
+
+        let id = &resolved.comments[0].id;
+        assert_eq!(
+            resolved.shown_under.get(id).map(String::as_str),
+            Some("cccc3333"),
+            "shown under the commit in view"
+        );
+        assert_eq!(
+            resolved.comments[0].anchor.as_ref().unwrap().scope.sha(),
+            Some("aaaa1111"),
+            "while the anchor still says where it was written"
+        );
+    }
+
+    #[test]
+    fn should_attribute_a_summary_match_to_the_commit_that_claimed_it() {
+        let dir = tempdir().unwrap();
+        let store = CommentStore::new(dir.path(), "agavra/tuicr");
+        let old = CommentScope::commit("aaaa1111");
+        let mut comment = Comment::new(
+            "rebuilt series".to_string(),
+            CommentType::from_id("issue"),
+            None,
+        );
+        comment.anchor = Some(CommentAnchor::file(old.clone(), "src/main.rs"));
+        store.add(&old, Some("a change"), comment).unwrap();
+
+        let live = vec![(CommentScope::commit("dddd4444"), "a change".to_string())];
+        let resolved = resolve_for_review(&store, &live, &BTreeMap::new()).unwrap();
+
+        let id = &resolved.comments[0].id;
+        assert_eq!(
+            resolved.shown_under.get(id).map(String::as_str),
+            Some("dddd4444")
         );
     }
 }
