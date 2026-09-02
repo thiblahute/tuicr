@@ -2353,3 +2353,18 @@ fn should_scroll_with_the_wheel_while_composing() {
     assert_eq!(app.comment_buffer, "half a thought");
     assert_eq!(app.input_mode, InputMode::Comment);
 }
+
+#[test]
+fn should_leave_a_session_alone_when_the_store_is_empty() {
+    // Until the reader migrates, a review keeps showing exactly what it showed
+    // before: an empty store must not blank a session that holds comments.
+    let (session, root) = session_with_line_comment();
+    let mut app = app_for(session);
+
+    app.hydrate_comments_from_store();
+
+    let thread = line_thread(&app.session);
+    assert_eq!(thread.len(), 1, "the session's own comment survives");
+    assert_eq!(thread[0].id, root.id);
+    assert!(app.comments_from_earlier.is_empty());
+}
