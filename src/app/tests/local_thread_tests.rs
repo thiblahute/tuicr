@@ -2598,6 +2598,240 @@ fn should_ask_about_the_comment_the_annotation_points_at() {
     assert!(!comments[1].is_locked(), "index 1 is the local draft");
 }
 
+#[test]
+fn should_keep_a_settled_thread_settled_when_carried_across_rewritten_commits() {
+    // The user's flow: a thread on commit old1 is resolved; the agent's
+    // fixup/amend rewrites old1 into new1; :reload adopts new1 and hydration
+    // carries the thread over via predecessors. Does resolved survive?
+    let temp = tempfile::tempdir().unwrap();
+    crate::persistence::storage::set_test_reviews_dir(Some(temp.path().to_path_buf()));
+    let (mut session, _root) = session_with_line_comment();
+    session.diff_source = crate::model::review::SessionDiffSource::CommitRange;
+    session.commit_range = Some(vec!["old1".to_string()]);
+
+    let vcs_info = VcsInfo {
+        root_path: PathBuf::from("/repo"),
+        head_commit: "head".to_string(),
+        branch_name: Some("main".to_string()),
+        vcs_type: VcsType::Git,
+    };
+    let mut predecessors = std::collections::HashMap::new();
+    predecessors.insert("new1".to_string(), vec!["old1".to_string()]);
+    let mut app = App::build(
+        Box::new(DummyVcs {
+            info: vcs_info.clone(),
+            commits: Vec::new(),
+            resolved_range: None,
+            predecessors,
+        }),
+        vcs_info,
+        Theme::dark(),
+        None,
+        false,
+        vec![diff_file("src/main.rs")],
+        session,
+        DiffSource::CommitRange(vec!["old1".to_string()]),
+        InputMode::Normal,
+        Vec::new(),
+        None,
+        None,
+    )
+    .expect("failed to build test app");
+    let store = crate::persistence::comment_store::CommentStore::new(temp.path(), "repo");
+    store.take_over().unwrap();
+    app.comments_in_store = true;
+    app.review_commits = vec![commit_info("old1", "a change")];
+
+    let added = crate::review_store::add_comment_to_session(
+        &mut app.session,
+        crate::review_store::AddCommentRequest::new(
+            crate::review_store::CommentTarget::Line {
+                path: PathBuf::from("src/main.rs"),
+                line: 42,
+                side: LineSide::New,
+            },
+            "please fix".to_string(),
+            CommentType::from_id("issue"),
+            "user".to_string(),
+        ),
+    )
+    .unwrap();
+    app.store_comment(&added.id);
+    // The user settles the thread; the store agrees.
+    crate::review_store::set_thread_resolved(&mut app.session, &added.id, true).unwrap();
+    app.store_thread_update(&added.id);
+    let held = store
+        .comments_for(&[crate::model::CommentScope::commit("old1")])
+        .unwrap();
+    assert!(held.iter().all(|c| c.resolved));
+
+    // The rewrite: new1 replaces old1; the reload adopts it and hydration
+    // carries the thread through the predecessor mapping.
+    app.session.commit_range = Some(vec!["new1".to_string()]);
+    app.adopt_review_commits(vec![commit_info("new1", "a change")]);
+
+    let in_session: Vec<(String, bool)> = app
+        .session
+        .files
+        .values()
+        .flat_map(|r| {
+            r.file_comments
+                .iter()
+                .chain(r.line_comments.values().flatten())
+        })
+        .filter(|c| c.content != "handle the empty case")
+        .map(|c| (c.content.clone(), c.resolved))
+        .collect();
+    assert!(!in_session.is_empty(), "the thread must be carried over");
+    assert!(
+        in_session.iter().all(|(_, r)| *r),
+        "a settled thread must stay settled across the carry: {in_session:?}"
+    );
+}
+
+#[test]
+fn should_keep_a_settled_thread_settled_across_a_full_reload() {
+    // The complete :reload sequence on a store repo whose commits were
+    // rewritten: forced session reload, then the revset re-resolve with its
+    // two saves and pane install.
+    let temp = tempfile::tempdir().unwrap();
+    crate::persistence::storage::set_test_reviews_dir(Some(temp.path().to_path_buf()));
+    let (mut session, _root) = session_with_line_comment();
+    session.diff_source = crate::model::review::SessionDiffSource::CommitRange;
+    session.commit_range = Some(vec!["old1".to_string()]);
+    session.revset = Some("main..HEAD".to_string());
+
+    let vcs_info = VcsInfo {
+        root_path: PathBuf::from("/repo"),
+        head_commit: "head".to_string(),
+        branch_name: Some("main".to_string()),
+        vcs_type: VcsType::Git,
+    };
+    let mut predecessors = std::collections::HashMap::new();
+    predecessors.insert("new1".to_string(), vec!["old1".to_string()]);
+    let mut app = App::build(
+        Box::new(DummyVcs {
+            info: vcs_info.clone(),
+            commits: vec![
+                commit_info("old1", "a change"),
+                commit_info("new1", "a change"),
+            ],
+            resolved_range: Some(vec!["new1".to_string()]),
+            predecessors,
+        }),
+        vcs_info,
+        Theme::dark(),
+        None,
+        false,
+        vec![diff_file("src/main.rs")],
+        session,
+        DiffSource::CommitRange(vec!["old1".to_string()]),
+        InputMode::Normal,
+        Vec::new(),
+        None,
+        None,
+    )
+    .expect("failed to build test app");
+    let store = crate::persistence::comment_store::CommentStore::new(temp.path(), "repo");
+    store.take_over().unwrap();
+    app.comments_in_store = true;
+    app.review_commits = vec![commit_info("old1", "a change")];
+
+    let added = crate::review_store::add_comment_to_session(
+        &mut app.session,
+        crate::review_store::AddCommentRequest::new(
+            crate::review_store::CommentTarget::Line {
+                path: PathBuf::from("src/main.rs"),
+                line: 42,
+                side: LineSide::New,
+            },
+            "please fix".to_string(),
+            CommentType::from_id("issue"),
+            "user".to_string(),
+        ),
+    )
+    .unwrap();
+    app.store_comment(&added.id);
+    crate::review_store::set_thread_resolved(&mut app.session, &added.id, true).unwrap();
+    app.store_thread_update(&added.id);
+    app.save_current_session_merging_external().unwrap();
+
+    // :reload — the exact sequence reload_review runs for a revset review.
+    app.reload_persisted_session_if_changed(true).unwrap();
+    let adopted = app.resolve_revset_to_current_commits().unwrap();
+    assert_eq!(adopted, 1);
+
+    let in_session: Vec<(String, bool)> = app
+        .session
+        .files
+        .values()
+        .flat_map(|r| {
+            r.file_comments
+                .iter()
+                .chain(r.line_comments.values().flatten())
+        })
+        .filter(|c| c.content == "please fix")
+        .map(|c| (c.content.clone(), c.resolved))
+        .collect();
+    assert!(!in_session.is_empty(), "the thread survived the reload");
+    assert!(
+        in_session.iter().all(|(_, r)| *r),
+        "a settled thread must stay settled across :reload: {in_session:?}"
+    );
+}
+
+#[test]
+fn should_not_reopen_a_thread_the_reader_settled_while_the_agent_was_replying() {
+    // The dogfood race: the agent reads the thread list, starts working; the
+    // user resolves the thread meanwhile; the agent's "Done" reply lands via
+    // the CLI. What state does the next reload show?
+    let temp = tempfile::tempdir().unwrap();
+    let mut app = app_on_store(temp.path());
+    let added = crate::review_store::add_comment_to_session(
+        &mut app.session,
+        crate::review_store::AddCommentRequest::new(
+            crate::review_store::CommentTarget::Line {
+                path: PathBuf::from("src/main.rs"),
+                line: 42,
+                side: LineSide::New,
+            },
+            "please fix".to_string(),
+            CommentType::from_id("issue"),
+            "user".to_string(),
+        ),
+    )
+    .unwrap();
+    app.store_comment(&added.id);
+
+    // User resolves in the TUI.
+    crate::review_store::set_thread_resolved(&mut app.session, &added.id, true).unwrap();
+    app.store_thread_update(&added.id);
+
+    // The agent's "Done — fixed in abc" reply lands via the CLI (store path).
+    let store = crate::persistence::comment_store::CommentStore::new(temp.path(), "repo");
+    let reply = crate::review_cli::store_reply_for_test(
+        &store,
+        &app.session,
+        &added.id,
+        "Done — fixed in abc1234".to_string(),
+        "Claude".to_string(),
+    )
+    .unwrap();
+    let _ = reply;
+
+    // The user's next reload hydrates the store.
+    app.hydrate_comments_from_store();
+    let states: Vec<(String, bool)> = app
+        .all_comments()
+        .filter(|c| c.content != "handle the empty case")
+        .map(|c| (c.content.clone(), c.resolved))
+        .collect();
+    assert!(
+        states.iter().all(|(_, r)| *r),
+        "user resolved it; the agent's confirmation must not reopen it: {states:?}"
+    );
+}
+
 /// An app whose repo's comments live in a store under `dir`.
 ///
 /// The reviews directory is a thread-local in test builds, so it is pointed at
