@@ -1032,6 +1032,11 @@ impl App {
         }
     }
 
+    #[cfg(test)]
+    pub(in crate::app) fn place_stored_comment_for_test(&mut self, comment: crate::model::Comment) {
+        self.place_stored_comment(comment);
+    }
+
     /// Put a stored comment where the renderers look for it, from its anchor.
     fn place_stored_comment(&mut self, comment: crate::model::Comment) {
         let Some(anchor) = comment.anchor.clone() else {

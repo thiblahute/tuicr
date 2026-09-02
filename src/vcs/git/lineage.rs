@@ -416,6 +416,97 @@ fn git(repo: &Path, args: &[&str]) -> Result<String> {
 mod tests {
     use super::*;
 
+    /// A repository with `subjects` committed in order, and a reflog we write
+    /// ourselves — the point is to exercise the window walker against reflog
+    /// text, with real commits behind it so `git log` can answer.
+    struct Fixture {
+        _dir: tempfile::TempDir,
+        path: PathBuf,
+        shas: Vec<String>,
+    }
+
+    impl Fixture {
+        fn new(subjects: &[&str]) -> Self {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().to_path_buf();
+            let run = |args: &[&str]| {
+                std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(&path)
+                    .args(args)
+                    .output()
+                    .unwrap();
+            };
+            run(&["init", "-q", "-b", "main"]);
+            run(&["config", "user.email", "t@example.com"]);
+            run(&["config", "user.name", "T"]);
+            run(&["config", "commit.gpgsign", "false"]);
+            let mut shas = Vec::new();
+            for (i, subject) in subjects.iter().enumerate() {
+                std::fs::write(path.join(format!("f{i}")), format!("{i}")).unwrap();
+                run(&["add", "-A"]);
+                run(&["commit", "-q", "-m", subject]);
+                shas.push(
+                    git(&path, &["rev-parse", "HEAD"])
+                        .unwrap()
+                        .trim()
+                        .to_string(),
+                );
+            }
+            Self {
+                _dir: dir,
+                path,
+                shas,
+            }
+        }
+
+        /// A commit on top of `parent`, off to the side. A rewritten commit is
+        /// not an ancestor of the commit that replaced it, so the shapes here
+        /// have to be built deliberately rather than in a line.
+        fn commit_on(&mut self, parent: &str, subject: &str) -> String {
+            let run = |args: &[&str]| {
+                std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(&self.path)
+                    .args(args)
+                    .output()
+                    .unwrap();
+            };
+            run(&["checkout", "-q", "--detach", parent]);
+            let name = format!("f{}", self.shas.len());
+            std::fs::write(self.path.join(&name), subject).unwrap();
+            run(&["add", "-A"]);
+            run(&["commit", "-q", "-m", subject]);
+            let sha = git(&self.path, &["rev-parse", "HEAD"])
+                .unwrap()
+                .trim()
+                .to_string();
+            self.shas.push(sha.clone());
+            sha
+        }
+
+        /// Replace the HEAD reflog with exactly these `(old, new, message)`
+        /// lines, in order.
+        fn set_reflog(&self, lines: &[(&str, &str, &str)]) {
+            let logs = self.path.join(".git").join("logs");
+            std::fs::create_dir_all(&logs).unwrap();
+            let body: String = lines
+                .iter()
+                .map(|(old, new, msg)| {
+                    format!("{old} {new} T <t@example.com> 1770900354 -0300\t{msg}\n")
+                })
+                .collect();
+            std::fs::write(logs.join("HEAD"), body).unwrap();
+        }
+
+        fn predecessors_of(&self, sha: &str) -> Vec<String> {
+            predecessors(&self.path, std::slice::from_ref(&sha.to_string()))
+                .unwrap()
+                .remove(sha)
+                .unwrap_or_default()
+        }
+    }
+
     #[test]
     fn should_classify_on_the_verb_not_the_prefix() {
         assert_eq!(classify("commit (amend): tidy"), Op::Amend);
@@ -505,6 +596,128 @@ mod tests {
         );
         let next = slots.take_applied(&"8".repeat(40), Some("another change"), repo, &mut subjects);
         assert_eq!(next, Some("3".repeat(40)), "and the cursor did not drift");
+    }
+
+    #[test]
+    fn should_pair_a_rebase_window_in_order() {
+        // base, then two commits replayed onto it.
+        let fx = Fixture::new(&["base", "first", "second", "first'", "second'"]);
+        let (base, old1, old2, new1, new2) = (
+            &fx.shas[0],
+            &fx.shas[1],
+            &fx.shas[2],
+            &fx.shas[3],
+            &fx.shas[4],
+        );
+        fx.set_reflog(&[
+            (old2, base, "rebase (start): checkout main~2"),
+            (base, new1, "rebase (pick): first"),
+            (new1, new2, "rebase (pick): second"),
+            (new2, new2, "rebase (finish): returning to refs/heads/main"),
+        ]);
+
+        assert_eq!(fx.predecessors_of(new1), vec![old1.clone()]);
+        assert_eq!(fx.predecessors_of(new2), vec![old2.clone()]);
+    }
+
+    #[test]
+    fn should_take_the_onto_from_the_start_entry_not_its_message() {
+        // The message names `main~2`, which resolves today to something else
+        // entirely. Using it would pair the wrong commits.
+        let fx = Fixture::new(&["base", "first", "later", "first'"]);
+        let (base, old1, new1) = (&fx.shas[0], &fx.shas[1], &fx.shas[3]);
+        fx.set_reflog(&[
+            (old1, base, "rebase (start): checkout main~2"),
+            (base, new1, "rebase (pick): first"),
+            (new1, new1, "rebase (finish): returning to refs/heads/main"),
+        ]);
+
+        assert_eq!(fx.predecessors_of(new1), vec![old1.clone()]);
+    }
+
+    #[test]
+    fn should_fold_a_fixup_into_the_commit_it_lands_on() {
+        // pick A, then fixup F: both the original and the fixup! become the
+        // combined commit. The fixup entry rewrites HEAD in place, so its old
+        // and new differ.
+        let mut fx = Fixture::new(&["base"]);
+        let base = fx.shas[0].clone();
+        let original = fx.commit_on(&base, "a change");
+        let fixup = fx.commit_on(&original, "fixup! a change");
+        let picked = fx.commit_on(&base, "a change");
+        let combined = fx.commit_on(&base, "a change");
+        fx.set_reflog(&[
+            (&fixup, &base, "rebase (start): checkout main~2"),
+            (&base, &picked, "rebase (pick): a change"),
+            (&picked, &combined, "rebase (fixup): a change"),
+            (
+                &combined,
+                &combined,
+                "rebase (finish): returning to refs/heads/main",
+            ),
+        ]);
+
+        let found = fx.predecessors_of(&combined);
+        assert!(
+            found.contains(&original),
+            "the commit that was fixed up: {found:?}"
+        );
+        assert!(found.contains(&fixup), "and the fixup! itself: {found:?}");
+    }
+
+    #[test]
+    fn should_discard_a_window_that_was_aborted() {
+        let fx = Fixture::new(&["base", "first", "first'"]);
+        let (base, old1, new1) = (&fx.shas[0], &fx.shas[1], &fx.shas[2]);
+        fx.set_reflog(&[
+            (old1, base, "rebase (start): checkout main~1"),
+            (base, new1, "rebase (pick): first"),
+            (new1, old1, "rebase (abort): returning to refs/heads/main"),
+        ]);
+
+        assert!(
+            fx.predecessors_of(new1).is_empty(),
+            "what an aborted rebase produced was thrown away"
+        );
+    }
+
+    #[test]
+    fn should_end_an_unterminated_window_at_the_next_move() {
+        // A crashed rebase: no finish, then a checkout. The checkout is not
+        // part of the window and must not consume a slot.
+        let fx = Fixture::new(&["base", "first", "first'", "elsewhere"]);
+        let (base, old1, new1, other) = (&fx.shas[0], &fx.shas[1], &fx.shas[2], &fx.shas[3]);
+        fx.set_reflog(&[
+            (old1, base, "rebase (start): checkout main~1"),
+            (base, new1, "rebase (pick): first"),
+            (new1, other, "checkout: moving from main to other"),
+        ]);
+
+        assert_eq!(fx.predecessors_of(new1), vec![old1.clone()]);
+        assert!(fx.predecessors_of(other).is_empty());
+    }
+
+    #[test]
+    fn should_carry_a_chain_across_an_amend_and_a_rebase() {
+        // v1 amended into v2, then v2 rebased into v3. Each version sits on
+        // the base rather than on its predecessor.
+        let mut fx = Fixture::new(&["base"]);
+        let base = fx.shas[0].clone();
+        let v1 = fx.commit_on(&base, "first");
+        let v2 = fx.commit_on(&base, "first");
+        let v3 = fx.commit_on(&base, "first");
+        fx.set_reflog(&[
+            (&v1, &v2, "commit (amend): first"),
+            (&v2, &base, "rebase (start): checkout main~1"),
+            (&base, &v3, "rebase (pick): first"),
+            (&v3, &v3, "rebase (finish): returning to refs/heads/main"),
+        ]);
+
+        let found = fx.predecessors_of(&v3);
+        assert!(
+            found.contains(&v2) && found.contains(&v1),
+            "both hops: {found:?}"
+        );
     }
 
     /// Against a real repository when `TUICR_LINEAGE_REPO` names one.
