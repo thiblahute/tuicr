@@ -369,6 +369,83 @@ impl CommentStore {
     }
 }
 
+/// What a review shows: comments on its own commits, comments on earlier
+/// versions of them, and comments a dead file's summary claims.
+#[derive(Debug, Default)]
+pub struct ResolvedComments {
+    pub comments: Vec<Comment>,
+    /// Ids of the comments that came from a commit no longer in the review —
+    /// an earlier version of one that is. The view says so rather than
+    /// pretending they were written on what is on screen.
+    pub from_earlier: std::collections::HashSet<String>,
+}
+
+/// Gather a review's comments.
+///
+/// `live` is the review's commits with their summaries; `predecessors` maps
+/// each of them to the shas it was built from, which the VCS answers and this
+/// only consumes — the store has no business knowing what a reflog is.
+///
+/// Lineage runs first because it knows what happened; summary matching then
+/// covers what it cannot reach, which is mostly a series rebuilt after a
+/// `reset --hard`, where git recorded no relation at all.
+pub fn resolve_for_review(
+    store: &CommentStore,
+    live: &[(CommentScope, String)],
+    predecessors: &BTreeMap<String, Vec<String>>,
+) -> Result<ResolvedComments> {
+    let mut resolved = ResolvedComments::default();
+    let mut seen_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut seen_scopes: Vec<CommentScope> = Vec::new();
+
+    let take = |store: &CommentStore,
+                scope: &CommentScope,
+                earlier: bool,
+                resolved: &mut ResolvedComments,
+                seen_ids: &mut std::collections::HashSet<String>|
+     -> Result<()> {
+        for comment in store.comments_for(std::slice::from_ref(scope))? {
+            if !seen_ids.insert(comment.id.clone()) {
+                continue;
+            }
+            if earlier {
+                resolved.from_earlier.insert(comment.id.clone());
+            }
+            resolved.comments.push(comment);
+        }
+        Ok(())
+    };
+
+    for (scope, _) in live {
+        take(store, scope, false, &mut resolved, &mut seen_ids)?;
+        seen_scopes.push(scope.clone());
+    }
+
+    for (scope, _) in live {
+        let Some(sha) = scope.sha() else { continue };
+        for old in predecessors.get(sha).into_iter().flatten() {
+            let old_scope = CommentScope::commit(old.clone());
+            if seen_scopes.contains(&old_scope) {
+                continue;
+            }
+            take(store, &old_scope, true, &mut resolved, &mut seen_ids)?;
+            seen_scopes.push(old_scope);
+        }
+    }
+
+    for (_, orphans) in store.orphans_for(live)? {
+        for OrphanScope(scope) in orphans {
+            if seen_scopes.contains(&scope) {
+                continue;
+            }
+            take(store, &scope, true, &mut resolved, &mut seen_ids)?;
+            seen_scopes.push(scope);
+        }
+    }
+
+    Ok(resolved)
+}
+
 /// A scope holding comments whose commit is no longer under review. Named so
 /// a caller cannot pass one where a live scope belongs.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -494,6 +571,141 @@ mod tests {
         assert_eq!(index.rows[0].count, 1);
         assert_eq!(index.rows[0].summary.as_deref(), Some("a commit"));
         assert_eq!(store.comments_for(&[scope]).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn should_show_comments_written_on_an_earlier_version_of_a_commit() {
+        // The point of the whole design: amend a commit and the comments on it
+        // are still the comments on it.
+        let dir = tempdir().unwrap();
+        let store = store(dir.path());
+        let old = CommentScope::commit("aaaa1111");
+        let now = CommentScope::commit("cccc3333");
+        store
+            .add(
+                &old,
+                Some("a change"),
+                comment("why this?", old.clone(), 42),
+            )
+            .unwrap();
+        store
+            .add(&now, Some("a change"), comment("and this?", now.clone(), 7))
+            .unwrap();
+
+        let live = vec![(now.clone(), "a change".to_string())];
+        let predecessors = BTreeMap::from([("cccc3333".to_string(), vec!["aaaa1111".to_string()])]);
+        let resolved = resolve_for_review(&store, &live, &predecessors).unwrap();
+
+        assert_eq!(resolved.comments.len(), 2);
+        let carried = resolved
+            .comments
+            .iter()
+            .find(|c| c.content == "why this?")
+            .unwrap();
+        assert!(
+            resolved.from_earlier.contains(&carried.id),
+            "and it says the comment was written on an earlier version"
+        );
+        let current = resolved
+            .comments
+            .iter()
+            .find(|c| c.content == "and this?")
+            .unwrap();
+        assert!(!resolved.from_earlier.contains(&current.id));
+    }
+
+    #[test]
+    fn should_fall_back_to_the_summary_when_lineage_knows_nothing() {
+        // A series rebuilt after a reset --hard: git recorded no relation, so
+        // only the message connects them.
+        let dir = tempdir().unwrap();
+        let store = store(dir.path());
+        let old = CommentScope::commit("aaaa1111");
+        let now = CommentScope::commit("cccc3333");
+        store
+            .add(
+                &old,
+                Some("a change"),
+                comment("still relevant", old.clone(), 42),
+            )
+            .unwrap();
+
+        let live = vec![(now, "a change".to_string())];
+        let resolved = resolve_for_review(&store, &live, &BTreeMap::new()).unwrap();
+
+        assert_eq!(resolved.comments.len(), 1);
+        assert_eq!(resolved.comments[0].content, "still relevant");
+        assert!(resolved.from_earlier.contains(&resolved.comments[0].id));
+    }
+
+    #[test]
+    fn should_not_hand_back_a_comment_twice() {
+        // Lineage and the summary both reach the same dead commit.
+        let dir = tempdir().unwrap();
+        let store = store(dir.path());
+        let old = CommentScope::commit("aaaa1111");
+        let now = CommentScope::commit("cccc3333");
+        store
+            .add(&old, Some("a change"), comment("once", old.clone(), 42))
+            .unwrap();
+
+        let live = vec![(now, "a change".to_string())];
+        let predecessors = BTreeMap::from([("cccc3333".to_string(), vec!["aaaa1111".to_string()])]);
+        let resolved = resolve_for_review(&store, &live, &predecessors).unwrap();
+
+        assert_eq!(resolved.comments.len(), 1);
+    }
+
+    #[test]
+    fn should_gather_every_generation_a_fixup_was_folded_through() {
+        // What the reflog hands back for one commit: several amends and the
+        // fixup! that was squashed in. All of their comments belong to it.
+        let dir = tempdir().unwrap();
+        let store = store(dir.path());
+        let now = CommentScope::commit("cccc3333");
+        for (sha, body) in [
+            ("aaaa1111", "first pass"),
+            ("bbbb2222", "second pass"),
+            ("dddd4444", "on the fixup"),
+        ] {
+            let scope = CommentScope::commit(sha);
+            store
+                .add(&scope, Some("a change"), comment(body, scope.clone(), 1))
+                .unwrap();
+        }
+
+        let live = vec![(now, "a change".to_string())];
+        let predecessors = BTreeMap::from([(
+            "cccc3333".to_string(),
+            vec![
+                "aaaa1111".to_string(),
+                "bbbb2222".to_string(),
+                "dddd4444".to_string(),
+            ],
+        )]);
+        let resolved = resolve_for_review(&store, &live, &predecessors).unwrap();
+
+        assert_eq!(resolved.comments.len(), 3);
+        assert_eq!(resolved.from_earlier.len(), 3);
+    }
+
+    #[test]
+    fn should_leave_another_review_alone() {
+        let dir = tempdir().unwrap();
+        let store = store(dir.path());
+        let elsewhere = CommentScope::commit("aaaa1111");
+        store
+            .add(
+                &elsewhere,
+                Some("someone else's change"),
+                comment("x", elsewhere.clone(), 1),
+            )
+            .unwrap();
+
+        let live = vec![(CommentScope::commit("cccc3333"), "a change".to_string())];
+        let resolved = resolve_for_review(&store, &live, &BTreeMap::new()).unwrap();
+
+        assert!(resolved.comments.is_empty());
     }
 
     #[test]
