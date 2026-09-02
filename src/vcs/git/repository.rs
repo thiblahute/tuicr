@@ -123,11 +123,19 @@ pub fn get_commits_info(repo: &Repository, ids: &[String]) -> Result<Vec<CommitI
     let mut commits = Vec::new();
 
     for id_str in ids {
-        let oid = Oid::from_str(id_str)
-            .map_err(|e| TuicrError::VcsCommand(format!("Invalid commit ID {}: {}", id_str, e)))?;
-        let commit = repo
-            .find_commit(oid)
-            .map_err(|e| TuicrError::VcsCommand(format!("Commit not found {}: {}", id_str, e)))?;
+        // A short id has to be resolved as a prefix. `Oid::from_str` accepts
+        // one and pads it with zeroes, which then never finds a commit — so
+        // asking about `Commit Message (aaaaaaa)` used to fail the whole
+        // batch, and a caller reading "no such commit" would conclude the
+        // commit was rewritten away when it is sitting right there.
+        let commit = if id_str.len() < 40 {
+            repo.revparse_single(id_str)
+                .and_then(|object| object.peel_to_commit())
+        } else {
+            Oid::from_str(id_str).and_then(|oid| repo.find_commit(oid))
+        }
+        .map_err(|e| TuicrError::VcsCommand(format!("Commit not found {}: {}", id_str, e)))?;
+        let oid = commit.id();
 
         let id = oid.to_string();
         let short_id = id[..7.min(id.len())].to_string();
@@ -262,5 +270,49 @@ mod tests {
         // then unborn HEAD is treated as zero commits, not an error
         let commits = result.expect("unborn HEAD should yield an empty list");
         assert!(commits.is_empty(), "unborn HEAD has no commits to walk");
+    }
+}
+
+#[cfg(test)]
+mod short_id_tests {
+    use super::*;
+
+    #[test]
+    fn should_find_a_commit_from_a_short_id() {
+        // `Commit Message (aaaaaaa)` names a commit by its short id, and the
+        // amend guard asks about it. A lookup that only accepts a full oid
+        // answers "no such commit", which reads as "rewritten away" — and the
+        // guard then files the comment under whatever is on screen.
+        let dir = tempfile::tempdir().unwrap();
+        let run = |args: &[&str]| {
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(dir.path())
+                .args(args)
+                .output()
+                .unwrap();
+        };
+        run(&["init", "-q", "-b", "main"]);
+        run(&["config", "user.email", "t@example.com"]);
+        run(&["config", "user.name", "T"]);
+        run(&["config", "commit.gpgsign", "false"]);
+        std::fs::write(dir.path().join("f"), "x").unwrap();
+        run(&["add", "-A"]);
+        run(&["commit", "-q", "-m", "a change"]);
+
+        let repo = Repository::open(dir.path()).unwrap();
+        let head = repo
+            .head()
+            .unwrap()
+            .peel_to_commit()
+            .unwrap()
+            .id()
+            .to_string();
+
+        let found = get_commits_info(&repo, &[head[..7].to_string()]).unwrap();
+
+        assert_eq!(found.len(), 1, "a short id resolves");
+        assert_eq!(found[0].summary, "a change");
+        assert_eq!(found[0].id, head, "and reports the full id");
     }
 }
