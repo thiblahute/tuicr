@@ -2368,3 +2368,125 @@ fn should_leave_a_session_alone_when_the_store_is_empty() {
     assert_eq!(thread[0].id, root.id);
     assert!(app.comments_from_earlier.is_empty());
 }
+
+/// A store on disk holding `comments` against `sha`, keyed the way the app
+/// keys this session's repo.
+fn store_with(app: &App, dir: &std::path::Path, sha: &str, summary: &str, comments: Vec<Comment>) {
+    let store = crate::persistence::comment_store::CommentStore::new(dir, "checkout");
+    let _ = app;
+    store
+        .add_many(
+            &crate::model::CommentScope::commit(sha),
+            Some(summary),
+            comments,
+        )
+        .unwrap();
+}
+
+fn stored_comment(body: &str, sha: &str, path: &str, line: Option<u32>) -> Comment {
+    let mut c = Comment::new(
+        body.to_string(),
+        CommentType::from_id("issue"),
+        Some(LineSide::New),
+    );
+    c.anchor = Some(crate::model::CommentAnchor {
+        scope: crate::model::CommentScope::commit(sha),
+        path: Some(PathBuf::from(path)),
+        line,
+        side: LineSide::New,
+    });
+    c
+}
+
+#[test]
+fn should_fill_a_review_from_the_store() {
+    let temp = tempfile::tempdir().unwrap();
+    let (session, _root) = session_with_line_comment();
+    let mut app = app_for(session);
+    app.review_commits = vec![commit_info("aaaa1111", "a change")];
+    store_with(
+        &app,
+        temp.path(),
+        "aaaa1111",
+        "a change",
+        vec![
+            stored_comment("on line 42", "aaaa1111", "src/main.rs", Some(42)),
+            stored_comment("on the file", "aaaa1111", "src/main.rs", None),
+        ],
+    );
+
+    let store = crate::persistence::comment_store::CommentStore::new(temp.path(), "checkout");
+    let live = app.review_scopes();
+    let resolved = crate::persistence::comment_store::resolve_for_review(
+        &store,
+        &live,
+        &std::collections::BTreeMap::new(),
+    )
+    .unwrap();
+    app.session.review_comments.clear();
+    for review in app.session.files.values_mut() {
+        review.file_comments.clear();
+        review.line_comments.clear();
+    }
+    for comment in resolved.comments {
+        app.place_stored_comment_for_test(comment);
+    }
+
+    let review = &app.session.files[&PathBuf::from("src/main.rs")];
+    assert_eq!(
+        review.line_comments[&42][0].content, "on line 42",
+        "a line comment lands on its line"
+    );
+    assert_eq!(
+        review.file_comments[0].content, "on the file",
+        "a file comment lands on its file"
+    );
+}
+
+#[test]
+fn should_place_a_review_level_comment_without_a_path() {
+    let (session, _root) = session_with_line_comment();
+    let mut app = app_for(session);
+    let mut comment = Comment::new(
+        "about the whole thing".to_string(),
+        CommentType::from_id("note"),
+        None,
+    );
+    comment.anchor = Some(crate::model::CommentAnchor::review(
+        crate::model::CommentScope::commit("aaaa1111"),
+    ));
+
+    app.place_stored_comment_for_test(comment);
+
+    assert_eq!(app.session.review_comments.len(), 1);
+}
+
+#[test]
+fn should_name_the_commits_a_review_asks_the_store_about() {
+    let (session, _root) = session_with_line_comment();
+    let mut app = app_for(session);
+    app.review_commits = vec![
+        commit_info("aaaa1111", "first"),
+        commit_info("bbbb2222", "second"),
+    ];
+
+    let scopes = app.review_scopes();
+
+    assert_eq!(scopes.len(), 2);
+    assert_eq!(scopes[0].0.sha(), Some("aaaa1111"));
+    assert_eq!(scopes[0].1, "first");
+}
+
+#[test]
+fn should_ask_about_the_working_tree_when_no_commit_is_under_review() {
+    let (session, _root) = session_with_line_comment();
+    let app = app_for(session);
+
+    let scopes = app.review_scopes();
+
+    assert_eq!(scopes.len(), 1);
+    assert!(
+        scopes[0].0.sha().is_none(),
+        "uncommitted work is keyed by checkout, not by a commit"
+    );
+}
