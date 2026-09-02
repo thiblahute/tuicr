@@ -1,5 +1,6 @@
 pub mod comment_store;
 pub mod manifest;
+pub mod migrate_comments;
 pub mod storage;
 
 pub use storage::{load_latest_session_for_context, load_pr_session, save_session};

@@ -32,22 +32,33 @@ const FORMAT_VERSION: u32 = 1;
 pub struct ScopeFile {
     pub version: u32,
     pub scope: CommentScope,
-    /// The commit's summary when the file was written. The only thing linking
-    /// a rewritten commit to the one that replaced it, short of patch-id.
-    #[serde(default)]
-    pub summary: Option<String>,
+    /// The commit's message when the file was written.
+    ///
+    /// Its first line is the only thing linking a rewritten commit to the one
+    /// that replaced it, short of patch-id, so a file without one cannot be
+    /// recovered after an amend. The rest of it is what a comment on the
+    /// message was written against, kept so a reader can still see it once the
+    /// commit is gone.
+    #[serde(default, alias = "summary")]
+    pub message: Option<String>,
     #[serde(default)]
     pub comments: Vec<Comment>,
 }
 
 impl ScopeFile {
-    fn new(scope: CommentScope, summary: Option<String>) -> Self {
+    fn new(scope: CommentScope, message: Option<String>) -> Self {
         Self {
             version: FORMAT_VERSION,
             scope,
-            summary,
+            message,
             comments: Vec::new(),
         }
+    }
+
+    /// The first line of the message — what a rewrite keeps, and what the
+    /// index is looked up by.
+    pub fn summary(&self) -> Option<&str> {
+        self.message.as_deref().and_then(|m| m.lines().next())
     }
 }
 
@@ -107,9 +118,27 @@ impl CommentStore {
     }
 
     /// Store a comment against its own anchor's scope.
-    pub fn add(&self, scope: &CommentScope, summary: Option<&str>, comment: Comment) -> Result<()> {
-        self.update_scope(scope, summary, |file| {
-            file.comments.push(comment);
+    pub fn add(&self, scope: &CommentScope, message: Option<&str>, comment: Comment) -> Result<()> {
+        self.add_many(scope, message, vec![comment])
+    }
+
+    /// Store several comments against one scope in a single locked write.
+    ///
+    /// A comment already there, by id, is left as it stands: importing the
+    /// same session twice must not double its comments.
+    pub fn add_many(
+        &self,
+        scope: &CommentScope,
+        message: Option<&str>,
+        comments: Vec<Comment>,
+    ) -> Result<()> {
+        self.update_scope(scope, message, |file| {
+            for comment in comments {
+                if file.comments.iter().any(|c| c.id == comment.id) {
+                    continue;
+                }
+                file.comments.push(comment);
+            }
             Ok(())
         })
     }
@@ -176,7 +205,7 @@ impl CommentStore {
                 rows.push(IndexRow {
                     file: scope.file_name(),
                     scope,
-                    summary: file.summary,
+                    summary: file.summary().map(str::to_string),
                     count: file.comments.len(),
                 });
             }
@@ -279,8 +308,8 @@ impl CommentStore {
             let mut file = self
                 .read_file(&path)?
                 .unwrap_or_else(|| ScopeFile::new(scope.clone(), summary.map(str::to_string)));
-            if file.summary.is_none() && summary.is_some() {
-                file.summary = summary.map(str::to_string);
+            if file.message.is_none() && summary.is_some() {
+                file.message = summary.map(str::to_string);
             }
             edit(&mut file)?;
             fs::create_dir_all(&root)?;
@@ -298,7 +327,7 @@ impl CommentStore {
         let row = IndexRow {
             file: scope.file_name(),
             scope: scope.clone(),
-            summary: file.summary.clone(),
+            summary: file.summary().map(str::to_string),
             count: file.comments.len(),
         };
         match index.rows.iter_mut().find(|r| r.file == row.file) {
@@ -322,6 +351,21 @@ impl CommentStore {
 /// a caller cannot pass one where a live scope belongs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OrphanScope(pub CommentScope);
+
+/// A stable short name for a checkout, for the file that holds its
+/// uncommitted-work comments.
+///
+/// FNV-1a rather than the standard hasher, whose output is explicitly not
+/// stable across releases — this ends up in a filename that has to keep
+/// meaning the same thing after an upgrade.
+pub fn checkout_key(path: &Path) -> String {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in path.to_string_lossy().as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{hash:016x}")
+}
 
 /// `owner/repo` is a path in disguise; flatten it so the store stays one
 /// directory deep.
