@@ -2999,3 +2999,37 @@ fn should_ask_about_the_checkout_for_a_staged_review() {
     assert_eq!(scopes.len(), 1);
     assert!(scopes[0].0.sha().is_none());
 }
+
+#[test]
+fn should_not_strip_the_session_of_comments_the_store_now_holds() {
+    // The migration is additive: both copies exist so rolling back is deleting
+    // a directory. If hydration drops the session's copies and a save then
+    // rewrites the file, that promise is gone by the first save after
+    // migrating — and the store becomes the only copy without anyone saying so.
+    let temp = tempfile::tempdir().unwrap();
+    let mut app = app_on_store(temp.path());
+    let added = crate::review_store::add_comment_to_session(
+        &mut app.session,
+        crate::review_store::AddCommentRequest::new(
+            crate::review_store::CommentTarget::File {
+                path: PathBuf::from("src/main.rs"),
+            },
+            "in both places".to_string(),
+            CommentType::from_id("issue"),
+            "user".to_string(),
+        ),
+    )
+    .unwrap();
+    app.store_comment(&added.id);
+
+    app.hydrate_comments_from_store();
+
+    let still_here = app.session.files[&PathBuf::from("src/main.rs")]
+        .file_comments
+        .iter()
+        .any(|c| c.id == added.id);
+    assert!(
+        still_here,
+        "a save after hydration would otherwise write the session without it"
+    );
+}
