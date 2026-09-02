@@ -1,5 +1,6 @@
 use chrono::{DateTime, Utc};
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::error::Result;
@@ -278,6 +279,22 @@ pub trait VcsBackend: Send {
     /// Returns CommitInfo for each ID, in the same order as the input.
     fn get_commits_info(&self, _ids: &[String]) -> Result<Vec<CommitInfo>> {
         Ok(Vec::new())
+    }
+
+    /// Earlier versions of these commits: every amend they went through, every
+    /// rebase that moved them, and every commit squashed into them, keyed by
+    /// the commit asked about.
+    ///
+    /// A predecessor is a previous version of the same change, which is
+    /// normally *not* an ancestor — nothing points at it any more. Review
+    /// comments filed against one belong to the commit it became.
+    ///
+    /// Empty when the backend cannot say, which is the honest answer rather
+    /// than a guess: callers fall back to matching on the commit message. The
+    /// question is asked, not the mechanism — jj answers it from change ids
+    /// and hg from obsolescence markers, neither of which resembles a reflog.
+    fn predecessors(&self, _of: &[String]) -> Result<HashMap<String, Vec<String>>> {
+        Ok(HashMap::new())
     }
 
     /// Get a combined diff from the parent of the oldest commit through to the working tree.

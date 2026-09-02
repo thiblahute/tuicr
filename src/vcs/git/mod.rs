@@ -2,6 +2,7 @@ mod cli;
 pub mod context;
 pub mod diff;
 mod libgit2;
+pub(crate) mod lineage;
 pub(crate) mod raw;
 pub mod repository;
 pub mod staging;
@@ -389,6 +390,13 @@ impl VcsBackend for GitBackend {
             Self::Libgit2(backend) => backend.get_commits_info(ids),
             Self::Cli(backend) => backend.get_commits_info(ids),
         }
+    }
+
+    fn predecessors(
+        &self,
+        of: &[String],
+    ) -> Result<std::collections::HashMap<String, Vec<String>>> {
+        lineage::predecessors(&self.info().root_path, of)
     }
 
     fn get_working_tree_with_commits_diff(
