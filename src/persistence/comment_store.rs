@@ -103,6 +103,49 @@ impl CommentStore {
         &self.root
     }
 
+    /// True once this repository's comments live here.
+    ///
+    /// An explicit switch rather than "did a read return anything": with it,
+    /// a review either uses the store for both reads and writes or does not
+    /// touch it at all. Inferring the answer from whether a read came back
+    /// non-empty leaves a half-migrated state in which reads come from one
+    /// place and writes go to another, which is how a comment gets written to
+    /// the session and erased by the next read.
+    pub fn in_use(&self) -> bool {
+        self.root.join(INDEX_FILENAME).is_file()
+    }
+
+    /// Mark this repository as migrated, so reviews start using the store.
+    pub fn take_over(&self) -> Result<()> {
+        self.rebuild_index()?;
+        Ok(())
+    }
+
+    /// Remove a comment and every reply to it, wherever it is stored.
+    /// Returns how many went.
+    pub fn delete_thread(&self, id: &str) -> Result<usize> {
+        let Some(scope) = self.scope_of(id)? else {
+            return Ok(0);
+        };
+        let mut removed = 0;
+        self.update_scope(&scope, None, |file| {
+            let root = file
+                .comments
+                .iter()
+                .find(|c| c.id == id)
+                .map(|c| c.in_reply_to.clone().unwrap_or_else(|| c.id.clone()));
+            let Some(root) = root else {
+                return Ok(());
+            };
+            let before = file.comments.len();
+            file.comments
+                .retain(|c| c.id != root && c.in_reply_to.as_deref() != Some(root.as_str()));
+            removed = before - file.comments.len();
+            Ok(())
+        })?;
+        Ok(removed)
+    }
+
     /// Every comment written against any of `scopes`, in stored order.
     ///
     /// Scopes with no file are simply absent — a commit nobody has commented
@@ -515,6 +558,76 @@ mod tests {
             LineSide::New,
         ));
         c
+    }
+
+    #[test]
+    fn should_not_be_in_use_until_a_repository_is_migrated() {
+        let dir = tempdir().unwrap();
+        let store = store(dir.path());
+        assert!(
+            !store.in_use(),
+            "an untouched repo keeps using its sessions"
+        );
+
+        store.take_over().unwrap();
+
+        assert!(store.in_use(), "and switches over once, deliberately");
+    }
+
+    #[test]
+    fn should_count_as_in_use_even_with_nothing_stored_yet() {
+        // The first comment written after migrating must go to the store, not
+        // to the session, so "in use" cannot mean "holds something".
+        let dir = tempdir().unwrap();
+        let store = store(dir.path());
+        store.take_over().unwrap();
+
+        assert!(store.in_use());
+        assert!(
+            store
+                .comments_for(&[CommentScope::commit("aaaa1111")])
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn should_delete_a_thread_and_its_replies() {
+        let dir = tempdir().unwrap();
+        let store = store(dir.path());
+        let scope = CommentScope::commit("aaaa1111");
+        let root = comment("why this?", scope.clone(), 42);
+        let root_id = root.id.clone();
+        let mut answer = comment("because", scope.clone(), 42);
+        answer.in_reply_to = Some(root_id.clone());
+        let other = comment("unrelated", scope.clone(), 7);
+        let other_id = other.id.clone();
+        store
+            .add_many(&scope, None, vec![root, answer, other])
+            .unwrap();
+
+        let removed = store.delete_thread(&root_id).unwrap();
+
+        assert_eq!(removed, 2, "the root and its reply");
+        let left = store.comments_for(&[scope]).unwrap();
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].id, other_id, "the other thread is untouched");
+    }
+
+    #[test]
+    fn should_delete_a_thread_from_any_of_its_replies() {
+        let dir = tempdir().unwrap();
+        let store = store(dir.path());
+        let scope = CommentScope::commit("aaaa1111");
+        let root = comment("why this?", scope.clone(), 42);
+        let root_id = root.id.clone();
+        let mut answer = comment("because", scope.clone(), 42);
+        answer.in_reply_to = Some(root_id.clone());
+        let answer_id = answer.id.clone();
+        store.add_many(&scope, None, vec![root, answer]).unwrap();
+
+        assert_eq!(store.delete_thread(&answer_id).unwrap(), 2);
+        assert!(store.comments_for(&[scope]).unwrap().is_empty());
     }
 
     #[test]

@@ -609,6 +609,7 @@ impl App {
             session_file_state,
             cached_owner_repo: std::cell::OnceCell::new(),
             comments_from_earlier: std::collections::HashSet::new(),
+            comments_in_store: false,
             review_watch_interval: Some(Duration::from_millis(DEFAULT_REVIEW_WATCH_INTERVAL_MS)),
             next_review_watch_at: Instant::now()
                 + Duration::from_millis(DEFAULT_REVIEW_WATCH_INTERVAL_MS),

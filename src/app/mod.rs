@@ -1135,6 +1135,9 @@ pub struct App {
     /// Ids of comments this review shows that were written on an earlier
     /// version of one of its commits.
     pub comments_from_earlier: std::collections::HashSet<String>,
+    /// True once this repository's comments live in the store, which makes it
+    /// the place writes go as well as the place reads come from.
+    pub comments_in_store: bool,
     pub vcs_info: VcsInfo,
     /// The on-disk repo root tuicr was launched in, when there is one.
     ///

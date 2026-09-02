@@ -995,6 +995,13 @@ impl App {
         let Some(store) = self.comment_store() else {
             return;
         };
+        // Before a repository is migrated the store is not consulted at all,
+        // and writes keep going to the session. After it, the store answers
+        // for both. There is no state in between to get wrong.
+        if !store.in_use() {
+            return;
+        }
+        self.comments_in_store = true;
         let live = self.review_scopes();
         let shas: Vec<String> = live
             .iter()
@@ -1015,10 +1022,6 @@ impl App {
             Ok(resolved) => resolved,
             Err(_) => return,
         };
-        if resolved.comments.is_empty() {
-            return;
-        }
-
         // Drop only the session's copies of what the store just handed back.
         // Clearing the buckets wholesale would take comments the store does
         // not have with them — anything written since the migration — and the
@@ -1089,5 +1092,167 @@ impl App {
             Some(line) => review.line_comments.entry(line).or_default().push(comment),
             None => review.file_comments.push(comment),
         }
+    }
+}
+
+impl App {
+    /// The commit a comment written now belongs to: the one under review when
+    /// the selector is narrowed to one, the head of the range otherwise, and
+    /// the checkout when nothing is committed yet.
+    pub(in crate::app) fn scope_for_new_comment(&self) -> crate::model::CommentScope {
+        if let Some(sha) = self.commit_id_for_new_comment() {
+            return crate::model::CommentScope::commit(sha);
+        }
+        match self.review_commits.last() {
+            Some(head) => crate::model::CommentScope::commit(head.id.clone()),
+            None => crate::model::CommentScope::working_tree(
+                crate::persistence::comment_store::checkout_key(&self.session.repo_path),
+            ),
+        }
+    }
+
+    /// The message of the commit a new comment is filed under, so the store
+    /// can find the thread again after that commit is rewritten.
+    fn message_for_new_comment(&self, scope: &crate::model::CommentScope) -> Option<String> {
+        let sha = scope.sha()?;
+        self.review_commits
+            .iter()
+            .find(|commit| commit.id == sha)
+            .map(|commit| match commit.body.as_ref() {
+                Some(body) => format!("{}\n\n{body}", commit.summary),
+                None => commit.summary.clone(),
+            })
+    }
+
+    /// Write a newly created comment to the store, stamping the anchor that
+    /// says what it was written against.
+    pub(in crate::app) fn store_comment(&mut self, id: &str) {
+        if !self.comments_in_store {
+            return;
+        }
+        let Some(store) = self.comment_store() else {
+            return;
+        };
+        let Some((scope, comment)) = self.anchored_copy(id) else {
+            return;
+        };
+        let message = self.message_for_new_comment(&scope);
+        if let Err(e) = store.add(&scope, message.as_deref(), comment) {
+            self.set_warning(format!("Could not save the comment: {e}"));
+        }
+    }
+
+    /// Apply the in-memory state of `id` to the stored copy.
+    pub(in crate::app) fn store_comment_update(&mut self, id: &str) {
+        if !self.comments_in_store {
+            return;
+        }
+        let Some(store) = self.comment_store() else {
+            return;
+        };
+        let Some((_, updated)) = self.anchored_copy(id) else {
+            return;
+        };
+        let applied = store.update_comment(id, |stored| {
+            stored.content = updated.content.clone();
+            stored.comment_type = updated.comment_type.clone();
+            stored.resolved = updated.resolved;
+            stored.outdated = updated.outdated;
+        });
+        if let Err(e) = applied {
+            self.set_warning(format!("Could not update the comment: {e}"));
+        }
+    }
+
+    /// Apply the in-memory state of every comment in `id`'s thread.
+    pub(in crate::app) fn store_thread_update(&mut self, id: &str) {
+        if !self.comments_in_store {
+            return;
+        }
+        let root = self
+            .session
+            .find_comment(id)
+            .map(|c| c.in_reply_to.clone().unwrap_or_else(|| c.id.clone()));
+        let Some(root) = root else { return };
+        let members: Vec<String> = self
+            .all_comments()
+            .filter(|c| c.id == root || c.in_reply_to.as_deref() == Some(root.as_str()))
+            .map(|c| c.id.clone())
+            .collect();
+        for member in members {
+            self.store_comment_update(&member);
+        }
+    }
+
+    /// Remove a thread from the store.
+    pub(in crate::app) fn store_thread_delete(&mut self, id: &str) {
+        if !self.comments_in_store {
+            return;
+        }
+        let Some(store) = self.comment_store() else {
+            return;
+        };
+        if let Err(e) = store.delete_thread(id) {
+            self.set_warning(format!("Could not delete the comment: {e}"));
+        }
+    }
+
+    fn all_comments(&self) -> impl Iterator<Item = &crate::model::Comment> {
+        self.session
+            .review_comments
+            .iter()
+            .chain(self.session.files.values().flat_map(|review| {
+                review
+                    .file_comments
+                    .iter()
+                    .chain(review.line_comments.values().flatten())
+            }))
+    }
+
+    /// The in-memory comment with `id`, carrying an anchor: the one it already
+    /// has, or one built from where it sits now.
+    fn anchored_copy(
+        &self,
+        id: &str,
+    ) -> Option<(crate::model::CommentScope, crate::model::Comment)> {
+        let scope = self.scope_for_new_comment();
+        if let Some(comment) = self.session.review_comments.iter().find(|c| c.id == id) {
+            let mut comment = comment.clone();
+            let anchor = comment
+                .anchor
+                .clone()
+                .unwrap_or_else(|| crate::model::CommentAnchor::review(scope.clone()));
+            let scope = anchor.scope.clone();
+            comment.anchor = Some(anchor);
+            return Some((scope, comment));
+        }
+        for (path, review) in &self.session.files {
+            if let Some(comment) = review.file_comments.iter().find(|c| c.id == id) {
+                let mut comment = comment.clone();
+                let anchor = comment.anchor.clone().unwrap_or_else(|| {
+                    crate::model::CommentAnchor::file(scope.clone(), path.clone())
+                });
+                let scope = anchor.scope.clone();
+                comment.anchor = Some(anchor);
+                return Some((scope, comment));
+            }
+            for (line, comments) in &review.line_comments {
+                if let Some(comment) = comments.iter().find(|c| c.id == id) {
+                    let mut comment = comment.clone();
+                    let anchor = comment.anchor.clone().unwrap_or_else(|| {
+                        crate::model::CommentAnchor::line(
+                            scope.clone(),
+                            path.clone(),
+                            *line,
+                            comment.side.unwrap_or(crate::model::LineSide::New),
+                        )
+                    });
+                    let scope = anchor.scope.clone();
+                    comment.anchor = Some(anchor);
+                    return Some((scope, comment));
+                }
+            }
+        }
+        None
     }
 }

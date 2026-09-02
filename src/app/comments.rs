@@ -705,6 +705,15 @@ impl App {
     /// Returns true if a comment was deleted
     pub fn delete_comment_at_cursor(&mut self) -> bool {
         let location = self.find_comment_at_cursor();
+        // Taken before the thread leaves memory: the store is told by id, and
+        // afterwards there is no comment left to ask.
+        let doomed = location
+            .as_ref()
+            .and_then(|location| self.comment_at_location(location))
+            .map(|comment| comment.id.clone());
+        if let Some(id) = doomed {
+            self.store_thread_delete(&id);
+        }
 
         match location {
             Some(CommentLocation::Review { index })
@@ -1122,6 +1131,7 @@ impl App {
 
         match crate::review_store::set_thread_resolved(&mut self.session, &comment_id, resolved) {
             Ok(_) => {
+                self.store_thread_update(&comment_id);
                 self.dirty = true;
                 let message = if resolved {
                     "Thread resolved"
@@ -1443,7 +1453,13 @@ impl App {
                     reopen: true,
                 },
             ) {
-                Ok(_) => "Reply added".to_string(),
+                Ok(reply) => {
+                    // A reply reopens its thread, so the whole thread's stored
+                    // copies move with it, not just the new message.
+                    self.store_comment(&reply.id);
+                    self.store_thread_update(&reply.id);
+                    "Reply added".to_string()
+                }
                 Err(e) => format!("Error: Could not save reply: {e}"),
             };
             self.finish_comment_save(message);
@@ -1453,6 +1469,7 @@ impl App {
         let mut message = "Error: Could not save comment".to_string();
 
         // Check if we're editing an existing comment
+        let edited_id = self.editing_comment_id.clone();
         if let Some(editing_id) = &self.editing_comment_id {
             if let Some(comment) = self
                 .session
@@ -1507,7 +1524,10 @@ impl App {
                 commit_id: None,
             };
             message = match add_comment_to_session(&mut self.session, request) {
-                Ok(_) => "Review comment added".to_string(),
+                Ok(added) => {
+                    self.store_comment(&added.id);
+                    "Review comment added".to_string()
+                }
                 Err(e) => format!("Error: Could not save comment: {e}"),
             };
         } else if let Some(path) = self.current_file_path().cloned() {
@@ -1551,11 +1571,17 @@ impl App {
                 commit_id: self.commit_id_for_new_comment(),
             };
             message = match add_comment_to_session(&mut self.session, request) {
-                Ok(_) => success_message,
+                Ok(added) => {
+                    self.store_comment(&added.id);
+                    success_message
+                }
                 Err(e) => format!("Error: Could not save comment: {e}"),
             };
         }
 
+        if let Some(edited) = edited_id {
+            self.store_comment_update(&edited);
+        }
         self.finish_comment_save(message);
     }
 
