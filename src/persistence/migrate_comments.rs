@@ -146,7 +146,10 @@ fn copy_tree(from: &Path, to: &Path) -> Result<()> {
 /// scoping logic, and simply walks both sides. `verify_migration` asks whether
 /// the store holds what the migration meant to write, which cannot catch the
 /// migration meaning the wrong thing — this can.
-pub fn comments_not_in_store(reviews_dir: &Path) -> Result<Vec<String>> {
+pub fn comments_not_in_store(
+    reviews_dir: &Path,
+    wanted: impl Fn(&str) -> bool,
+) -> Result<Vec<String>> {
     let mut in_sessions: BTreeMap<String, (String, String, bool)> = BTreeMap::new();
     let sessions = reviews_dir.join("sessions");
     if let Ok(entries) = std::fs::read_dir(&sessions) {
@@ -157,6 +160,13 @@ pub fn comments_not_in_store(reviews_dir: &Path) -> Result<Vec<String>> {
             let Ok(session) = load_session(&entry.path()) else {
                 continue;
             };
+            // Only the repositories being asked about. A machine-wide check
+            // fails on the first repository that has not moved yet, which for
+            // a per-repository migration means the switch is never thrown.
+            match repo_key_for_session(reviews_dir, &entry.path(), &session) {
+                Some(key) if wanted(&key) => {}
+                _ => continue,
+            }
             let mut note = |comment: &Comment| {
                 in_sessions.insert(
                     comment.id.clone(),
@@ -748,7 +758,7 @@ mod safety_tests {
         let id = a_session(&dir);
 
         assert_eq!(
-            comments_not_in_store(&dir).unwrap(),
+            comments_not_in_store(&dir, |_| true).unwrap(),
             vec![format!("{id}: missing from the store")],
             "before migrating, the session's comment is not in the store"
         );
@@ -756,7 +766,7 @@ mod safety_tests {
         migrate_comments(&dir, true, &NoMessages).unwrap();
 
         assert!(
-            comments_not_in_store(&dir).unwrap().is_empty(),
+            comments_not_in_store(&dir, |_| true).unwrap().is_empty(),
             "and afterwards every one of them is"
         );
     }
@@ -770,6 +780,61 @@ mod safety_tests {
         let report = migrate_repos(&dir, true, &NoMessages, |key| key == "somewhere-else").unwrap();
 
         assert_eq!(report.comments, 0, "nothing from another repository moved");
-        assert!(!comments_not_in_store(&dir).unwrap().is_empty());
+        assert!(!comments_not_in_store(&dir, |_| true).unwrap().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod scoped_verification_tests {
+    use super::*;
+    use crate::model::review::SessionDiffSource;
+    use crate::model::{CommentType, FileStatus, LineSide, ReviewSession};
+    use crate::persistence::storage::save_session_in_dir;
+    use tempfile::tempdir;
+
+    fn session_for(dir: &Path, repo: &str) {
+        let mut session = ReviewSession::new(
+            PathBuf::from(format!("/repos/{repo}")),
+            "head".to_string(),
+            Some("main".to_string()),
+            SessionDiffSource::CommitRange,
+        );
+        session.commit_range = Some(vec!["aaaa".to_string()]);
+        session.add_file(PathBuf::from("src/main.rs"), FileStatus::Modified, 0);
+        let mut comment = Comment::new(
+            format!("about {repo}"),
+            CommentType::from_id("issue"),
+            Some(LineSide::New),
+        );
+        comment.commit_id = Some("aaaa".to_string());
+        session
+            .get_file_mut(&PathBuf::from("src/main.rs"))
+            .unwrap()
+            .add_line_comment(1, comment);
+        save_session_in_dir(&session, dir).unwrap();
+    }
+
+    #[test]
+    fn should_check_only_the_repository_that_was_migrated() {
+        // A machine-wide check fails on the first repository that has not
+        // moved, so a per-repository migration would never be accepted — on a
+        // machine with fifteen repositories, never at all.
+        let temp = tempdir().unwrap();
+        let dir = temp.path().join("reviews");
+        session_for(&dir, "one");
+        session_for(&dir, "two");
+
+        migrate_repos(&dir, true, &NoMessages, |key| key == "one").unwrap();
+
+        assert!(
+            comments_not_in_store(&dir, |key| key == "one")
+                .unwrap()
+                .is_empty(),
+            "the repository that moved checks out"
+        );
+        assert!(
+            !comments_not_in_store(&dir, |_| true).unwrap().is_empty(),
+            "while the machine as a whole does not, which is why the scope matters"
+        );
     }
 }

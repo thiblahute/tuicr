@@ -1134,8 +1134,19 @@ impl App {
         if let Some(sha) = self.commit_id_for_new_comment() {
             return crate::model::CommentScope::commit(sha);
         }
-        match self.review_commits.last() {
-            Some(head) => crate::model::CommentScope::commit(head.id.clone()),
+        // The head comes from `commit_range`, whose last entry is the newest —
+        // checked against ancestry on real sessions. `review_commits` is
+        // ordered for display and follows the `commit_order` setting, so
+        // reading a head out of it files comments under the oldest commit for
+        // half the readers. It is also the field the migration stamps from, so
+        // a comment lands in the same place however it got here.
+        match self
+            .session
+            .commit_range
+            .as_ref()
+            .and_then(|range| range.last())
+        {
+            Some(head) => crate::model::CommentScope::commit(head.clone()),
             None => crate::model::CommentScope::working_tree(
                 crate::persistence::comment_store::checkout_key(&self.session.repo_path),
             ),
@@ -1168,8 +1179,17 @@ impl App {
             return;
         };
         let message = self.message_for_new_comment(&scope);
+        let anchor = comment.anchor.clone();
         if let Err(e) = store.add(&scope, message.as_deref(), comment) {
             self.set_warning(format!("Could not save the comment: {e}"));
+            return;
+        }
+        // Keep the anchor the store was given. Without it the next write
+        // derives a fresh one from wherever the comment sits now, so a reply
+        // can be filed under a different commit than its own root — splitting
+        // one thread across two files, where deleting it only reaches half.
+        if let Some(anchor) = anchor {
+            self.set_anchor(id, anchor);
         }
     }
 
@@ -1225,6 +1245,26 @@ impl App {
         };
         if let Err(e) = store.delete_thread(id) {
             self.set_warning(format!("Could not delete the comment: {e}"));
+        }
+    }
+
+    /// Record on the session's own copy what the store was told.
+    fn set_anchor(&mut self, id: &str, anchor: crate::model::CommentAnchor) {
+        if let Some(comment) = self.session.review_comments.iter_mut().find(|c| c.id == id) {
+            comment.anchor = Some(anchor);
+            return;
+        }
+        for review in self.session.files.values_mut() {
+            if let Some(comment) = review.file_comments.iter_mut().find(|c| c.id == id) {
+                comment.anchor = Some(anchor);
+                return;
+            }
+            for comments in review.line_comments.values_mut() {
+                if let Some(comment) = comments.iter_mut().find(|c| c.id == id) {
+                    comment.anchor = Some(anchor);
+                    return;
+                }
+            }
         }
     }
 
@@ -1333,7 +1373,9 @@ impl App {
             return;
         }
 
-        match crate::persistence::migrate_comments::comments_not_in_store(&reviews_dir) {
+        match crate::persistence::migrate_comments::comments_not_in_store(&reviews_dir, |key| {
+            crate::persistence::comment_store::sanitized_repo_key(key) == wanted
+        }) {
             Ok(problems) if problems.is_empty() => {
                 if store.take_over().is_ok() {
                     self.set_message(format!(

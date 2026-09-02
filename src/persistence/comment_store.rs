@@ -25,6 +25,7 @@ use crate::persistence::storage::{with_reviews_dir_lock, write_atomic};
 
 const COMMENTS_DIRNAME: &str = "comments";
 const INDEX_FILENAME: &str = "index.json";
+const MIGRATED_FILENAME: &str = "migrated";
 const FORMAT_VERSION: u32 = 1;
 
 /// One commit's comments, as stored.
@@ -112,13 +113,17 @@ impl CommentStore {
     /// place and writes go to another, which is how a comment gets written to
     /// the session and erased by the next read.
     pub fn in_use(&self) -> bool {
-        self.root.join(INDEX_FILENAME).is_file()
+        self.root.join(MIGRATED_FILENAME).is_file()
     }
 
     /// Mark this repository as migrated, so reviews start using the store.
+    ///
+    /// A marker of its own, not the index: every write rebuilds the index, so
+    /// testing that file would flip the switch on the first write rather than
+    /// when the migration was checked and accepted.
     pub fn take_over(&self) -> Result<()> {
         self.rebuild_index()?;
-        Ok(())
+        write_atomic(&self.root.join(MIGRATED_FILENAME), b"1\n")
     }
 
     /// Remove a comment and every reply to it, wherever it is stored.
@@ -1033,5 +1038,41 @@ mod carried_visibility_tests {
             resolved.shown_under.get(id).map(String::as_str),
             Some("dddd4444")
         );
+    }
+}
+
+#[cfg(test)]
+mod switch_tests {
+    use super::*;
+    use crate::model::CommentType;
+    use tempfile::tempdir;
+
+    #[test]
+    fn should_not_switch_a_repository_over_just_because_something_was_written() {
+        // Every write rebuilds the index, so a switch that tested for the
+        // index would be thrown by the first write rather than by a migration
+        // that was checked and accepted.
+        let dir = tempdir().unwrap();
+        let store = CommentStore::new(dir.path(), "agavra/tuicr");
+        let scope = CommentScope::commit("aaaa1111");
+        store
+            .add(
+                &scope,
+                None,
+                Comment::new("x".to_string(), CommentType::from_id("note"), None),
+            )
+            .unwrap();
+
+        assert!(
+            store.root().join(INDEX_FILENAME).is_file(),
+            "the index is there"
+        );
+        assert!(
+            !store.in_use(),
+            "but the repository has not been switched over"
+        );
+
+        store.take_over().unwrap();
+        assert!(store.in_use());
     }
 }
