@@ -2945,20 +2945,26 @@ fn should_take_a_deleted_thread_out_of_the_store() {
 }
 
 #[test]
-fn should_leave_the_store_alone_before_a_repo_is_migrated() {
+fn should_write_nowhere_when_a_review_is_not_on_the_store() {
+    // Opening a review moves its repository onto the store, so this guard is
+    // reached by a review whose repository has no coordinate to key on. It
+    // still has to hold: a write with nowhere to go must not invent a place.
     let temp = tempfile::tempdir().unwrap();
     crate::persistence::storage::set_test_reviews_dir(Some(temp.path().to_path_buf()));
     let (session, root) = session_with_line_comment();
     let mut app = app_for(session);
-    assert!(!app.comments_in_store);
+    app.comments_in_store = false;
 
     app.store_comment(&root.id);
     app.store_thread_delete(&root.id);
 
     let store = crate::persistence::comment_store::CommentStore::new(temp.path(), "repo");
     assert!(
-        !store.in_use(),
-        "nothing was created behind the reader's back"
+        store
+            .comments_for(&[crate::model::CommentScope::commit("aaaa1111")])
+            .unwrap()
+            .is_empty(),
+        "nothing was written behind the reader's back"
     );
 }
 
@@ -3032,4 +3038,63 @@ fn should_not_strip_the_session_of_comments_the_store_now_holds() {
         still_here,
         "a save after hydration would otherwise write the session without it"
     );
+}
+
+#[test]
+fn should_move_this_repository_onto_the_store_on_first_open() {
+    // The reader opens a review and their comments follow their commits from
+    // then on, without a command to remember.
+    let temp = tempfile::tempdir().unwrap();
+    let reviews = temp.path().join("reviews");
+    crate::persistence::storage::set_test_reviews_dir(Some(reviews.clone()));
+
+    let (mut session, root) = session_with_line_comment();
+    session.diff_source = crate::model::review::SessionDiffSource::CommitRange;
+    session.commit_range = Some(vec!["aaaa1111".to_string()]);
+    crate::persistence::storage::save_session_in_dir(&session, &reviews).unwrap();
+    let mut app = app_for(session);
+    app.review_commits = vec![commit_info("aaaa1111", "a change")];
+
+    app.hydrate_comments_from_store();
+
+    let store = crate::persistence::comment_store::CommentStore::new(&reviews, "repo");
+    assert!(store.in_use(), "the repository moved onto the store");
+    let held = store
+        .comments_for(&[crate::model::CommentScope::commit("aaaa1111")])
+        .unwrap();
+    assert_eq!(held.len(), 1);
+    assert_eq!(held[0].id, root.id, "carrying the comment that was there");
+    assert!(
+        reviews
+            .parent()
+            .unwrap()
+            .read_dir()
+            .unwrap()
+            .flatten()
+            .any(|e| e.file_name().to_string_lossy().starts_with("reviews.bak-")),
+        "and a snapshot was taken first"
+    );
+}
+
+#[test]
+fn should_leave_a_repository_alone_when_it_has_nothing_to_move() {
+    let temp = tempfile::tempdir().unwrap();
+    let reviews = temp.path().join("reviews");
+    crate::persistence::storage::set_test_reviews_dir(Some(reviews.clone()));
+    let mut session = crate::model::ReviewSession::new(
+        PathBuf::from("/repo"),
+        "head".to_string(),
+        Some("main".to_string()),
+        crate::model::review::SessionDiffSource::CommitRange,
+    );
+    session.commit_range = Some(vec!["aaaa1111".to_string()]);
+    crate::persistence::storage::save_session_in_dir(&session, &reviews).unwrap();
+    let mut app = app_for(session);
+    app.review_commits = vec![commit_info("aaaa1111", "a change")];
+
+    app.hydrate_comments_from_store();
+
+    let store = crate::persistence::comment_store::CommentStore::new(&reviews, "repo");
+    assert!(store.in_use(), "an empty review still starts on the store");
+    assert!(app.session.review_comments.is_empty());
 }
