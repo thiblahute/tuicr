@@ -2594,3 +2594,132 @@ fn should_ask_about_the_comment_the_annotation_points_at() {
     );
     assert!(!comments[1].is_locked(), "index 1 is the local draft");
 }
+
+/// An app whose repo's comments live in a store under `dir`.
+///
+/// The reviews directory is a thread-local in test builds, so it is pointed at
+/// `dir` — otherwise the app writes to a per-thread temp dir and the
+/// assertions read somewhere else entirely.
+fn app_on_store(dir: &std::path::Path) -> App {
+    crate::persistence::storage::set_test_reviews_dir(Some(dir.to_path_buf()));
+    let (session, _root) = session_with_line_comment();
+    let mut app = app_for(session);
+    let store = crate::persistence::comment_store::CommentStore::new(dir, "repo");
+    store.take_over().unwrap();
+    app.comments_in_store = true;
+    app.review_commits = vec![commit_info("aaaa1111", "a change")];
+    app
+}
+
+#[test]
+fn should_write_a_new_comment_to_the_store() {
+    // Once a repo is on the store, a comment written in the TUI has to land
+    // there — a session-only write is erased by the next hydration.
+    let temp = tempfile::tempdir().unwrap();
+    let mut app = app_on_store(temp.path());
+    let added = crate::review_store::add_comment_to_session(
+        &mut app.session,
+        crate::review_store::AddCommentRequest::new(
+            crate::review_store::CommentTarget::Line {
+                path: PathBuf::from("src/main.rs"),
+                line: 9,
+                side: LineSide::New,
+            },
+            "written after migrating".to_string(),
+            CommentType::from_id("issue"),
+            "user".to_string(),
+        ),
+    )
+    .unwrap();
+
+    app.store_comment(&added.id);
+
+    let store = crate::persistence::comment_store::CommentStore::new(temp.path(), "repo");
+    let held = store
+        .comments_for(&[crate::model::CommentScope::commit("aaaa1111")])
+        .unwrap();
+    assert_eq!(held.len(), 1);
+    assert_eq!(held[0].content, "written after migrating");
+    let anchor = held[0].anchor.as_ref().expect("anchored on the way out");
+    assert_eq!(anchor.line, Some(9));
+    assert_eq!(
+        anchor.path.as_deref(),
+        Some(std::path::Path::new("src/main.rs"))
+    );
+}
+
+#[test]
+fn should_carry_a_resolve_into_the_store() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut app = app_on_store(temp.path());
+    let added = crate::review_store::add_comment_to_session(
+        &mut app.session,
+        crate::review_store::AddCommentRequest::new(
+            crate::review_store::CommentTarget::File {
+                path: PathBuf::from("src/main.rs"),
+            },
+            "needs a guard".to_string(),
+            CommentType::from_id("issue"),
+            "user".to_string(),
+        ),
+    )
+    .unwrap();
+    app.store_comment(&added.id);
+
+    crate::review_store::set_thread_resolved(&mut app.session, &added.id, true).unwrap();
+    app.store_thread_update(&added.id);
+
+    let store = crate::persistence::comment_store::CommentStore::new(temp.path(), "repo");
+    let held = store
+        .comments_for(&[crate::model::CommentScope::commit("aaaa1111")])
+        .unwrap();
+    assert!(held[0].resolved, "the store agrees the thread is settled");
+}
+
+#[test]
+fn should_take_a_deleted_thread_out_of_the_store() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut app = app_on_store(temp.path());
+    let added = crate::review_store::add_comment_to_session(
+        &mut app.session,
+        crate::review_store::AddCommentRequest::new(
+            crate::review_store::CommentTarget::File {
+                path: PathBuf::from("src/main.rs"),
+            },
+            "never mind".to_string(),
+            CommentType::from_id("issue"),
+            "user".to_string(),
+        ),
+    )
+    .unwrap();
+    app.store_comment(&added.id);
+
+    app.store_thread_delete(&added.id);
+
+    let store = crate::persistence::comment_store::CommentStore::new(temp.path(), "repo");
+    assert!(
+        store
+            .comments_for(&[crate::model::CommentScope::commit("aaaa1111")])
+            .unwrap()
+            .is_empty(),
+        "deleting must reach the store, or the comment returns on the next open"
+    );
+}
+
+#[test]
+fn should_leave_the_store_alone_before_a_repo_is_migrated() {
+    let temp = tempfile::tempdir().unwrap();
+    crate::persistence::storage::set_test_reviews_dir(Some(temp.path().to_path_buf()));
+    let (session, root) = session_with_line_comment();
+    let mut app = app_for(session);
+    assert!(!app.comments_in_store);
+
+    app.store_comment(&root.id);
+    app.store_thread_delete(&root.id);
+
+    let store = crate::persistence::comment_store::CommentStore::new(temp.path(), "repo");
+    assert!(
+        !store.in_use(),
+        "nothing was created behind the reader's back"
+    );
+}
