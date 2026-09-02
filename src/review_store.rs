@@ -413,6 +413,10 @@ pub fn reply_to_comment_in_session(
             remote_review_id: None,
             remote_comment_id: None,
             commit_id: root.commit_id.clone(),
+            // A reply inherits its root's anchor: a thread is one conversation
+            // about one place, and splitting it across scopes would split it
+            // across files in the store.
+            anchor: root.anchor.clone(),
             in_reply_to: Some(root_id.clone()),
             // A reply that does not reopen joins the thread in its current
             // state — a lone unresolved member of a settled thread would

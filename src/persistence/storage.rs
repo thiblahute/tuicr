@@ -377,7 +377,7 @@ fn upsert_session_manifest(
     manifest::save_manifest(reviews_dir, &manifest)
 }
 
-fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
+pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     let parent = path.parent().ok_or_else(|| {
         TuicrError::Io(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
@@ -411,7 +411,10 @@ impl Drop for ReviewsDirLock {
     }
 }
 
-fn with_reviews_dir_lock<T>(reviews_dir: &Path, f: impl FnOnce() -> Result<T>) -> Result<T> {
+pub(crate) fn with_reviews_dir_lock<T>(
+    reviews_dir: &Path,
+    f: impl FnOnce() -> Result<T>,
+) -> Result<T> {
     let _lock = acquire_reviews_dir_lock(reviews_dir)?;
     f()
 }

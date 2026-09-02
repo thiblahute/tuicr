@@ -12,6 +12,100 @@ pub enum LineSide {
     New,
 }
 
+/// What a comment was written against, recorded once and never updated.
+///
+/// A per-commit view names that commit; a cumulative range names its head —
+/// "I said this while reading the tree at C" is a fact about C, and C stays a
+/// real object when the branch grows past it. Uncommitted work has no commit
+/// to name, so it names the checkout instead, which is where that state lives.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum CommentScope {
+    Commit { sha: String },
+    WorkingTree { checkout: String },
+}
+
+impl CommentScope {
+    pub fn commit(sha: impl Into<String>) -> Self {
+        Self::Commit { sha: sha.into() }
+    }
+
+    pub fn working_tree(checkout: impl Into<String>) -> Self {
+        Self::WorkingTree {
+            checkout: checkout.into(),
+        }
+    }
+
+    /// The commit this scope names, or `None` for uncommitted work.
+    pub fn sha(&self) -> Option<&str> {
+        match self {
+            Self::Commit { sha } => Some(sha),
+            Self::WorkingTree { .. } => None,
+        }
+    }
+
+    /// The file this scope's comments are stored in, relative to the repo's
+    /// comment directory.
+    pub fn file_name(&self) -> String {
+        match self {
+            Self::Commit { sha } => format!("{sha}.json"),
+            Self::WorkingTree { checkout } => format!("wt-{checkout}.json"),
+        }
+    }
+}
+
+/// Where a comment was written: which commit, which place in it.
+///
+/// Written at creation and never rewritten. Where a comment *renders* is a
+/// question the view answers against the diff on screen, not something stored
+/// here — the anchor only says what it was about.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommentAnchor {
+    pub scope: CommentScope,
+    /// `None` for a review-level comment.
+    #[serde(default)]
+    pub path: Option<std::path::PathBuf>,
+    /// `None` for a file-level comment.
+    #[serde(default)]
+    pub line: Option<u32>,
+    #[serde(default)]
+    pub side: LineSide,
+}
+
+impl CommentAnchor {
+    pub fn review(scope: CommentScope) -> Self {
+        Self {
+            scope,
+            path: None,
+            line: None,
+            side: LineSide::default(),
+        }
+    }
+
+    pub fn file(scope: CommentScope, path: impl Into<std::path::PathBuf>) -> Self {
+        Self {
+            scope,
+            path: Some(path.into()),
+            line: None,
+            side: LineSide::default(),
+        }
+    }
+
+    pub fn line(
+        scope: CommentScope,
+        path: impl Into<std::path::PathBuf>,
+        line: u32,
+        side: LineSide,
+    ) -> Self {
+        Self {
+            scope,
+            path: Some(path.into()),
+            line: Some(line),
+            side,
+        }
+    }
+}
+
 /// A range of lines for a comment (inclusive)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LineRange {
@@ -214,6 +308,11 @@ pub struct Comment {
     /// comments are always shown.
     #[serde(default)]
     pub commit_id: Option<String>,
+    /// What this comment was written against. `None` for comments stored
+    /// before anchors existed; the migration into the comment store fills it
+    /// in, and everything created since carries one.
+    #[serde(default)]
+    pub anchor: Option<CommentAnchor>,
     /// Root comment this one replies to, forming a local thread. `None` for a
     /// thread root. Replies live in the same bucket as their root — same file,
     /// same line, same review scope — so anchoring, persistence, and the
@@ -254,6 +353,7 @@ impl Comment {
             remote_review_id: None,
             remote_comment_id: None,
             commit_id: None,
+            anchor: None,
             in_reply_to: None,
             resolved: false,
             outdated: false,
@@ -280,6 +380,7 @@ impl Comment {
             remote_review_id: None,
             remote_comment_id: None,
             commit_id: None,
+            anchor: None,
             in_reply_to: None,
             resolved: false,
             outdated: false,
