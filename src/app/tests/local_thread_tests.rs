@@ -2401,7 +2401,8 @@ fn stored_comment(body: &str, sha: &str, path: &str, line: Option<u32>) -> Comme
 #[test]
 fn should_fill_a_review_from_the_store() {
     let temp = tempfile::tempdir().unwrap();
-    let (session, _root) = session_with_line_comment();
+    let (mut session, _root) = session_with_line_comment();
+    session.diff_source = crate::model::review::SessionDiffSource::CommitRange;
     let mut app = app_for(session);
     app.review_commits = vec![commit_info("aaaa1111", "a change")];
     store_with(
@@ -2463,7 +2464,8 @@ fn should_place_a_review_level_comment_without_a_path() {
 
 #[test]
 fn should_name_the_commits_a_review_asks_the_store_about() {
-    let (session, _root) = session_with_line_comment();
+    let (mut session, _root) = session_with_line_comment();
+    session.diff_source = crate::model::review::SessionDiffSource::CommitRange;
     let mut app = app_for(session);
     app.review_commits = vec![
         commit_info("aaaa1111", "first"),
@@ -2498,7 +2500,8 @@ fn should_keep_a_comment_the_store_does_not_have_yet() {
     // else: clearing the buckets loses it, and the next save writes that loss
     // to disk with nothing to warn the reader.
     let temp = tempfile::tempdir().unwrap();
-    let (session, session_only) = session_with_line_comment();
+    let (mut session, session_only) = session_with_line_comment();
+    session.diff_source = crate::model::review::SessionDiffSource::CommitRange;
     let mut app = app_for(session);
     app.review_commits = vec![commit_info("aaaa1111", "a change")];
 
@@ -2602,7 +2605,8 @@ fn should_ask_about_the_comment_the_annotation_points_at() {
 /// assertions read somewhere else entirely.
 fn app_on_store(dir: &std::path::Path) -> App {
     crate::persistence::storage::set_test_reviews_dir(Some(dir.to_path_buf()));
-    let (session, _root) = session_with_line_comment();
+    let (mut session, _root) = session_with_line_comment();
+    session.diff_source = crate::model::review::SessionDiffSource::CommitRange;
     let mut app = app_for(session);
     let store = crate::persistence::comment_store::CommentStore::new(dir, "repo");
     store.take_over().unwrap();
@@ -2722,4 +2726,42 @@ fn should_leave_the_store_alone_before_a_repo_is_migrated() {
         !store.in_use(),
         "nothing was created behind the reader's back"
     );
+}
+
+#[test]
+fn should_ask_about_both_when_a_review_shows_commits_and_uncommitted_work() {
+    let (mut session, _root) = session_with_line_comment();
+    session.diff_source = crate::model::review::SessionDiffSource::WorkingTreeAndCommits;
+    let mut app = app_for(session);
+    app.review_commits = vec![commit_info("aaaa1111", "a change")];
+
+    let scopes = app.review_scopes();
+
+    assert_eq!(scopes.len(), 2, "the commit and the checkout: {scopes:?}");
+    assert_eq!(scopes[0].0.sha(), Some("aaaa1111"));
+    assert!(scopes[1].0.sha().is_none(), "and the working tree");
+}
+
+#[test]
+fn should_ask_about_no_commit_before_a_commit_review_has_resolved_its_commits() {
+    // Hydration runs once at build, before the commit list exists. Asking
+    // about the working tree then would pull uncommitted notes into a review
+    // of commits.
+    let (mut session, _root) = session_with_line_comment();
+    session.diff_source = crate::model::review::SessionDiffSource::CommitRange;
+    let app = app_for(session);
+
+    assert!(app.review_scopes().is_empty());
+}
+
+#[test]
+fn should_ask_about_the_checkout_for_a_staged_review() {
+    let (mut session, _root) = session_with_line_comment();
+    session.diff_source = crate::model::review::SessionDiffSource::Staged;
+    let app = app_for(session);
+
+    let scopes = app.review_scopes();
+
+    assert_eq!(scopes.len(), 1);
+    assert!(scopes[0].0.sha().is_none());
 }

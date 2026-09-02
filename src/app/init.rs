@@ -784,6 +784,11 @@ impl App {
                 app.set_warning(format!("Could not save re-anchored comments: {e}"));
             }
         }
+        // Every review passes through here, so this covers the working-tree,
+        // staged and PR entry points that each return on their own. A review
+        // of commits has none resolved yet at this point, so it asks about
+        // nothing and hydrates once its commit list is known.
+        app.hydrate_comments_from_store();
         app.rebuild_annotations();
         app.detect_forge_repository();
         Ok(app)

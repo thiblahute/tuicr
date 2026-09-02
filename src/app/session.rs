@@ -966,22 +966,47 @@ impl App {
     /// The commits this review has in view, with their summaries — what the
     /// store is asked about.
     pub(in crate::app) fn review_scopes(&self) -> Vec<(crate::model::CommentScope, String)> {
-        if self.review_commits.is_empty() {
-            let checkout = crate::persistence::comment_store::checkout_key(&self.session.repo_path);
-            return vec![(
-                crate::model::CommentScope::working_tree(checkout),
-                String::new(),
-            )];
-        }
-        self.review_commits
-            .iter()
-            .map(|commit| {
+        use crate::model::review::SessionDiffSource as Source;
+        let source = self.session.diff_source;
+        let has_commits = matches!(
+            source,
+            Source::CommitRange
+                | Source::WorkingTreeAndCommits
+                | Source::StagedUnstagedAndCommits
+                | Source::PullRequest
+        );
+        // A review of uncommitted work asks about its checkout, and one that
+        // shows both asks about both — deciding by "are there commits" instead
+        // made working-tree comments unreachable the moment a review also had
+        // commits in it.
+        let has_working_tree = matches!(
+            source,
+            Source::WorkingTree
+                | Source::Staged
+                | Source::Unstaged
+                | Source::StagedAndUnstaged
+                | Source::WorkingTreeAndCommits
+                | Source::StagedUnstagedAndCommits
+        );
+
+        let mut scopes = Vec::new();
+        if has_commits {
+            scopes.extend(self.review_commits.iter().map(|commit| {
                 (
                     crate::model::CommentScope::commit(commit.id.clone()),
                     commit.summary.clone(),
                 )
-            })
-            .collect()
+            }));
+        }
+        if has_working_tree {
+            scopes.push((
+                crate::model::CommentScope::working_tree(
+                    crate::persistence::comment_store::checkout_key(&self.session.repo_path),
+                ),
+                String::new(),
+            ));
+        }
+        scopes
     }
 
     /// Fill the in-memory review from the comment store: the comments on this
