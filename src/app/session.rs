@@ -936,3 +936,118 @@ impl App {
             .collect()
     }
 }
+
+impl App {
+    /// The comment store for this review's repository, and the key it lives
+    /// under. `None` when the repo has no coordinate to key on.
+    pub(in crate::app) fn comment_store(
+        &self,
+    ) -> Option<crate::persistence::comment_store::CommentStore> {
+        let reviews_dir = crate::persistence::storage::get_reviews_dir().ok()?;
+        let key = match self.session.pr_session_key.as_ref() {
+            Some(pr) => format!("{}/{}", pr.repository.owner, pr.repository.name),
+            None => {
+                let (owner, repo) = self
+                    .cached_owner_repo
+                    .get_or_init(|| crate::slug::resolve_owner_repo(&self.session.repo_path).ok())
+                    .clone()?;
+                match owner {
+                    Some(owner) => format!("{owner}/{repo}"),
+                    None => repo,
+                }
+            }
+        };
+        Some(crate::persistence::comment_store::CommentStore::new(
+            reviews_dir,
+            &key,
+        ))
+    }
+
+    /// The commits this review has in view, with their summaries — what the
+    /// store is asked about.
+    pub(in crate::app) fn review_scopes(&self) -> Vec<(crate::model::CommentScope, String)> {
+        if self.review_commits.is_empty() {
+            let checkout = crate::persistence::comment_store::checkout_key(&self.session.repo_path);
+            return vec![(
+                crate::model::CommentScope::working_tree(checkout),
+                String::new(),
+            )];
+        }
+        self.review_commits
+            .iter()
+            .map(|commit| {
+                (
+                    crate::model::CommentScope::commit(commit.id.clone()),
+                    commit.summary.clone(),
+                )
+            })
+            .collect()
+    }
+
+    /// Fill the in-memory review from the comment store: the comments on this
+    /// review's commits, on earlier versions of them, and whatever a summary
+    /// claims.
+    ///
+    /// A store with nothing for this repository leaves the session untouched,
+    /// so a review opened before the migration keeps showing what it always
+    /// showed. Migration stays something the reader asks for.
+    pub(in crate::app) fn hydrate_comments_from_store(&mut self) {
+        let Some(store) = self.comment_store() else {
+            return;
+        };
+        let live = self.review_scopes();
+        let shas: Vec<String> = live
+            .iter()
+            .filter_map(|(s, _)| s.sha().map(String::from))
+            .collect();
+        let predecessors = self
+            .vcs
+            .predecessors(&shas)
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+
+        let resolved = match crate::persistence::comment_store::resolve_for_review(
+            &store,
+            &live,
+            &predecessors,
+        ) {
+            Ok(resolved) => resolved,
+            Err(_) => return,
+        };
+        if resolved.comments.is_empty() {
+            return;
+        }
+
+        // The store is the authority once it holds anything: leaving the
+        // session's own copies in place would show every comment twice.
+        self.session.review_comments.clear();
+        for review in self.session.files.values_mut() {
+            review.file_comments.clear();
+            review.line_comments.clear();
+        }
+        self.comments_from_earlier = resolved.from_earlier;
+        for comment in resolved.comments {
+            self.place_stored_comment(comment);
+        }
+    }
+
+    /// Put a stored comment where the renderers look for it, from its anchor.
+    fn place_stored_comment(&mut self, comment: crate::model::Comment) {
+        let Some(anchor) = comment.anchor.clone() else {
+            self.session.review_comments.push(comment);
+            return;
+        };
+        let Some(path) = anchor.path else {
+            self.session.review_comments.push(comment);
+            return;
+        };
+        let review = self.session.files.entry(path.clone()).or_insert_with(|| {
+            crate::model::review::FileReview::new(path, crate::model::FileStatus::Modified, 0)
+        });
+        match anchor.line {
+            Some(line) => review.line_comments.entry(line).or_default().push(comment),
+            None => review.file_comments.push(comment),
+        }
+    }
+}

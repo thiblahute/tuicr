@@ -1132,6 +1132,9 @@ pub enum CommentVimPending {
 pub struct App {
     pub theme: Theme,
     pub vcs: Box<dyn VcsBackend>,
+    /// Ids of comments this review shows that were written on an earlier
+    /// version of one of its commits.
+    pub comments_from_earlier: std::collections::HashSet<String>,
     pub vcs_info: VcsInfo,
     /// The on-disk repo root tuicr was launched in, when there is one.
     ///
