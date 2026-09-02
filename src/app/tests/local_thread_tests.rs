@@ -2490,3 +2490,107 @@ fn should_ask_about_the_working_tree_when_no_commit_is_under_review() {
         "uncommitted work is keyed by checkout, not by a commit"
     );
 }
+
+#[test]
+fn should_keep_a_comment_the_store_does_not_have_yet() {
+    // Writes still land in the session, so a comment made after the migration
+    // exists only there. Hydration must take out its own copies and nothing
+    // else: clearing the buckets loses it, and the next save writes that loss
+    // to disk with nothing to warn the reader.
+    let temp = tempfile::tempdir().unwrap();
+    let (session, session_only) = session_with_line_comment();
+    let mut app = app_for(session);
+    app.review_commits = vec![commit_info("aaaa1111", "a change")];
+
+    let stored = stored_comment("from the store", "aaaa1111", "src/main.rs", Some(7));
+    let stored_id = stored.id.clone();
+    store_with(&app, temp.path(), "aaaa1111", "a change", vec![stored]);
+
+    let store = crate::persistence::comment_store::CommentStore::new(temp.path(), "checkout");
+    let resolved = crate::persistence::comment_store::resolve_for_review(
+        &store,
+        &app.review_scopes(),
+        &std::collections::BTreeMap::new(),
+    )
+    .unwrap();
+    app.merge_stored_comments_for_test(resolved);
+
+    let ids: Vec<String> = app
+        .session
+        .files
+        .values()
+        .flat_map(|r| r.line_comments.values().flatten().map(|c| c.id.clone()))
+        .collect();
+    assert!(
+        ids.contains(&session_only.id),
+        "the comment only the session has survives"
+    );
+    assert!(ids.contains(&stored_id), "and the store's is there too");
+    assert_eq!(ids.len(), 2, "each exactly once");
+}
+
+#[test]
+fn should_count_the_rows_a_settled_review_thread_actually_draws() {
+    // The row model skips a resolved reply at review level. If a renderer
+    // still draws its box, every row below sits lower than the model says and
+    // the cursor acts on the wrong comment — `dd` deletes a thread the reader
+    // was not pointing at.
+    let (mut session, root) = session_with_line_comment();
+    let mut review_root = Comment::new(
+        "about the whole change".to_string(),
+        CommentType::from_id("issue"),
+        None,
+    );
+    review_root.id = "review-root".to_string();
+    session.review_comments.push(review_root);
+    let _ = root;
+    let answer = reply(&mut session, "review-root", "answered");
+    crate::review_store::set_thread_resolved(&mut session, "review-root", true).unwrap();
+
+    let app = app_for(session);
+
+    assert!(
+        !app.comment_visible(&app.session.review_comments[1]),
+        "the settled reply is not shown"
+    );
+    assert_eq!(app.session.review_comments[1].id, answer.id);
+    let drawn = app
+        .session
+        .review_comments
+        .iter()
+        .filter(|c| app.comment_visible(c))
+        .count();
+    assert_eq!(drawn, 1, "only the collapsed root is drawn");
+}
+
+#[test]
+fn should_ask_about_the_comment_the_annotation_points_at() {
+    // A line can hold comments on both sides. The annotation carries an index
+    // into that line's comments; re-counting per side answers about a
+    // different one, so a locked comment reads as editable and vice versa.
+    let (mut session, _root) = session_with_line_comment();
+    let path = PathBuf::from("src/main.rs");
+    let mut old_side = Comment::new(
+        "on the old side".to_string(),
+        CommentType::from_id("issue"),
+        Some(LineSide::Old),
+    );
+    old_side.lifecycle_state = crate::model::comment::CommentLifecycleState::Submitted;
+    session
+        .get_file_mut(&path)
+        .unwrap()
+        .line_comments
+        .get_mut(&42)
+        .unwrap()
+        .insert(0, old_side);
+
+    let app = app_for(session);
+    let comments = &app.session.files[&path].line_comments[&42];
+
+    assert_eq!(comments.len(), 2);
+    assert!(
+        comments[0].is_locked(),
+        "index 0 is the published old-side one"
+    );
+    assert!(!comments[1].is_locked(), "index 1 is the local draft");
+}

@@ -982,7 +982,11 @@ impl App {
                 let Some(short_id) = Self::commit_message_short_id(path) else {
                     return false;
                 };
-                match known.iter().find(|commit| commit.short_id == short_id) {
+                // Compare by prefix: a backend's short id is not pinned to
+                // seven characters, and it grows with the repository.
+                match known.iter().find(|commit| {
+                    commit.short_id.starts_with(short_id) || short_id.starts_with(&commit.short_id)
+                }) {
                     Some(commit) => commit.summary == summary,
                     None => true,
                 }

@@ -1019,14 +1019,42 @@ impl App {
             return;
         }
 
-        // The store is the authority once it holds anything: leaving the
-        // session's own copies in place would show every comment twice.
-        self.session.review_comments.clear();
+        // Drop only the session's copies of what the store just handed back.
+        // Clearing the buckets wholesale would take comments the store does
+        // not have with them — anything written since the migration — and the
+        // next save would write that loss to disk without a word, since the
+        // merge compares against the session as it was before hydration and
+        // sees nothing missing.
+        self.merge_stored_comments(resolved);
+    }
+
+    #[cfg(test)]
+    pub(in crate::app) fn merge_stored_comments_for_test(
+        &mut self,
+        resolved: crate::persistence::comment_store::ResolvedComments,
+    ) {
+        self.merge_stored_comments(resolved);
+    }
+
+    /// Replace the session's copies of what the store returned, and place the
+    /// stored versions where the renderers look.
+    fn merge_stored_comments(
+        &mut self,
+        resolved: crate::persistence::comment_store::ResolvedComments,
+    ) {
+        let stored: std::collections::HashSet<String> =
+            resolved.comments.iter().map(|c| c.id.clone()).collect();
+        self.session
+            .review_comments
+            .retain(|c| !stored.contains(&c.id));
         for review in self.session.files.values_mut() {
-            review.file_comments.clear();
-            review.line_comments.clear();
+            review.file_comments.retain(|c| !stored.contains(&c.id));
+            review.line_comments.retain(|_, comments| {
+                comments.retain(|c| !stored.contains(&c.id));
+                !comments.is_empty()
+            });
         }
-        self.comments_from_earlier = resolved.from_earlier;
+        self.comments_from_earlier = resolved.from_earlier.clone();
         for mut comment in resolved.comments {
             // A carried comment is shown under the commit its own became, so
             // narrowing the review to that commit still shows it. Its anchor
