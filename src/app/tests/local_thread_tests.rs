@@ -2841,6 +2841,7 @@ fn app_on_store(dir: &std::path::Path) -> App {
     crate::persistence::storage::set_test_reviews_dir(Some(dir.to_path_buf()));
     let (mut session, _root) = session_with_line_comment();
     session.diff_source = crate::model::review::SessionDiffSource::CommitRange;
+    session.commit_range = Some(vec!["aaaa1111".to_string()]);
     let mut app = app_for(session);
     let store = crate::persistence::comment_store::CommentStore::new(dir, "repo");
     store.take_over().unwrap();
@@ -3097,4 +3098,61 @@ fn should_leave_a_repository_alone_when_it_has_nothing_to_move() {
     let store = crate::persistence::comment_store::CommentStore::new(&reviews, "repo");
     assert!(store.in_use(), "an empty review still starts on the store");
     assert!(app.session.review_comments.is_empty());
+}
+
+#[test]
+fn should_file_a_range_comment_under_the_head_of_the_range() {
+    // `review_commits` is ordered for display and follows the commit_order
+    // setting, so reading a head out of it files comments under the oldest
+    // commit for half the readers. The range's own last entry is the head.
+    let (mut session, _root) = session_with_line_comment();
+    session.diff_source = crate::model::review::SessionDiffSource::CommitRange;
+    session.commit_range = Some(vec!["oldest0".to_string(), "newest0".to_string()]);
+    let mut app = app_for(session);
+    app.review_commits = vec![
+        commit_info("newest0", "second"),
+        commit_info("oldest0", "first"),
+    ];
+
+    assert_eq!(
+        app.scope_for_new_comment().sha(),
+        Some("newest0"),
+        "the head, whichever way the list is displayed"
+    );
+}
+
+#[test]
+fn should_keep_a_reply_in_the_same_file_as_its_root() {
+    // The anchor the store was given has to be the one the session holds, or
+    // the next write derives a fresh one and the reply is filed under a
+    // different commit than its root — one thread in two files, where deleting
+    // it reaches only half.
+    let temp = tempfile::tempdir().unwrap();
+    let mut app = app_on_store(temp.path());
+    let root = crate::review_store::add_comment_to_session(
+        &mut app.session,
+        crate::review_store::AddCommentRequest::new(
+            crate::review_store::CommentTarget::File {
+                path: PathBuf::from("src/main.rs"),
+            },
+            "why this?".to_string(),
+            CommentType::from_id("issue"),
+            "user".to_string(),
+        ),
+    )
+    .unwrap();
+    app.store_comment(&root.id);
+
+    let stored_anchor = app
+        .session
+        .files
+        .values()
+        .flat_map(|r| r.file_comments.iter())
+        .find(|c| c.id == root.id)
+        .and_then(|c| c.anchor.clone());
+
+    assert!(
+        stored_anchor.is_some(),
+        "the session's own copy carries the anchor the store was given"
+    );
 }
