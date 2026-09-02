@@ -95,7 +95,7 @@ impl CommentStore {
         let reviews_dir = reviews_dir.into();
         let root = reviews_dir
             .join(COMMENTS_DIRNAME)
-            .join(sanitize_repo_key(repo_key));
+            .join(sanitized_repo_key(repo_key));
         Self { reviews_dir, root }
     }
 
@@ -526,7 +526,7 @@ pub fn checkout_key(path: &Path) -> String {
 
 /// `owner/repo` is a path in disguise; flatten it so the store stays one
 /// directory deep.
-fn sanitize_repo_key(key: &str) -> String {
+pub fn sanitized_repo_key(key: &str) -> String {
     key.chars()
         .map(|c| match c {
             'a'..='z' | 'A'..='Z' | '0'..='9' | '.' | '-' | '_' => c,

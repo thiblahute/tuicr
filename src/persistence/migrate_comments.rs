@@ -98,6 +98,131 @@ pub struct Divergence {
     pub reason: String,
 }
 
+/// Copy the whole reviews directory aside before anything is moved, once.
+///
+/// The migration is additive, but the session copies are refreshed every time
+/// a review saves, so "delete the store to undo" recovers comments only as of
+/// the last save. A snapshot taken before the first migration is what makes
+/// undoing exact.
+pub fn ensure_backup(reviews_dir: &Path) -> Result<Option<PathBuf>> {
+    let Some(parent) = reviews_dir.parent() else {
+        return Ok(None);
+    };
+    let stem = reviews_dir
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_else(|| "reviews".to_string());
+    if let Ok(entries) = std::fs::read_dir(parent) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with(&format!("{stem}.bak-")) {
+                return Ok(None);
+            }
+        }
+    }
+    let stamp = chrono::Utc::now().format("%Y%m%d-%H%M%S");
+    let backup = parent.join(format!("{stem}.bak-{stamp}"));
+    copy_tree(reviews_dir, &backup)?;
+    Ok(Some(backup))
+}
+
+fn copy_tree(from: &Path, to: &Path) -> Result<()> {
+    std::fs::create_dir_all(to)?;
+    for entry in std::fs::read_dir(from)?.flatten() {
+        let target = to.join(entry.file_name());
+        if entry.path().is_dir() {
+            copy_tree(&entry.path(), &target)?;
+        } else {
+            std::fs::copy(entry.path(), target)?;
+        }
+    }
+    Ok(())
+}
+
+/// Check that every comment a session file holds is in the store, comparing
+/// ids and the fields a reader would notice.
+///
+/// Deliberately independent of the migration: it derives nothing, shares no
+/// scoping logic, and simply walks both sides. `verify_migration` asks whether
+/// the store holds what the migration meant to write, which cannot catch the
+/// migration meaning the wrong thing — this can.
+pub fn comments_not_in_store(reviews_dir: &Path) -> Result<Vec<String>> {
+    let mut in_sessions: BTreeMap<String, (String, String, bool)> = BTreeMap::new();
+    let sessions = reviews_dir.join("sessions");
+    if let Ok(entries) = std::fs::read_dir(&sessions) {
+        for entry in entries.flatten() {
+            if entry.path().extension().and_then(|e| e.to_str()) != Some("json") {
+                continue;
+            }
+            let Ok(session) = load_session(&entry.path()) else {
+                continue;
+            };
+            let mut note = |comment: &Comment| {
+                in_sessions.insert(
+                    comment.id.clone(),
+                    (
+                        comment.content.clone(),
+                        comment.author.clone(),
+                        comment.resolved,
+                    ),
+                );
+            };
+            for comment in &session.review_comments {
+                note(comment);
+            }
+            for review in session.files.values() {
+                for comment in &review.file_comments {
+                    note(comment);
+                }
+                for comments in review.line_comments.values() {
+                    for comment in comments {
+                        note(comment);
+                    }
+                }
+            }
+        }
+    }
+
+    let mut in_store: BTreeMap<String, (String, String, bool)> = BTreeMap::new();
+    collect_stored(&reviews_dir.join("comments"), &mut in_store);
+
+    let mut problems = Vec::new();
+    for (id, expected) in &in_sessions {
+        match in_store.get(id) {
+            None => problems.push(format!("{id}: missing from the store")),
+            Some(actual) if actual != expected => {
+                problems.push(format!("{id}: changed on the way into the store"))
+            }
+            Some(_) => {}
+        }
+    }
+    Ok(problems)
+}
+
+fn collect_stored(dir: &Path, out: &mut BTreeMap<String, (String, String, bool)>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_stored(&path, out);
+        } else if path.file_name().and_then(|n| n.to_str()) != Some("index.json")
+            && path.extension().and_then(|e| e.to_str()) == Some("json")
+            && let Ok(bytes) = std::fs::read(&path)
+            && let Ok(file) =
+                serde_json::from_slice::<crate::persistence::comment_store::ScopeFile>(&bytes)
+        {
+            for comment in file.comments {
+                out.insert(
+                    comment.id.clone(),
+                    (comment.content, comment.author, comment.resolved),
+                );
+            }
+        }
+    }
+}
+
 /// Copy every session's comments into the store beneath `reviews_dir`.
 ///
 /// With `apply` false nothing is written: the report says what would happen.
@@ -105,6 +230,17 @@ pub fn migrate_comments(
     reviews_dir: &Path,
     apply: bool,
     messages: &dyn MessageSource,
+) -> Result<MigrationReport> {
+    migrate_repos(reviews_dir, apply, messages, |_| true)
+}
+
+/// Migrate only the repositories `wanted` accepts, so a review can move its
+/// own and leave every other repository on this machine alone.
+pub fn migrate_repos(
+    reviews_dir: &Path,
+    apply: bool,
+    messages: &dyn MessageSource,
+    wanted: impl Fn(&str) -> bool,
 ) -> Result<MigrationReport> {
     let mut report = MigrationReport::default();
 
@@ -123,6 +259,9 @@ pub fn migrate_comments(
                 continue;
             }
         };
+        if !wanted(&repo_key) {
+            continue;
+        }
         report.sessions += 1;
 
         let checkout = session.repo_path.clone();
@@ -553,5 +692,84 @@ mod tests {
             );
         }
         assert!(divergences.is_empty(), "{} diverged", divergences.len());
+    }
+}
+
+#[cfg(test)]
+mod safety_tests {
+    use super::*;
+    use crate::model::review::SessionDiffSource;
+    use crate::model::{CommentType, FileStatus, LineSide, ReviewSession};
+    use crate::persistence::storage::save_session_in_dir;
+    use tempfile::tempdir;
+
+    fn a_session(dir: &Path) -> String {
+        let mut session = ReviewSession::new(
+            PathBuf::from("/repo/checkout"),
+            "headsha".to_string(),
+            Some("main".to_string()),
+            SessionDiffSource::CommitRange,
+        );
+        session.commit_range = Some(vec!["aaaa".to_string()]);
+        session.add_file(PathBuf::from("src/main.rs"), FileStatus::Modified, 0);
+        let mut comment = Comment::new(
+            "look here".to_string(),
+            CommentType::from_id("issue"),
+            Some(LineSide::New),
+        );
+        comment.commit_id = Some("aaaa".to_string());
+        let id = comment.id.clone();
+        session
+            .get_file_mut(&PathBuf::from("src/main.rs"))
+            .unwrap()
+            .add_line_comment(42, comment);
+        save_session_in_dir(&session, dir).unwrap();
+        id
+    }
+
+    #[test]
+    fn should_snapshot_the_reviews_directory_once() {
+        let temp = tempdir().unwrap();
+        let dir = temp.path().join("reviews");
+        a_session(&dir);
+
+        let first = ensure_backup(&dir).unwrap().expect("a snapshot is taken");
+        assert!(first.join("sessions").is_dir(), "and it holds the sessions");
+        assert!(
+            ensure_backup(&dir).unwrap().is_none(),
+            "but only the first time, so a later migration cannot overwrite it"
+        );
+    }
+
+    #[test]
+    fn should_report_a_comment_that_did_not_reach_the_store() {
+        let temp = tempdir().unwrap();
+        let dir = temp.path().join("reviews");
+        let id = a_session(&dir);
+
+        assert_eq!(
+            comments_not_in_store(&dir).unwrap(),
+            vec![format!("{id}: missing from the store")],
+            "before migrating, the session's comment is not in the store"
+        );
+
+        migrate_comments(&dir, true, &NoMessages).unwrap();
+
+        assert!(
+            comments_not_in_store(&dir).unwrap().is_empty(),
+            "and afterwards every one of them is"
+        );
+    }
+
+    #[test]
+    fn should_migrate_one_repository_and_leave_the_others() {
+        let temp = tempdir().unwrap();
+        let dir = temp.path().join("reviews");
+        a_session(&dir);
+
+        let report = migrate_repos(&dir, true, &NoMessages, |key| key == "somewhere-else").unwrap();
+
+        assert_eq!(report.comments, 0, "nothing from another repository moved");
+        assert!(!comments_not_in_store(&dir).unwrap().is_empty());
     }
 }

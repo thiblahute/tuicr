@@ -1024,7 +1024,13 @@ impl App {
         // and writes keep going to the session. After it, the store answers
         // for both. There is no state in between to get wrong.
         if !store.in_use() {
-            return;
+            self.move_repo_onto_store();
+            let Some(store) = self.comment_store() else {
+                return;
+            };
+            if !store.in_use() {
+                return;
+            }
         }
         self.comments_in_store = true;
         let live = self.review_scopes();
@@ -1279,5 +1285,68 @@ impl App {
             }
         }
         None
+    }
+}
+
+impl App {
+    /// Move this repository's comments into the store, the first time a review
+    /// of it is opened.
+    ///
+    /// Only this repository: the reader opened one review, and migrating every
+    /// repository on the machine is a great deal of consequence for that. The
+    /// whole reviews directory is snapshotted first, and the switch is thrown
+    /// only once an independent pass confirms every comment arrived — one that
+    /// walks both sides rather than asking the migration what it meant to do.
+    fn move_repo_onto_store(&mut self) {
+        let Some(store) = self.comment_store() else {
+            return;
+        };
+        let Ok(reviews_dir) = crate::persistence::storage::get_reviews_dir() else {
+            return;
+        };
+        let wanted = store
+            .root()
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string());
+        let Some(wanted) = wanted else { return };
+
+        if let Err(e) = crate::persistence::migrate_comments::ensure_backup(&reviews_dir) {
+            self.set_warning(format!("Could not snapshot the reviews directory: {e}"));
+            return;
+        }
+        let messages = crate::persistence::migrate_comments::GitMessages::default();
+        let report = match crate::persistence::migrate_comments::migrate_repos(
+            &reviews_dir,
+            true,
+            &messages,
+            |key| crate::persistence::comment_store::sanitized_repo_key(key) == wanted,
+        ) {
+            Ok(report) => report,
+            Err(e) => {
+                self.set_warning(format!("Could not move comments into the store: {e}"));
+                return;
+            }
+        };
+        if report.comments == 0 {
+            // Nothing to carry over: the repository starts on the store.
+            let _ = store.take_over();
+            return;
+        }
+
+        match crate::persistence::migrate_comments::comments_not_in_store(&reviews_dir) {
+            Ok(problems) if problems.is_empty() => {
+                if store.take_over().is_ok() {
+                    self.set_message(format!(
+                        "Moved {} comments onto the commits they were written on",
+                        report.comments
+                    ));
+                }
+            }
+            Ok(problems) => self.set_warning(format!(
+                "Left comments where they were: {} did not survive the move",
+                problems.len()
+            )),
+            Err(e) => self.set_warning(format!("Could not check the move: {e}")),
+        }
     }
 }
