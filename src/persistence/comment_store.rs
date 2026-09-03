@@ -530,14 +530,28 @@ pub fn checkout_key(path: &Path) -> String {
 }
 
 /// `owner/repo` is a path in disguise; flatten it so the store stays one
-/// directory deep.
+/// directory deep — without letting two different repositories flatten onto
+/// each other.
+///
+/// Replacing every unsafe character with `-` is not injective: `foo/bar-baz`
+/// and `foo-bar/baz` land on the same name, as do the same coordinate on two
+/// forges and two unrelated local checkouts that share a directory name. Two
+/// repositories sharing a store means one's comments surface in the other, so
+/// the readable name carries a short digest of the key it came from.
 pub fn sanitized_repo_key(key: &str) -> String {
-    key.chars()
+    let readable: String = key
+        .chars()
         .map(|c| match c {
             'a'..='z' | 'A'..='Z' | '0'..='9' | '.' | '-' | '_' => c,
             _ => '-',
         })
-        .collect()
+        .collect();
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in key.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{readable}-{:08x}", hash as u32)
 }
 
 #[cfg(test)]
@@ -1074,5 +1088,32 @@ mod switch_tests {
 
         store.take_over().unwrap();
         assert!(store.in_use());
+    }
+}
+
+#[cfg(test)]
+mod key_tests {
+    use super::*;
+
+    #[test]
+    fn should_keep_two_repositories_apart_when_their_names_flatten_alike() {
+        // Sharing a store means one repository's comments surface in another.
+        assert_ne!(
+            sanitized_repo_key("foo/bar-baz"),
+            sanitized_repo_key("foo-bar/baz")
+        );
+        assert_ne!(
+            sanitized_repo_key("github.com/acme/app"),
+            sanitized_repo_key("gitlab.com/acme/app")
+        );
+        assert_eq!(
+            sanitized_repo_key("agavra/tuicr"),
+            sanitized_repo_key("agavra/tuicr"),
+            "and the same repository always lands in the same place"
+        );
+        assert!(
+            sanitized_repo_key("agavra/tuicr").starts_with("agavra-tuicr-"),
+            "still readable in a directory listing"
+        );
     }
 }
