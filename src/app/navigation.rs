@@ -709,6 +709,43 @@ impl App {
         }
     }
 
+    /// Pane geometry for the row `ann_idx` renders at. The commit-message
+    /// entry is the one file whose rows ignore the side panes in side-by-side
+    /// view: they render as full-width prose (indicator + two-space indent),
+    /// so cursor and selection painting must span that region, not the pane
+    /// `side` names — a commit-message row is always side New, which would
+    /// put the cursor in the right pane while the text sits on the left.
+    pub fn annotation_pane_geometry(
+        &self,
+        inner: ratatui::layout::Rect,
+        ann_idx: usize,
+        side: LineSide,
+    ) -> PaneGeom {
+        if self.diff_view_mode == DiffViewMode::SideBySide
+            && self.annotation_in_commit_message(ann_idx)
+        {
+            // Mirrors render_commit_message_line_side_by_side: indicator(1)
+            // plus the git-style two-space indent, then content to the edge.
+            let indent = 3u16;
+            return PaneGeom {
+                content_x_start: inner.x + indent,
+                content_x_end: inner.x + inner.width,
+                content_width: (inner.width as usize).saturating_sub(indent as usize),
+            };
+        }
+        self.pane_geometry(inner, side)
+    }
+
+    /// True when `ann_idx` belongs to the commit-message entry, whose rows
+    /// render as full-width prose rather than side panes in side-by-side view.
+    pub fn annotation_in_commit_message(&self, ann_idx: usize) -> bool {
+        self.line_annotations
+            .get(ann_idx)
+            .and_then(annotation_file_idx)
+            .and_then(|file_idx| self.diff_files.get(file_idx))
+            .is_some_and(|file| file.is_commit_message)
+    }
+
     pub fn side_at_x(
         &self,
         inner: ratatui::layout::Rect,
@@ -744,7 +781,7 @@ impl App {
         let Some(content) = self.content_for_side(idx, side) else {
             return Some(zero_point);
         };
-        let geom = self.pane_geometry(inner, side);
+        let geom = self.annotation_pane_geometry(inner, idx, side);
         if geom.content_width == 0 {
             return Some(zero_point);
         }

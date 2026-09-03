@@ -496,7 +496,7 @@ pub(super) fn paint_visual_selection_overlay(
     let (start, end) = sel.ordered();
     let paint = OverlayPaint {
         sel,
-        geom: app.pane_geometry(inner, sel.anchor.side),
+        geom: app.annotation_pane_geometry(inner, sel.anchor.annotation_idx, sel.anchor.side),
         inner_left: inner.x,
         inner_right: inner.x + inner.width.saturating_sub(1),
         style: styles::visual_selection_style(theme),
@@ -642,6 +642,9 @@ pub(super) fn paint_diff_cursor(frame: &mut Frame, inner: Rect, app: &App) {
     let is_sbs = app.diff_view_mode == crate::app::DiffViewMode::SideBySide;
     let inner_right = inner.x + inner.width;
     let cursor_line = app.diff_state.cursor_line;
+    // Commit-message rows are full-width prose even in side-by-side: their
+    // wrap continuation rows start at the left edge, like unified rows.
+    let sbs_panes = is_sbs && !app.annotation_in_commit_message(cursor_line);
 
     let mut seen = 0usize;
     let mut cell = None;
@@ -654,8 +657,8 @@ pub(super) fn paint_diff_cursor(frame: &mut Frame, inner: Rect, app: &App) {
             }
             let row = inner.y + rel as u16;
             let is_first = rel == 0 || app.diff_row_to_annotation[rel - 1] != cursor_line;
-            let geom = app.pane_geometry(inner, side);
-            let col_start = if is_sbs || is_first {
+            let geom = app.annotation_pane_geometry(inner, cursor_line, side);
+            let col_start = if sbs_panes || is_first {
                 geom.content_x_start
             } else {
                 inner.x

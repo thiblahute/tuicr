@@ -3368,4 +3368,133 @@ mod remote_comments_side_by_side_snapshot_tests {
         });
         assert!(box_rendered, "the commit-message comment box should render");
     }
+
+    /// Regression: the block character cursor took the New pane's geometry on
+    /// commit-message rows — their side is always New — and painted in the
+    /// right pane while the message renders full-width on the left.
+    #[test]
+    fn block_cursor_stays_on_full_width_commit_message_row() {
+        use ratatui::style::Modifier;
+        let mut app = make_pr_app_with(vec![commit_message_file("COMMITMSG summary line")]);
+        app.rebuild_annotations();
+        let target = app
+            .line_annotations
+            .iter()
+            .position(|a| matches!(a, crate::app::AnnotatedLine::SideBySideLine { .. }))
+            .expect("message line annotation");
+        app.move_cursor_to_annotation(target);
+
+        let buf = draw_sbs(&mut app, 160, 20);
+        let (y, msg_col) = (0..buf.area.height)
+            .find_map(|y| {
+                let row: String = (0..buf.area.width).map(|x| char_at(&buf, x, y)).collect();
+                // Cell column, not byte offset: the border/caret glyphs are
+                // multibyte.
+                row.find("COMMITMSG")
+                    .map(|byte| (y, row[..byte].chars().count() as u16))
+            })
+            .expect("message row on screen");
+        let cursor_cells: Vec<u16> = (0..buf.area.width)
+            .filter(|&x| {
+                buf[(x, y)]
+                    .style()
+                    .add_modifier
+                    .contains(Modifier::REVERSED)
+            })
+            .collect();
+        assert_eq!(
+            cursor_cells,
+            vec![msg_col],
+            "block cursor must sit on the message's first character, not in the right pane"
+        );
+    }
+
+    /// The wrap continuation rows of the full-width commit message start at
+    /// the left edge — no pane, no indent — so the block cursor's cell count
+    /// must not scan them from the first row's indent.
+    #[test]
+    fn block_cursor_lands_on_wrapped_commit_message_continuation_row() {
+        use ratatui::style::Modifier;
+        let long = format!("HEAD{}TAIL", "x".repeat(200));
+        let mut app = make_pr_app_with(vec![commit_message_file(&long)]);
+        app.set_diff_wrap(true);
+        app.rebuild_annotations();
+        let target = app
+            .line_annotations
+            .iter()
+            .position(|a| matches!(a, crate::app::AnnotatedLine::SideBySideLine { .. }))
+            .expect("message line annotation");
+        app.move_cursor_to_annotation(target);
+        let inner_x = 1u16; // frame border
+        let inner_w = 158u16;
+        // First visual row holds inner_w minus the indicator + two-space
+        // indent; put the cursor 15 chars into the continuation row.
+        let first_row_chars = (inner_w - 3) as usize;
+        app.diff_state.cursor_col = first_row_chars + 15;
+
+        let buf = draw_sbs(&mut app, 160, 20);
+        let mut cursor_cells = Vec::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                if buf[(x, y)]
+                    .style()
+                    .add_modifier
+                    .contains(Modifier::REVERSED)
+                {
+                    cursor_cells.push((x, y));
+                }
+            }
+        }
+        let first_row = (0..buf.area.height)
+            .find(|&y| {
+                (0..buf.area.width)
+                    .map(|x| char_at(&buf, x, y))
+                    .collect::<String>()
+                    .contains("HEAD")
+            })
+            .expect("wrapped message on screen");
+        assert_eq!(
+            cursor_cells,
+            vec![(inner_x + 15, first_row + 1)],
+            "block cursor must land on the continuation row's own cell"
+        );
+    }
+
+    /// Same geometry, taken by the visual-selection overlay: `v` on the
+    /// commit message must highlight the prose on the left, not the New pane.
+    #[test]
+    fn visual_selection_stays_on_full_width_commit_message_row() {
+        let mut app = make_pr_app_with(vec![commit_message_file("COMMITMSG summary line")]);
+        app.rebuild_annotations();
+        let target = app
+            .line_annotations
+            .iter()
+            .position(|a| matches!(a, crate::app::AnnotatedLine::SideBySideLine { .. }))
+            .expect("message line annotation");
+        app.move_cursor_to_annotation(target);
+        app.enter_visual_char_mode_at_cursor();
+
+        let sel_bg = crate::ui::styles::visual_selection_style(&app.theme).bg;
+        let buf = draw_sbs(&mut app, 160, 20);
+        let y = (0..buf.area.height)
+            .find(|&y| {
+                (0..buf.area.width)
+                    .map(|x| char_at(&buf, x, y))
+                    .collect::<String>()
+                    .contains("COMMITMSG")
+            })
+            .expect("message row on screen");
+        let selected: Vec<u16> = (0..buf.area.width)
+            .filter(|&x| buf[(x, y)].style().bg == sel_bg)
+            .collect();
+        let divider = sbs_divider_col() as u16;
+        assert!(
+            !selected.is_empty(),
+            "the visual selection should be visible on the message row"
+        );
+        assert!(
+            selected.iter().all(|&x| x < divider),
+            "selection must stay on the full-width prose, got cells at {selected:?}"
+        );
+    }
 }
