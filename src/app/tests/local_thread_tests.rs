@@ -3182,3 +3182,131 @@ fn should_ask_about_a_pull_requests_own_head() {
         "the PR's head is among the scopes: {scopes:?}"
     );
 }
+
+#[test]
+fn should_map_every_row_of_a_detached_thread_to_its_own_comment() {
+    // A file full of outdated threads is one long stack of boxes. If the row
+    // model counts a box differently from the renderer, every box below it is
+    // reached at the wrong row and a reply lands in the wrong thread.
+    let (mut session, _root) = session_with_line_comment();
+    session
+        .get_file_mut(&PathBuf::from("src/main.rs"))
+        .unwrap()
+        .line_comments
+        .clear();
+    for n in 0..4 {
+        let mut root = Comment::new(
+            format!("question {n}"),
+            CommentType::from_id("issue"),
+            Some(LineSide::New),
+        );
+        root.outdated = true;
+        root.line_context = Some(crate::model::LineContext {
+            new_line: Some(60 + n * 4),
+            old_line: None,
+            content: format!("    let value = compute({n});"),
+            before: vec!["fn main() {".to_string(), String::new()],
+            after: vec!["    println!(\"{value}\");".to_string()],
+            commit: None,
+        });
+        let mut answer = Comment::new(
+            format!("answer {n}"),
+            CommentType::from_id("none"),
+            Some(LineSide::New),
+        );
+        answer.outdated = true;
+        answer.in_reply_to = Some(root.id.clone());
+        answer.line_context = root.line_context.clone();
+        let review = session.get_file_mut(&PathBuf::from("src/main.rs")).unwrap();
+        review.file_comments.push(root);
+        review.file_comments.push(answer);
+    }
+
+    let mut app = app_for(session);
+    app.diff_state.viewport_width = 100;
+    app.diff_state.viewport_height = 40;
+    app.rebuild_annotations();
+
+    // Rows the renderer actually emits for each comment, against the rows the
+    // annotations reserved for it.
+    let review = &app.session.files[&PathBuf::from("src/main.rs")];
+    for (idx, comment) in review.file_comments.iter().enumerate() {
+        let drawn = crate::ui::comment_panel::format_comment_lines(
+            &app.theme,
+            crate::ui::comment_panel::CommentTypePresentation {
+                label: app.comment_type_label(&comment.comment_type),
+                color: app.comment_type_color(&comment.comment_type),
+            },
+            &comment.content,
+            None,
+            app.diff_state.viewport_width.saturating_sub(1),
+            crate::ui::comment_panel::CommentBadge::Own,
+            app.thread_display(comment),
+        )
+        .len();
+        let reserved = app
+            .line_annotations
+            .iter()
+            .filter(|a| matches!(a, AnnotatedLine::FileComment { comment_idx, .. } if *comment_idx == idx))
+            .count();
+        assert_eq!(
+            drawn, reserved,
+            "comment {idx} ({:?}) draws {drawn} rows, annotations reserved {reserved}",
+            comment.content
+        );
+    }
+}
+
+#[test]
+fn should_open_a_reply_under_the_thread_it_answers() {
+    // With one thread in a file the editor could sit at the bottom of the
+    // block and still look right. A file full of detached threads made that
+    // read as answering the last thread on screen.
+    let (mut session, _root) = session_with_line_comment();
+    session
+        .get_file_mut(&PathBuf::from("src/main.rs"))
+        .unwrap()
+        .line_comments
+        .clear();
+    let mut roots = Vec::new();
+    for n in 0..3 {
+        let mut root = Comment::new(
+            format!("question {n}"),
+            CommentType::from_id("issue"),
+            Some(LineSide::New),
+        );
+        root.outdated = true;
+        roots.push(root.id.clone());
+        session
+            .get_file_mut(&PathBuf::from("src/main.rs"))
+            .unwrap()
+            .file_comments
+            .push(root);
+    }
+    let mut app = app_for(session);
+
+    // Answering the first thread, with two more below it.
+    app.comment_is_file_level = true;
+    app.local_reply_target = Some(roots[0].clone());
+    assert_eq!(
+        app.file_comment_reply_slot(&PathBuf::from("src/main.rs")),
+        Some(0),
+        "the editor goes under the thread it answers"
+    );
+
+    // And under the last member of that thread, not the root, once it has
+    // replies — the same slot the reply itself will be stored in.
+    let answer = reply(&mut app.session, &roots[0], "first answer");
+    app.local_reply_target = Some(answer.id.clone());
+    assert_eq!(
+        app.file_comment_reply_slot(&PathBuf::from("src/main.rs")),
+        Some(1)
+    );
+
+    // A fresh file comment still goes at the end of the block.
+    app.local_reply_target = None;
+    assert_eq!(
+        app.file_comment_reply_slot(&PathBuf::from("src/main.rs")),
+        None
+    );
+}

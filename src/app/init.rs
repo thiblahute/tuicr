@@ -580,6 +580,7 @@ impl App {
         let preserve_hunks = matches!(diff_source, DiffSource::PullRequest(_))
             && session.commit_selection_range.is_some();
         Self::register_diff_files(&mut session, &diff_files, preserve_hunks);
+        let recheck_anchors = matches!(diff_source, DiffSource::CommitRange(_));
 
         let has_more_commit = commit_list.len() >= VISIBLE_COMMIT_COUNT;
         let visible_commit_count = if commit_list.is_empty() {
@@ -601,8 +602,6 @@ impl App {
             .as_deref()
             .filter(|path| path.exists())
             .and_then(|path| SessionFileState::from_path(path).ok());
-        let recheck_anchors = matches!(diff_source, DiffSource::CommitRange(_));
-
         let mut app = Self {
             theme,
             vcs,
@@ -673,6 +672,7 @@ impl App {
             editing_comment_id: None,
             comment_reply_target: None,
             show_resolved_threads: false,
+            pending_agent_update: None,
             thread_display_overrides: std::collections::HashSet::new(),
             local_reply_target: None,
             comment_scroll_detached: false,
@@ -757,7 +757,6 @@ impl App {
             comment_cursor_screen_pos: None,
             comment_input_annotation_offset: None,
             update_info: None,
-            pending_agent_update: None,
             pending_count: None,
             pending_start_line: None,
             review_commits: Vec::new(),
