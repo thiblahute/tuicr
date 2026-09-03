@@ -487,10 +487,37 @@ fn read_lock_owner_pid(path: &Path) -> Option<u32> {
         .ok()
 }
 
+/// The newest session format this build understands.
+///
+/// The field has been written since the beginning and read by nothing, which
+/// is why 1.2 and 1.3 files sit side by side unnoticed. Reading it means the
+/// next format change has something to refuse on: a file from a newer tuicr is
+/// half-understood otherwise, and half-understanding a review is how comments
+/// get written back missing whatever this build could not see.
+pub const SESSION_FORMAT: (u32, u32) = (1, 3);
+
+fn parse_format(version: &str) -> Option<(u32, u32)> {
+    let (major, minor) = version.split_once('.')?;
+    Some((major.parse().ok()?, minor.parse().ok()?))
+}
+
 /// Load a session JSON file from an absolute path.
 pub fn load_session(path: &Path) -> Result<ReviewSession> {
     let contents = fs::read_to_string(path)?;
-    serde_json::from_str(&contents).map_err(|e| TuicrError::CorruptedSession(e.to_string()))
+    let session: ReviewSession =
+        serde_json::from_str(&contents).map_err(|e| TuicrError::CorruptedSession(e.to_string()))?;
+    if let Some(format) = parse_format(&session.version)
+        && format > SESSION_FORMAT
+    {
+        return Err(TuicrError::CorruptedSession(format!(
+            "{} was written by a newer tuicr (format {}, this build understands {}.{}) —              upgrade rather than risk writing it back with pieces missing",
+            path.display(),
+            session.version,
+            SESSION_FORMAT.0,
+            SESSION_FORMAT.1
+        )));
+    }
+    Ok(session)
 }
 
 /// Look up the persisted local session that matches the requested context.
