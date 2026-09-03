@@ -1196,7 +1196,8 @@ fn migrate_to_store(
             if let Ok(entries) = std::fs::read_dir(&comments_root) {
                 for entry in entries.flatten().filter(|e| e.path().is_dir()) {
                     let key = entry.file_name().to_string_lossy().to_string();
-                    crate::persistence::comment_store::CommentStore::new(&dir, &key).take_over()?;
+                    crate::persistence::comment_store::CommentStore::at_dir(&dir, &key)
+                        .take_over()?;
                     repos += 1;
                 }
             }
