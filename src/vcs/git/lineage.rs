@@ -102,24 +102,141 @@ pub fn reachable_from_refs(repo: &Path, of: &[String]) -> Result<HashSet<String>
 /// The commits `of` were built from: every amend, rebase and squash that led
 /// to them, transitively. Keyed by the sha asked about.
 pub(crate) fn predecessors(repo: &Path, of: &[String]) -> Result<HashMap<String, Vec<String>>> {
+    predecessors_cached(repo, of, cache_path_for(repo).as_deref())
+}
+
+/// Where this repository's edge map is kept: in tuicr's own data directory,
+/// named after the repository, so nothing is written inside `.git` and a stale
+/// file costs a rebuild rather than a wrong answer.
+fn cache_path_for(repo: &Path) -> Option<PathBuf> {
+    let reviews = crate::persistence::storage::get_reviews_dir().ok()?;
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in repo.to_string_lossy().as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    Some(
+        reviews
+            .join("cache")
+            .join(format!("lineage-{hash:016x}.json")),
+    )
+}
+
+/// As `predecessors`, reusing a cached edge map when `cache` names a file and
+/// the reflogs have not moved since it was written.
+///
+/// The map does not depend on which commits are asked about, only on the
+/// reflogs — so it survives between openings of a review, and rebuilding it
+/// costs seconds on a repository with a few thousand entries.
+pub(crate) fn predecessors_cached(
+    repo: &Path,
+    of: &[String],
+    cache: Option<&Path>,
+) -> Result<HashMap<String, Vec<String>>> {
     let common = common_dir(repo)?;
+    let stamp = reflog_stamp(&common);
+
+    if let Some(path) = cache
+        && let Some(backward) = read_cache(path, &stamp)
+    {
+        return Ok(of
+            .iter()
+            .map(|sha| (sha.clone(), walk_back(sha, &backward)))
+            .collect());
+    }
+
+    let backward = backward_map(repo, &common);
+    if let Some(path) = cache {
+        write_cache(path, &stamp, &backward);
+    }
+    Ok(of
+        .iter()
+        .map(|sha| (sha.clone(), walk_back(sha, &backward)))
+        .collect())
+}
+
+/// Every rewrite the reflogs record, as edges from a commit to the one that
+/// replaced it.
+fn backward_map(repo: &Path, common: &Path) -> HashMap<String, Vec<String>> {
     let mut backward: HashMap<String, Vec<String>> = HashMap::new();
 
     // The same commit is asked about from several windows, and a subject
     // costs a process to fetch, so they are remembered for the whole run.
     let mut subjects = HashMap::new();
-    for (path, is_head_log) in reflog_files(&common) {
-        let entries = read_entries(&path);
-        collect_amends(&entries, &mut backward);
-        if is_head_log {
-            collect_rebases(repo, &entries, &mut backward, &mut subjects);
+    let logs: Vec<(PathBuf, bool)> = reflog_files(common);
+    let read: Vec<(Vec<Entry>, bool)> = logs
+        .iter()
+        .map(|(path, is_head_log)| (read_entries(path.as_path()), *is_head_log))
+        .collect();
+
+    // One `git log` for every subject the walk will want, instead of one
+    // process per reflog entry. On a repository with a few thousand entries
+    // that was several hundred spawns and most of the running time.
+    let wanted: Vec<String> = read
+        .iter()
+        .flat_map(|(entries, _)| entries.iter())
+        .filter(|entry| entry.old != entry.new)
+        .map(|entry| entry.new.clone())
+        .collect();
+    prefetch_subjects(repo, &wanted, &mut subjects);
+
+    for (entries, is_head_log) in &read {
+        collect_amends(entries, &mut backward);
+        if *is_head_log {
+            collect_rebases(repo, entries, &mut backward, &mut subjects);
         }
     }
 
-    Ok(of
+    backward
+}
+
+/// What the reflogs looked like: every file's size and modification time.
+/// Cheap to compute and changes whenever git writes a rewrite.
+fn reflog_stamp(common: &Path) -> String {
+    let mut parts: Vec<String> = reflog_files(common)
         .iter()
-        .map(|sha| (sha.clone(), walk_back(sha, &backward)))
-        .collect())
+        .filter_map(|(path, _)| {
+            let meta = std::fs::metadata(path).ok()?;
+            let modified = meta
+                .modified()
+                .ok()?
+                .duration_since(std::time::UNIX_EPOCH)
+                .ok()?;
+            Some(format!(
+                "{}:{}:{}",
+                path.display(),
+                meta.len(),
+                modified.as_nanos()
+            ))
+        })
+        .collect();
+    parts.sort();
+    parts.join("\n")
+}
+
+fn read_cache(path: &Path, stamp: &str) -> Option<HashMap<String, Vec<String>>> {
+    let bytes = std::fs::read(path).ok()?;
+    let cached: CachedLineage = serde_json::from_slice(&bytes).ok()?;
+    (cached.stamp == stamp).then_some(cached.backward)
+}
+
+fn write_cache(path: &Path, stamp: &str, backward: &HashMap<String, Vec<String>>) {
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let cached = CachedLineage {
+        stamp: stamp.to_string(),
+        backward: backward.clone(),
+    };
+    if let Ok(bytes) = serde_json::to_vec(&cached) {
+        let _ = crate::persistence::storage::write_atomic(path, &bytes);
+    }
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct CachedLineage {
+    stamp: String,
+    backward: HashMap<String, Vec<String>>,
 }
 
 /// Predecessors of `start`, breadth-first. Cycles are real — a branch reset
@@ -277,6 +394,26 @@ fn replayed(
         subjects.insert(sha.clone(), subject.clone());
     }
     replayed
+}
+
+/// Fetch many subjects at once, in chunks git will accept on a command line.
+///
+/// `--ignore-missing` because the reflog names commits that have since been
+/// pruned, and one of those would otherwise fail the whole batch.
+fn prefetch_subjects(repo: &Path, shas: &[String], subjects: &mut HashMap<String, String>) {
+    const CHUNK: usize = 256;
+    let mut distinct: Vec<&String> = shas.iter().collect();
+    distinct.sort();
+    distinct.dedup();
+
+    for chunk in distinct.chunks(CHUNK) {
+        let mut args: Vec<&str> = vec!["log", "--no-walk", "--ignore-missing", "--format=%H%x1f%s"];
+        args.extend(chunk.iter().map(|sha| sha.as_str()));
+        let Ok(out) = git(repo, &args) else { continue };
+        for (sha, subject) in out.lines().filter_map(|line| line.split_once('\u{1f}')) {
+            subjects.insert(sha.to_string(), subject.to_string());
+        }
+    }
 }
 
 /// A commit's subject, fetched once per run.
@@ -872,6 +1009,51 @@ mod tests {
         assert!(
             git(&fx.path, &["rev-parse", "--verify", &left_behind]).is_ok(),
             "and this is exactly why resolving is the wrong question"
+        );
+    }
+
+    #[test]
+    fn should_reuse_the_edge_map_until_the_reflog_moves() {
+        let mut fx = Fixture::new(&["base"]);
+        let base = fx.shas[0].clone();
+        let v1 = fx.commit_on(&base, "a change");
+        let v2 = fx.commit_on(&base, "a change, fixed");
+        fx.set_reflog(&[(&v1, &v2, "commit (amend): a change, fixed")]);
+        let cache = fx.path.join("lineage.json");
+
+        let first = predecessors_cached(&fx.path, std::slice::from_ref(&v2), Some(&cache)).unwrap();
+        assert_eq!(first[&v2], vec![v1.clone()]);
+        assert!(cache.is_file(), "the map is written for next time");
+
+        // Doctor the cached edges, leaving the stamp alone: the doctored
+        // answer coming back is what proves the reflogs were not read again.
+        let mut stored: CachedLineage =
+            serde_json::from_slice(&std::fs::read(&cache).unwrap()).unwrap();
+        stored
+            .backward
+            .insert(v2.clone(), vec!["doctored".to_string()]);
+        std::fs::write(&cache, serde_json::to_vec(&stored).unwrap()).unwrap();
+
+        let served =
+            predecessors_cached(&fx.path, std::slice::from_ref(&v2), Some(&cache)).unwrap();
+        assert_eq!(
+            served[&v2],
+            vec!["doctored".to_string()],
+            "served from the cache without rebuilding"
+        );
+
+        // A reflog that moved throws it away — a rewrite changes the answer,
+        // which is the whole reason the map exists.
+        let v3 = fx.commit_on(&base, "a change, fixed again");
+        fx.set_reflog(&[
+            (&v1, &v2, "commit (amend): a change, fixed"),
+            (&v2, &v3, "commit (amend): a change, fixed again"),
+        ]);
+        let fresh = predecessors_cached(&fx.path, std::slice::from_ref(&v3), Some(&cache)).unwrap();
+        assert!(
+            fresh[&v3].contains(&v2),
+            "rebuilt after the reflog moved: {:?}",
+            fresh[&v3]
         );
     }
 }

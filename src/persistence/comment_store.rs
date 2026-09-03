@@ -309,17 +309,23 @@ impl CommentStore {
             if row.count == 0 || here.contains(&&row.scope) {
                 continue;
             }
-            // "Not in this review" is not "dead". A commit that still resolves
-            // in the repository belongs to another branch, and claiming its
-            // comments here shows them under the wrong commit — and deleting
-            // that thread then deletes the other branch's conversation.
-            if row.scope.sha().is_some_and(still_exists) {
-                continue;
-            }
             let Some(summary) = row.summary.clone() else {
                 continue;
             };
             if live.iter().filter(|(_, s)| *s == summary).count() != 1 {
+                continue;
+            }
+            // "Not in this review" is not "dead". A commit still reachable
+            // from a ref belongs to another branch, and claiming its comments
+            // shows them under the wrong commit — and deleting that thread
+            // then deletes the other branch's conversation.
+            //
+            // Asked last on purpose: it costs a git call per commit, and only
+            // a row whose summary matches something in view could be claimed
+            // at all. Asking every row first spent most of a second, on a
+            // repository with a thousand refs, answering about rows that were
+            // never candidates.
+            if row.scope.sha().is_some_and(still_exists) {
                 continue;
             }
             claimed
