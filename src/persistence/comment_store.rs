@@ -100,6 +100,18 @@ impl CommentStore {
         Self { reviews_dir, root }
     }
 
+    /// A store for a directory that already exists under `comments/`.
+    ///
+    /// The name is taken as-is. Feeding a directory name back through `new`
+    /// sanitizes an already-sanitized key and lands on a different directory —
+    /// a shadow beside the real one, which is where the migration marker went
+    /// while every repository stayed unswitched.
+    pub fn at_dir(reviews_dir: impl Into<PathBuf>, dir_name: &str) -> Self {
+        let reviews_dir = reviews_dir.into();
+        let root = reviews_dir.join(COMMENTS_DIRNAME).join(dir_name);
+        Self { reviews_dir, root }
+    }
+
     pub fn root(&self) -> &Path {
         &self.root
     }
@@ -1151,5 +1163,33 @@ mod key_tests {
             sanitized_repo_key("agavra/tuicr").starts_with("agavra-tuicr-"),
             "still readable in a directory listing"
         );
+    }
+}
+
+#[cfg(test)]
+mod dir_name_tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn should_reach_the_same_store_from_a_key_or_from_its_directory_name() {
+        // Enumerating `comments/` and passing the names back as keys sanitizes
+        // an already-sanitized name: a shadow directory beside the real one,
+        // which is where the migration marker landed while every repository
+        // stayed on its session files.
+        let dir = tempdir().unwrap();
+        let from_key = CommentStore::new(dir.path(), "agavra/tuicr");
+        let name = from_key
+            .root()
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+
+        let from_dir = CommentStore::at_dir(dir.path(), &name);
+
+        assert_eq!(from_key.root(), from_dir.root());
+        from_dir.take_over().unwrap();
+        assert!(from_key.in_use(), "the marker lands on the real store");
     }
 }
