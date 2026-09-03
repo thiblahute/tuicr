@@ -34,6 +34,9 @@ enum Op {
     Finish,
     Abort,
     Applied,
+    /// `reword`: the subject the entry carries is the NEW one, so the slot
+    /// holding the old subject can never match by name.
+    Reword,
     Squashy,
     /// Moves HEAD without rewriting: `checkout:`, `reset:`.
     Move,
@@ -55,7 +58,8 @@ fn classify(message: &str) -> Op {
         Some("start") => Op::Start,
         Some("finish") => Op::Finish,
         Some("abort") => Op::Abort,
-        Some("pick" | "continue" | "reword" | "edit") => Op::Applied,
+        Some("pick" | "continue" | "edit") => Op::Applied,
+        Some("reword") => Op::Reword,
         Some("fixup" | "squash") => Op::Squashy,
         _ if message.starts_with("checkout:") || message.starts_with("reset:") => Op::Move,
         _ => Op::Other,
@@ -171,6 +175,26 @@ fn collect_rebases(
                         slots.take_applied(&entry.new, subject.as_deref(), repo, subjects)
                     {
                         pending.push((slot, entry.new.clone()));
+                    }
+                    last_produced = Some(entry.new.clone());
+                }
+                // A reword carries the NEW subject, so the slot with the old
+                // one never matches by name — and the summary fallback cannot
+                // help either, since the summary is the thing that changed.
+                // Two shapes: after a fast-forward the entry's own old sha IS
+                // the original, so the slot matches by sha; without one, git
+                // writes two entries and the second's old sha is the first's
+                // product, so the edge chains through the intermediate.
+                Op::Reword if entry.old != entry.new => {
+                    let subject = reflog_subject(&entry.message);
+                    if let Some(slot) =
+                        slots.take_applied(&entry.new, subject.as_deref(), repo, subjects)
+                    {
+                        pending.push((slot, entry.new.clone()));
+                    } else if let Some(slot) = slots.take_sha(&entry.old) {
+                        pending.push((slot, entry.new.clone()));
+                    } else if last_produced.as_deref() == Some(entry.old.as_str()) {
+                        pending.push((entry.old.clone(), entry.new.clone()));
                     }
                     last_produced = Some(entry.new.clone());
                 }
@@ -297,6 +321,12 @@ impl Slots {
             return Some(self.use_anywhere(k));
         }
         self.scan(|_| true).map(|k| self.use_forward(k))
+    }
+
+    /// Consume the slot whose ORIGINAL sha is `sha` — the fast-forwarded
+    /// commit a reword entry names as its old side.
+    fn take_sha(&mut self, sha: &str) -> Option<String> {
+        self.scan(|item| item.0 == sha).map(|k| self.use_forward(k))
     }
 
     fn scan(&self, matches: impl Fn(&(String, String)) -> bool) -> Option<usize> {
@@ -717,6 +747,46 @@ mod tests {
         assert!(
             found.contains(&v2) && found.contains(&v1),
             "both hops: {found:?}"
+        );
+    }
+
+    #[test]
+    fn should_follow_a_reword_after_a_fast_forward() {
+        // The reword entry's old side IS the original commit, fast-forwarded;
+        // the subject can never match, because it is what changed.
+        let mut fx = Fixture::new(&["base"]);
+        let base = fx.shas[0].clone();
+        let v1 = fx.commit_on(&base, "first");
+        let v2 = fx.commit_on(&base, "first, reworded");
+        fx.set_reflog(&[
+            (&v1, &base, "rebase (start): checkout main~1"),
+            (&v1, &v2, "rebase (reword): first, reworded"),
+            (&v2, &v2, "rebase (finish): returning to refs/heads/main"),
+        ]);
+
+        assert_eq!(fx.predecessors_of(&v2), vec![v1.clone()]);
+    }
+
+    #[test]
+    fn should_follow_a_reword_through_its_intermediate() {
+        // Without a fast-forward git writes two entries: a replay keyed by the
+        // OLD subject, then a reword whose old side is that replay's product.
+        let mut fx = Fixture::new(&["base"]);
+        let base = fx.shas[0].clone();
+        let v1 = fx.commit_on(&base, "first");
+        let mid = fx.commit_on(&base, "first");
+        let v2 = fx.commit_on(&base, "first, reworded");
+        fx.set_reflog(&[
+            (&v1, &base, "rebase (start): checkout main~1"),
+            (&base, &mid, "rebase (reword): first"),
+            (&mid, &v2, "rebase (reword): first, reworded"),
+            (&v2, &v2, "rebase (finish): returning to refs/heads/main"),
+        ]);
+
+        let found = fx.predecessors_of(&v2);
+        assert!(
+            found.contains(&v1),
+            "the original is reachable through the intermediate: {found:?}"
         );
     }
 

@@ -2422,6 +2422,7 @@ fn should_fill_a_review_from_the_store() {
         &store,
         &live,
         &std::collections::BTreeMap::new(),
+        &|_| false,
     )
     .unwrap();
     app.session.review_comments.clear();
@@ -2514,6 +2515,7 @@ fn should_keep_a_comment_the_store_does_not_have_yet() {
         &store,
         &app.review_scopes(),
         &std::collections::BTreeMap::new(),
+        &|_| false,
     )
     .unwrap();
     app.merge_stored_comments_for_test(resolved);
