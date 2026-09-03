@@ -88,6 +88,18 @@ When the user needs an interactive tuicr pane and no active session exists:
 commit range — always pass one explicitly so the user is never left to pick
 staged/unstaged/commit-range manually in the TUI.
 
+**Write the revset with names, never with resolved SHAs.** `-r main..HEAD`,
+`-r origin/main..HEAD`, `-r @{upstream}..HEAD`, `-r <branch>` — not
+`-r 88f4478..0377299`, even when you have just resolved those SHAs yourself.
+A review remembers the expression it was opened with and re-runs it on
+`:reload`. An expression made of SHAs re-resolves to the same two commits
+forever, so the moment you amend or rebase, the reader's `:reload` shows the
+same diff it showed before — the review cannot follow the branch it is about,
+and the only way out is closing and reopening it.
+
+This is the single most common way an agent leaves a review stranded, and the
+user cannot fix it afterwards: the expression is decided when the pane opens.
+
 If more than one multiplexer marker is set, prefer the innermost multiplexer if
 that is clear; otherwise ask. cmux hosts a Ghostty terminal, so `$TERM_PROGRAM`
 reads `ghostty` inside cmux — check `$CMUX_WORKSPACE_ID`, not the terminal name.
@@ -339,9 +351,12 @@ as a broken reload rather than a moved branch. Write a real sentence: it is
 shown to them verbatim.
 
 Launch reviews with an explicit revision when you can
-(`tuicr-wrapper-zellij.sh /path/to/repo -- -r main..HEAD`). A review opened that
-way re-resolves its range on `:reload`; one opened from the commit selector is
-pinned to the commits it started with and cannot follow the branch.
+(`tuicr-wrapper-zellij.sh /path/to/repo -- -r main..HEAD`), and write that
+revision with branch names rather than SHAs — see **Start A Session**. A review
+opened that way re-resolves its range on `:reload`, so the commits you just
+amended are the ones the reader sees. One opened from the commit selector, or
+with a SHA range, is pinned to the commits it started with and cannot follow
+the branch.
 
 ### Resolving
 
