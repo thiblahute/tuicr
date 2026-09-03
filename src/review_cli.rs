@@ -1305,7 +1305,27 @@ fn comments_of(session: &ReviewSession) -> Vec<crate::model::Comment> {
         .unwrap_or_default()
         .into_iter()
         .collect();
-    match crate::persistence::comment_store::resolve_for_review(&store, &scopes, &predecessors) {
+    let repo_path = session.repo_path.clone();
+    let still_exists = move |sha: &str| {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo_path)
+            .args([
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                &format!("{sha}^{{commit}}"),
+            ])
+            .output()
+            .map(|out| out.status.success())
+            .unwrap_or(false)
+    };
+    match crate::persistence::comment_store::resolve_for_review(
+        &store,
+        &scopes,
+        &predecessors,
+        &still_exists,
+    ) {
         Ok(resolved) => resolved.comments,
         Err(_) => session_comments(session),
     }

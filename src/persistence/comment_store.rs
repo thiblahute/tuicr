@@ -287,6 +287,7 @@ impl CommentStore {
     pub fn orphans_for(
         &self,
         live: &[(CommentScope, String)],
+        still_exists: &dyn Fn(&str) -> bool,
     ) -> Result<Vec<(CommentScope, Vec<OrphanScope>)>> {
         let index = self.index()?;
         let here: Vec<&CommentScope> = live.iter().map(|(scope, _)| scope).collect();
@@ -294,6 +295,13 @@ impl CommentStore {
         let mut claimed: BTreeMap<String, Vec<OrphanScope>> = BTreeMap::new();
         for row in index.rows {
             if row.count == 0 || here.contains(&&row.scope) {
+                continue;
+            }
+            // "Not in this review" is not "dead". A commit that still resolves
+            // in the repository belongs to another branch, and claiming its
+            // comments here shows them under the wrong commit — and deleting
+            // that thread then deletes the other branch's conversation.
+            if row.scope.sha().is_some_and(still_exists) {
                 continue;
             }
             let Some(summary) = row.summary.clone() else {
@@ -445,6 +453,7 @@ pub fn resolve_for_review(
     store: &CommentStore,
     live: &[(CommentScope, String)],
     predecessors: &BTreeMap<String, Vec<String>>,
+    still_exists: &dyn Fn(&str) -> bool,
 ) -> Result<ResolvedComments> {
     let mut resolved = ResolvedComments::default();
     let mut seen_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -490,7 +499,7 @@ pub fn resolve_for_review(
         }
     }
 
-    for (live_scope, orphans) in store.orphans_for(live)? {
+    for (live_scope, orphans) in store.orphans_for(live, still_exists)? {
         for OrphanScope(scope) in orphans {
             if seen_scopes.contains(&scope) {
                 continue;
@@ -741,7 +750,7 @@ mod tests {
 
         let live = vec![(now.clone(), "a change".to_string())];
         let predecessors = BTreeMap::from([("cccc3333".to_string(), vec!["aaaa1111".to_string()])]);
-        let resolved = resolve_for_review(&store, &live, &predecessors).unwrap();
+        let resolved = resolve_for_review(&store, &live, &predecessors, &|_| false).unwrap();
 
         assert_eq!(resolved.comments.len(), 2);
         let carried = resolved
@@ -778,7 +787,7 @@ mod tests {
             .unwrap();
 
         let live = vec![(now, "a change".to_string())];
-        let resolved = resolve_for_review(&store, &live, &BTreeMap::new()).unwrap();
+        let resolved = resolve_for_review(&store, &live, &BTreeMap::new(), &|_| false).unwrap();
 
         assert_eq!(resolved.comments.len(), 1);
         assert_eq!(resolved.comments[0].content, "still relevant");
@@ -798,7 +807,7 @@ mod tests {
 
         let live = vec![(now, "a change".to_string())];
         let predecessors = BTreeMap::from([("cccc3333".to_string(), vec!["aaaa1111".to_string()])]);
-        let resolved = resolve_for_review(&store, &live, &predecessors).unwrap();
+        let resolved = resolve_for_review(&store, &live, &predecessors, &|_| false).unwrap();
 
         assert_eq!(resolved.comments.len(), 1);
     }
@@ -830,7 +839,7 @@ mod tests {
                 "dddd4444".to_string(),
             ],
         )]);
-        let resolved = resolve_for_review(&store, &live, &predecessors).unwrap();
+        let resolved = resolve_for_review(&store, &live, &predecessors, &|_| false).unwrap();
 
         assert_eq!(resolved.comments.len(), 3);
         assert_eq!(resolved.from_earlier.len(), 3);
@@ -850,7 +859,7 @@ mod tests {
             .unwrap();
 
         let live = vec![(CommentScope::commit("cccc3333"), "a change".to_string())];
-        let resolved = resolve_for_review(&store, &live, &BTreeMap::new()).unwrap();
+        let resolved = resolve_for_review(&store, &live, &BTreeMap::new(), &|_| false).unwrap();
 
         assert!(resolved.comments.is_empty());
     }
@@ -877,11 +886,35 @@ mod tests {
             CommentScope::commit("cccc3333"),
             "diff: look around".to_string(),
         )];
-        let found = store.orphans_for(&live).unwrap();
+        let found = store.orphans_for(&live, &|_| false).unwrap();
 
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].0, CommentScope::commit("cccc3333"));
         assert_eq!(found[0].1.len(), 2, "both generations come back");
+    }
+
+    #[test]
+    fn should_not_claim_a_commit_that_is_alive_on_another_branch() {
+        // "Not in this review" is not "dead": the commit is on another branch,
+        // and claiming its thread here shows it under the wrong commit — and
+        // deleting it then deletes the other branch's conversation.
+        let dir = tempdir().unwrap();
+        let store = store(dir.path());
+        let elsewhere = CommentScope::commit("aaaa1111");
+        store
+            .add(
+                &elsewhere,
+                Some("a change"),
+                comment("theirs", elsewhere.clone(), 8),
+            )
+            .unwrap();
+
+        let live = vec![(CommentScope::commit("cccc3333"), "a change".to_string())];
+        let claimed = store.orphans_for(&live, &|sha| sha == "aaaa1111").unwrap();
+        assert!(claimed.is_empty(), "a live commit keeps its comments");
+
+        let dead = store.orphans_for(&live, &|_| false).unwrap();
+        assert_eq!(dead.len(), 1, "a dead one is still recovered");
     }
 
     #[test]
@@ -900,7 +933,7 @@ mod tests {
             (CommentScope::commit("cccc3333"), "fixup".to_string()),
         ];
 
-        assert!(store.orphans_for(&live).unwrap().is_empty());
+        assert!(store.orphans_for(&live, &|_| false).unwrap().is_empty());
     }
 
     #[test]
@@ -922,7 +955,7 @@ mod tests {
             CommentScope::commit("cccc3333"),
             "diff: look around".to_string(),
         )];
-        let orphans = store.orphans_for(&live).unwrap();
+        let orphans = store.orphans_for(&live, &|_| false).unwrap();
 
         assert_eq!(
             orphans,
@@ -943,10 +976,13 @@ mod tests {
         }
 
         let orphans = store
-            .orphans_for(&[(
-                CommentScope::commit("cccc3333"),
-                "something else".to_string(),
-            )])
+            .orphans_for(
+                &[(
+                    CommentScope::commit("cccc3333"),
+                    "something else".to_string(),
+                )],
+                &|_| false,
+            )
             .unwrap();
 
         assert!(
@@ -1016,7 +1052,7 @@ mod carried_visibility_tests {
 
         let live = vec![(now, "a change".to_string())];
         let predecessors = BTreeMap::from([("cccc3333".to_string(), vec!["aaaa1111".to_string()])]);
-        let resolved = resolve_for_review(&store, &live, &predecessors).unwrap();
+        let resolved = resolve_for_review(&store, &live, &predecessors, &|_| false).unwrap();
 
         let id = &resolved.comments[0].id;
         assert_eq!(
@@ -1045,7 +1081,7 @@ mod carried_visibility_tests {
         store.add(&old, Some("a change"), comment).unwrap();
 
         let live = vec![(CommentScope::commit("dddd4444"), "a change".to_string())];
-        let resolved = resolve_for_review(&store, &live, &BTreeMap::new()).unwrap();
+        let resolved = resolve_for_review(&store, &live, &BTreeMap::new(), &|_| false).unwrap();
 
         let id = &resolved.comments[0].id;
         assert_eq!(

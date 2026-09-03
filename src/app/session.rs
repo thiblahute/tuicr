@@ -1054,14 +1054,28 @@ impl App {
             .into_iter()
             .collect();
 
+        let vcs = &self.vcs;
+        let still_exists = |sha: &str| {
+            vcs.get_commits_info(std::slice::from_ref(&sha.to_string()))
+                .map(|found| !found.is_empty())
+                .unwrap_or(false)
+        };
         let resolved = match crate::persistence::comment_store::resolve_for_review(
             &store,
             &live,
             &predecessors,
+            &still_exists,
         ) {
             Ok(resolved) => resolved,
-            Err(_) => return,
+            // Said out loud, and the switch stays off: a read failure reported
+            // as "no comments" while writes keep going to the store is how a
+            // reader re-adds what they cannot see and ends up with both.
+            Err(e) => {
+                self.set_warning(format!("Could not read the comment store: {e}"));
+                return;
+            }
         };
+        self.comments_in_store = true;
         // Drop only the session's copies of what the store just handed back.
         // Clearing the buckets wholesale would take comments the store does
         // not have with them — anything written since the migration — and the
@@ -1069,6 +1083,15 @@ impl App {
         // merge compares against the session as it was before hydration and
         // sees nothing missing.
         self.merge_stored_comments(resolved);
+        // Stored comments come back at the line their anchor names, which an
+        // amend may have moved. The same pass that follows the code for
+        // session comments runs after they are placed, or hydration quietly
+        // undoes it and a comment sits on unrelated code, unmarked.
+        if self.reanchor_comments() > 0
+            && let Err(e) = self.save_current_session_merging_external()
+        {
+            self.set_warning(format!("Could not save re-anchored comments: {e}"));
+        }
     }
 
     #[cfg(test)]
@@ -1277,7 +1300,7 @@ impl App {
         }
     }
 
-    fn all_comments(&self) -> impl Iterator<Item = &crate::model::Comment> {
+    pub(in crate::app) fn all_comments(&self) -> impl Iterator<Item = &crate::model::Comment> {
         self.session
             .review_comments
             .iter()

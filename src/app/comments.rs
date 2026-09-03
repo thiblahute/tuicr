@@ -771,6 +771,18 @@ impl App {
     }
 
     pub fn clear_comments(&mut self, scope: ClearScope) {
+        // The store holds the same threads once a repository is on it, and a
+        // clear that misses it brings everything back on the next open.
+        if self.comments_in_store {
+            let roots: Vec<String> = self
+                .all_comments()
+                .filter(|comment| !comment.is_reply())
+                .map(|comment| comment.id.clone())
+                .collect();
+            for root in roots {
+                self.store_thread_delete(&root);
+            }
+        }
         let (cleared, unreviewed) = self.session.clear_comments(scope);
         if cleared == 0 && unreviewed == 0 {
             self.set_message("No comments to clear");
