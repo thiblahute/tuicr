@@ -1056,4 +1056,29 @@ mod tests {
             fresh[&v3]
         );
     }
+
+    /// Cold then warm, against `TUICR_LINEAGE_REPO`, with the cache in play.
+    #[test]
+    fn should_measure_cached_lineage() {
+        let Ok(repo) = std::env::var("TUICR_LINEAGE_REPO") else {
+            return;
+        };
+        let repo = PathBuf::from(repo);
+        let probe = std::env::var("TUICR_LINEAGE_COMMIT").unwrap_or_else(|_| "HEAD".to_string());
+        let head = git(&repo, &["rev-parse", &probe])
+            .unwrap()
+            .trim()
+            .to_string();
+        let cache = std::env::temp_dir().join("tuicr-bench-lineage.json");
+        let _ = std::fs::remove_file(&cache);
+
+        let cold = std::time::Instant::now();
+        predecessors_cached(&repo, std::slice::from_ref(&head), Some(&cache)).unwrap();
+        let cold = cold.elapsed();
+
+        let warm = std::time::Instant::now();
+        predecessors_cached(&repo, std::slice::from_ref(&head), Some(&cache)).unwrap();
+        let warm = warm.elapsed();
+        println!("cold {cold:?}  warm {warm:?}");
+    }
 }
