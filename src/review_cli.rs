@@ -1250,6 +1250,12 @@ fn store_for(session: &ReviewSession) -> Option<crate::persistence::comment_stor
 fn scopes_for(session: &ReviewSession) -> Vec<(crate::model::CommentScope, String)> {
     use crate::model::review::SessionDiffSource as Source;
     let mut scopes = Vec::new();
+    if let Some(key) = session.pr_session_key.as_ref() {
+        scopes.push((
+            crate::model::CommentScope::commit(key.head_sha.clone()),
+            String::new(),
+        ));
+    }
     if let Some(range) = session.commit_range.as_ref() {
         for sha in range {
             let summary = std::process::Command::new("git")

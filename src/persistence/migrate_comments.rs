@@ -403,11 +403,21 @@ fn anchored_comments(
     session: &ReviewSession,
     checkout: &Path,
 ) -> Vec<(CommentScope, Comment, bool)> {
+    // A pull-request review never fills `commit_range`, but it knows its head
+    // sha — and a PR review asks the store about commits, never about a
+    // checkout. Falling through to the working tree files every PR comment
+    // where no PR reader will ever look for it.
     let range_head = session
         .commit_range
         .as_ref()
         .and_then(|range| range.last())
-        .cloned();
+        .cloned()
+        .or_else(|| {
+            session
+                .pr_session_key
+                .as_ref()
+                .map(|key| key.head_sha.clone())
+        });
     let mut out = Vec::new();
 
     let mut push = |comment: &Comment, path: Option<PathBuf>, line: Option<u32>| {

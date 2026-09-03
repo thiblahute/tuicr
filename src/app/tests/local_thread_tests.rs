@@ -3156,3 +3156,27 @@ fn should_keep_a_reply_in_the_same_file_as_its_root() {
         "the session's own copy carries the anchor the store was given"
     );
 }
+
+#[test]
+fn should_ask_about_a_pull_requests_own_head() {
+    // A PR review never fills commit_range, so without its head it asks the
+    // store about nothing — and the comments migrated under that head are
+    // invisible in the only view that should show them.
+    let (mut session, _root) = session_with_line_comment();
+    session.diff_source = crate::model::review::SessionDiffSource::PullRequest;
+    session.pr_session_key = Some(crate::forge::traits::PrSessionKey::new(
+        crate::forge::traits::ForgeRepository::github("github.com", "agavra", "tuicr"),
+        125,
+        "headsha0",
+    ));
+    let app = app_for(session);
+
+    let scopes = app.review_scopes();
+
+    assert!(
+        scopes
+            .iter()
+            .any(|(scope, _)| scope.sha() == Some("headsha0")),
+        "the PR's head is among the scopes: {scopes:?}"
+    );
+}

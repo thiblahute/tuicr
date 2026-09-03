@@ -990,6 +990,15 @@ impl App {
         );
 
         let mut scopes = Vec::new();
+        // A PR review's head is its own, not a resolved range: without it the
+        // review asks about nothing until its commit list arrives, and the
+        // comments migrated under that head are invisible.
+        if let Some(key) = self.session.pr_session_key.as_ref() {
+            scopes.push((
+                crate::model::CommentScope::commit(key.head_sha.clone()),
+                String::new(),
+            ));
+        }
         if has_commits {
             scopes.extend(self.review_commits.iter().map(|commit| {
                 (
@@ -1367,6 +1376,16 @@ impl App {
                 return;
             }
         };
+        // A session that could not be read is a session whose comments were
+        // not copied. Switching over anyway makes them unreachable, and the
+        // independent check cannot see them either — it skips the same file.
+        if !report.skipped.is_empty() {
+            self.set_warning(format!(
+                "Left comments where they were: {} review file(s) could not be read",
+                report.skipped.len()
+            ));
+            return;
+        }
         if report.comments == 0 {
             // Nothing to carry over: the repository starts on the store.
             let _ = store.take_over();
