@@ -80,7 +80,7 @@ impl App {
         }
 
         self.commit_selection_range = Some(range);
-        self.review_commits = mapped;
+        self.adopt_review_commits(mapped);
 
         if let Some(message) = since_last_review_message {
             if auto_scoped_since_last_review
@@ -1098,7 +1098,7 @@ impl App {
         // Set up inline commit selector for multi-commit reviews (newest-first display order)
         self.pr_commits.clear();
         self.pr_last_reviewed_commit_index = None;
-        self.review_commits = selected_commits.iter().rev().cloned().collect();
+        self.adopt_review_commits(selected_commits.iter().rev().cloned().collect());
         self.range_diff_files = Some(self.diff_files.clone());
         self.commit_list = self.review_commits.clone();
         let range =

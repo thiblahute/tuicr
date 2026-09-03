@@ -1138,6 +1138,14 @@ pub struct App {
     /// True once this repository's comments live in the store, which makes it
     /// the place writes go as well as the place reads come from.
     pub comments_in_store: bool,
+    /// The store index as this process last saw it, so an agent's write —
+    /// which never touches the session file — still wakes the reader.
+    pub(crate) store_index_state: Option<SessionFileState>,
+    /// Predecessors per set of commits under review, for the life of the
+    /// process. The reflog walk is the expensive part of hydration and its
+    /// answer only changes when the commit set does.
+    pub lineage_cache:
+        std::collections::HashMap<Vec<String>, std::collections::BTreeMap<String, Vec<String>>>,
     pub vcs_info: VcsInfo,
     /// The on-disk repo root tuicr was launched in, when there is one.
     ///

@@ -193,13 +193,14 @@ impl App {
         // newest-first (display mirrors it for `commit_order = ascending`),
         // so reverse here as every load path does — or the pane comes back
         // from a reload upside down.
-        self.review_commits = self
+        let adopted: Vec<crate::vcs::CommitInfo> = self
             .vcs
             .get_commits_info(&commits)
             .unwrap_or_default()
             .into_iter()
             .rev()
             .collect();
+        self.adopt_review_commits(adopted);
         self.commit_selection_range = None;
 
         // Load the new diff and re-anchor *before* saving. Adopting a range
@@ -332,14 +333,33 @@ impl App {
             },
         };
 
+        // On a migrated repository an agent's comment never touches the
+        // session file — it lands in the store, whose index is rewritten by
+        // every write. Watching only the session file is why the handoff loop
+        // goes quiet in the TUI while `review comments` shows the reply.
+        let store_state = self
+            .comment_store()
+            .filter(|store| store.in_use())
+            .and_then(|store| SessionFileState::from_path(&store.root().join("index.json")).ok());
+        let store_moved = store_state.is_some() && store_state != self.store_index_state;
+
         if !path.exists() {
             self.session_file_state = None;
+            if store_moved {
+                self.store_index_state = store_state;
+                self.hydrate_comments_from_store();
+                self.rebuild_annotations();
+            }
             return Ok(0);
         }
 
         let state = SessionFileState::from_path(&path)?;
-        if !force && self.session_file_state == Some(state) {
+        if !force && self.session_file_state == Some(state) && !store_moved {
             return Ok(0);
+        }
+        if store_moved {
+            self.store_index_state = store_state;
+            self.hydrate_comments_from_store();
         }
 
         let latest = crate::persistence::storage::load_session(&path)?;
@@ -965,6 +985,18 @@ impl App {
 
     /// The commits this review has in view, with their summaries — what the
     /// store is asked about.
+    /// Adopt a new set of commits for the review, and ask the store what it
+    /// holds about them.
+    ///
+    /// Every path that changes which commits are under review goes through
+    /// here. Assigning the field directly is how a review ends up marked as
+    /// migrated while showing none of its comments: hydration had already run,
+    /// against an empty commit list, and nothing asked again.
+    pub(in crate::app) fn adopt_review_commits(&mut self, commits: Vec<CommitInfo>) {
+        self.review_commits = commits;
+        self.hydrate_comments_from_store();
+    }
+
     pub(in crate::app) fn review_scopes(&self) -> Vec<(crate::model::CommentScope, String)> {
         use crate::model::review::SessionDiffSource as Source;
         let source = self.session.diff_source;
@@ -1047,12 +1079,24 @@ impl App {
             .iter()
             .filter_map(|(s, _)| s.sha().map(String::from))
             .collect();
-        let predecessors = self
-            .vcs
-            .predecessors(&shas)
-            .unwrap_or_default()
-            .into_iter()
-            .collect();
+        // Hydration runs on every commit-list change now, and the reflog walk
+        // behind `predecessors` costs over a second on a large repository.
+        // The answer only changes when the set of commits does.
+        let mut key: Vec<String> = shas.clone();
+        key.sort();
+        let predecessors = match self.lineage_cache.get(&key) {
+            Some(cached) => cached.clone(),
+            None => {
+                let found: std::collections::BTreeMap<String, Vec<String>> = self
+                    .vcs
+                    .predecessors(&shas)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .collect();
+                self.lineage_cache.insert(key, found.clone());
+                found
+            }
+        };
 
         let vcs = &self.vcs;
         let still_exists = |sha: &str| {
@@ -1382,55 +1426,66 @@ impl App {
             .map(|name| name.to_string_lossy().to_string());
         let Some(wanted) = wanted else { return };
 
-        if let Err(e) = crate::persistence::migrate_comments::ensure_backup(&reviews_dir) {
-            self.set_warning(format!("Could not snapshot the reviews directory: {e}"));
-            return;
+        // One transaction: snapshot, migrate, verify and switch with the lock
+        // held, or a comment written by an agent between the verification and
+        // the switch is never copied and the store opens without it.
+        let outcome = crate::persistence::storage::with_reviews_dir_lock(&reviews_dir, || {
+            self.migrate_repo_locked(&reviews_dir, &wanted)
+        });
+        match outcome {
+            Ok(Some(moved)) => self.set_message(format!(
+                "Moved {moved} comments onto the commits they were written on"
+            )),
+            Ok(None) => {}
+            Err(e) => self.set_warning(format!("Could not move comments into the store: {e}")),
         }
+    }
+
+    /// The migration itself, with the reviews lock already held.
+    fn migrate_repo_locked(
+        &self,
+        reviews_dir: &std::path::Path,
+        wanted: &str,
+    ) -> crate::error::Result<Option<usize>> {
+        let Some(store) = self.comment_store() else {
+            return Ok(None);
+        };
+        crate::persistence::migrate_comments::ensure_backup(reviews_dir)?;
+
         let messages = crate::persistence::migrate_comments::GitMessages::default();
-        let report = match crate::persistence::migrate_comments::migrate_repos(
-            &reviews_dir,
+        let report = crate::persistence::migrate_comments::migrate_repos(
+            reviews_dir,
             true,
             &messages,
             |key| crate::persistence::comment_store::sanitized_repo_key(key) == wanted,
-        ) {
-            Ok(report) => report,
-            Err(e) => {
-                self.set_warning(format!("Could not move comments into the store: {e}"));
-                return;
-            }
-        };
+        )?;
+
         // A session that could not be read is a session whose comments were
         // not copied. Switching over anyway makes them unreachable, and the
         // independent check cannot see them either — it skips the same file.
         if !report.skipped.is_empty() {
-            self.set_warning(format!(
-                "Left comments where they were: {} review file(s) could not be read",
+            return Err(crate::error::TuicrError::InvalidInput(format!(
+                "left comments where they were: {} review file(s) could not be read",
                 report.skipped.len()
-            ));
-            return;
+            )));
         }
         if report.comments == 0 {
             // Nothing to carry over: the repository starts on the store.
-            let _ = store.take_over();
-            return;
+            store.take_over()?;
+            return Ok(None);
         }
 
-        match crate::persistence::migrate_comments::comments_not_in_store(&reviews_dir, |key| {
-            crate::persistence::comment_store::sanitized_repo_key(key) == wanted
-        }) {
-            Ok(problems) if problems.is_empty() => {
-                if store.take_over().is_ok() {
-                    self.set_message(format!(
-                        "Moved {} comments onto the commits they were written on",
-                        report.comments
-                    ));
-                }
-            }
-            Ok(problems) => self.set_warning(format!(
-                "Left comments where they were: {} did not survive the move",
+        let problems =
+            crate::persistence::migrate_comments::comments_not_in_store(reviews_dir, |key| {
+                crate::persistence::comment_store::sanitized_repo_key(key) == wanted
+            })?;
+        if !problems.is_empty() {
+            return Err(crate::error::TuicrError::InvalidInput(format!(
+                "left comments where they were: {} did not survive the move",
                 problems.len()
-            )),
-            Err(e) => self.set_warning(format!("Could not check the move: {e}")),
+            )));
         }
+        store.take_over()?;
+        Ok(Some(report.comments))
     }
 }

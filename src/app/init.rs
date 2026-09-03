@@ -300,7 +300,7 @@ impl App {
                 app.has_more_commit = false;
                 app.show_commit_selector = all_commits.len() > 1;
                 app.commit_diff_cache.clear();
-                app.review_commits = all_commits;
+                app.adopt_review_commits(all_commits);
                 // `initial_commit_selection = oldest` scopes the review to a single
                 // commit; narrow the loaded diff to it.
                 if Self::is_strict_commit_selection(
@@ -373,10 +373,7 @@ impl App {
                 app.show_commit_selector = true;
                 app.commit_diff_cache.clear();
             }
-            app.review_commits = review_commits;
-            // Only now is it known which commits are under review, which is
-            // what the comment store is keyed by.
-            app.hydrate_comments_from_store();
+            app.adopt_review_commits(review_commits);
             // `initial_commit_selection = oldest` opens the review scoped to a single
             // commit; narrow the loaded diff to it. Otherwise finalize the
             // full-range diff already loaded above.
@@ -610,6 +607,8 @@ impl App {
             cached_owner_repo: std::cell::OnceCell::new(),
             comments_from_earlier: std::collections::HashSet::new(),
             comments_in_store: false,
+            store_index_state: None,
+            lineage_cache: std::collections::HashMap::new(),
             review_watch_interval: Some(Duration::from_millis(DEFAULT_REVIEW_WATCH_INTERVAL_MS)),
             next_review_watch_at: Instant::now()
                 + Duration::from_millis(DEFAULT_REVIEW_WATCH_INTERVAL_MS),

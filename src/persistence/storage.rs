@@ -411,12 +411,28 @@ impl Drop for ReviewsDirLock {
     }
 }
 
+thread_local! {
+    /// How many nested `with_reviews_dir_lock` calls this thread is inside.
+    ///
+    /// The lock exists to keep other *processes* out. A migration has to hold
+    /// it across enumerate-verify-switch, and every store write inside that
+    /// takes it too — on a plain lockfile that is a thread deadlocking on
+    /// itself, so re-entering counts instead of re-acquiring.
+    static LOCK_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
 pub(crate) fn with_reviews_dir_lock<T>(
     reviews_dir: &Path,
     f: impl FnOnce() -> Result<T>,
 ) -> Result<T> {
+    if LOCK_DEPTH.with(|depth| depth.get()) > 0 {
+        return f();
+    }
     let _lock = acquire_reviews_dir_lock(reviews_dir)?;
-    f()
+    LOCK_DEPTH.with(|depth| depth.set(depth.get() + 1));
+    let result = f();
+    LOCK_DEPTH.with(|depth| depth.set(depth.get() - 1));
+    result
 }
 
 fn acquire_reviews_dir_lock(reviews_dir: &Path) -> Result<ReviewsDirLock> {

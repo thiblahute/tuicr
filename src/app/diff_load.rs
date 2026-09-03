@@ -1407,7 +1407,7 @@ impl App {
         // Set up inline commit selector (newest-first display order)
         self.pr_commits.clear();
         self.pr_last_reviewed_commit_index = None;
-        self.review_commits = selected_commits.into_iter().rev().collect();
+        self.adopt_review_commits(selected_commits.into_iter().rev().collect());
         self.range_diff_files = Some(self.diff_files.clone());
         self.commit_list = self.review_commits.clone();
         let range =
@@ -1797,7 +1797,7 @@ impl App {
                 rows.iter().position(|row| row.id == id)
             });
 
-        self.review_commits = rows;
+        self.adopt_review_commits(rows);
         self.commit_list = self.review_commits.clone();
         self.visible_commit_count = self.commit_list.len();
         // Keyed by row index, so every key now names a different commit. Every
