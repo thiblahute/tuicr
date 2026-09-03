@@ -1108,6 +1108,47 @@ impl App {
             .rposition(|c| c.id == root || c.in_reply_to.as_deref() == Some(root))
     }
 
+    /// Index in `line` of `path`'s line comments that the editor for the
+    /// reply being written belongs after — the line-scope counterpart of
+    /// [`Self::file_comment_reply_slot`], answering for the thread piles that
+    /// re-anchoring leaves on a single line: without it the editor opened
+    /// after every thread on the line, which reads as answering the last one.
+    pub fn line_comment_reply_slot(&self, path: &std::path::Path, line: u32) -> Option<usize> {
+        if self.comment_is_file_level || self.comment_is_review_level {
+            return None;
+        }
+        if self.editing_comment_id.is_some() {
+            return None;
+        }
+        let target = self.local_reply_target.as_deref()?;
+        let comments = self.session.files.get(path)?.line_comments.get(&line)?;
+        let root = comments
+            .iter()
+            .find(|c| c.id == target)
+            .map(|c| c.in_reply_to.as_deref().unwrap_or(&c.id))?;
+        comments
+            .iter()
+            .rposition(|c| c.id == root || c.in_reply_to.as_deref() == Some(root))
+    }
+
+    /// Index in `review_comments` that the editor for the reply being written
+    /// belongs after — the review-scope counterpart of
+    /// [`Self::file_comment_reply_slot`].
+    pub fn review_comment_reply_slot(&self) -> Option<usize> {
+        if !self.comment_is_review_level || self.editing_comment_id.is_some() {
+            return None;
+        }
+        let target = self.local_reply_target.as_deref()?;
+        let comments = &self.session.review_comments;
+        let root = comments
+            .iter()
+            .find(|c| c.id == target)
+            .map(|c| c.in_reply_to.as_deref().unwrap_or(&c.id))?;
+        comments
+            .iter()
+            .rposition(|c| c.id == root || c.in_reply_to.as_deref() == Some(root))
+    }
+
     /// The stored comment a cursor location resolves to.
     fn comment_at_location(&self, location: &CommentLocation) -> Option<&Comment> {
         match location {

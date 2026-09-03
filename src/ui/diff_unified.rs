@@ -15,14 +15,71 @@ use crate::model::{FileStatus, LineOrigin, LineRange, LineSide};
 use crate::theme::Theme;
 use crate::ui::comment_panel;
 use crate::ui::diff_view::{
-    apply_horizontal_scroll, comment_bar_range, comment_box_visible, comment_type_presentation,
-    cursor_indicator, cursor_indicator_spaced, diff_stat_title, hunk_header_text_and_style,
-    paint_cursor_line_highlight, paint_unified_diff_rows_with, paint_visual_selection_overlay,
-    populate_row_to_annotation, push_comment_bar, render_expander_line, render_hidden_lines,
-    scroll_comment_input_into_view, skip_comment_box, unified_line_bg_style,
+    CommentBarAnchor, DrawnInput, apply_horizontal_scroll, comment_bar_range, comment_box_visible,
+    comment_type_presentation, cursor_indicator, cursor_indicator_spaced, diff_stat_title,
+    hunk_header_text_and_style, paint_cursor_line_highlight, paint_unified_diff_rows_with,
+    paint_visual_selection_overlay, populate_row_to_annotation, push_comment_bar,
+    render_expander_line, render_hidden_lines, scroll_comment_input_into_view, skip_comment_box,
+    unified_line_bg_style,
 };
 use crate::ui::styles;
 use crate::vcs::git::calculate_gap;
+
+/// Draw the inline line-comment editor at `ln` and hand back where it landed;
+/// the caller wires the terminal cursor and the annotation offset. Drawn from
+/// the reply slot inside a thread and from the end-of-line fallback, so both
+/// spots render the same box.
+fn push_line_comment_input<'a>(
+    app: &App,
+    lines: &mut Vec<Line<'a>>,
+    line_idx: &mut usize,
+    comment_width: usize,
+    current_line_idx: usize,
+    ln: u32,
+    comment_bars: &mut Vec<CommentBarAnchor>,
+) -> DrawnInput {
+    let line_range = app
+        .comment_line_range
+        .map(|(r, _)| r)
+        .or_else(|| Some(LineRange::single(ln)));
+    let (input_lines, cursor_info) = comment_panel::format_comment_input_lines(
+        &app.theme,
+        comment_type_presentation(app, &app.comment_type),
+        &app.comment_buffer,
+        app.comment_cursor,
+        line_range,
+        false,
+        comment_width,
+        app.comment_vim_mode_label()
+            .as_ref()
+            .map(|(t, w)| (t.as_str(), *w)),
+        app.supports_keyboard_enhancement,
+        app.comment_reply_author().as_deref(),
+    );
+    let start = *line_idx;
+    let rows = input_lines.len();
+    let cursor_line = start + cursor_info.line_offset;
+    for mut input_line in input_lines {
+        let indicator = cursor_indicator(*line_idx, current_line_idx);
+        input_line.spans.insert(
+            0,
+            Span::styled(indicator, styles::current_line_indicator_style(&app.theme)),
+        );
+        lines.push(input_line);
+        *line_idx += 1;
+    }
+    push_comment_bar(
+        comment_bars,
+        start,
+        (!app.composing_reply()).then_some(line_range).flatten(),
+    );
+    DrawnInput {
+        cursor_line,
+        cursor_column: 1 + cursor_info.column,
+        box_range: (start, start + rows.saturating_sub(1)),
+        rows,
+    }
+}
 
 pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) {
     let focused = app.focused_panel == FocusedPanel::Diff;
@@ -129,7 +186,12 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
         }
     }
 
-    for comment in &app.session.review_comments {
+    // A review-level reply's editor opens in the slot the reply will be
+    // stored in — under the thread it answers, not after every thread.
+    let review_reply_slot = app.review_comment_reply_slot();
+    let mut review_reply_input_drawn = false;
+
+    for (comment_idx, comment) in app.session.review_comments.iter().enumerate() {
         // The row model skips what is not visible — a settled thread's replies
         // above all — so drawing it here would put the diff one box lower than
         // every row index says it is, and the cursor would act on a different
@@ -176,26 +238,45 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
             let rows = app.comment_rows(comment, comment_width);
             if !comment_box_visible(line_idx, rows, (visible_start, visible_end)) {
                 skip_comment_box(&mut lines, &mut line_idx, rows);
-                continue;
-            }
-            let comment_lines = comment_panel::format_comment_lines(
-                &app.theme,
-                comment_type_presentation(app, &comment.comment_type),
-                &comment.content,
-                None,
-                comment_width,
-                comment_panel::CommentBadge::for_comment(comment, &app.username),
-                app.thread_display(comment),
-            );
-            for mut comment_line in comment_lines {
-                let indicator = cursor_indicator(line_idx, current_line_idx);
-                comment_line.spans.insert(
-                    0,
-                    Span::styled(indicator, styles::current_line_indicator_style(&app.theme)),
+            } else {
+                let comment_lines = comment_panel::format_comment_lines(
+                    &app.theme,
+                    comment_type_presentation(app, &comment.comment_type),
+                    &comment.content,
+                    None,
+                    comment_width,
+                    comment_panel::CommentBadge::for_comment(comment, &app.username),
+                    app.thread_display(comment),
                 );
-                lines.push(comment_line);
-                line_idx += 1;
+                for mut comment_line in comment_lines {
+                    let indicator = cursor_indicator(line_idx, current_line_idx);
+                    comment_line.spans.insert(
+                        0,
+                        Span::styled(indicator, styles::current_line_indicator_style(&app.theme)),
+                    );
+                    lines.push(comment_line);
+                    line_idx += 1;
+                }
             }
+        }
+
+        if is_review_comment_mode
+            && app.editing_comment_id.is_none()
+            && review_reply_slot == Some(comment_idx)
+        {
+            let drawn = crate::ui::diff_view::push_comment_input(
+                app,
+                &mut lines,
+                &mut line_idx,
+                comment_width,
+                current_line_idx,
+                false,
+            );
+            comment_cursor_logical_line = Some(drawn.cursor_line);
+            comment_cursor_column = drawn.cursor_column;
+            comment_input_box_range = Some(drawn.box_range);
+            app.comment_input_annotation_offset = Some((drawn.box_range.0, drawn.rows, 0));
+            review_reply_input_drawn = true;
         }
     }
 
@@ -231,35 +312,20 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
         }
     }
 
-    if is_review_comment_mode && app.editing_comment_id.is_none() {
-        let (input_lines, cursor_info) = comment_panel::format_comment_input_lines(
-            &app.theme,
-            comment_type_presentation(app, &app.comment_type),
-            &app.comment_buffer,
-            app.comment_cursor,
-            None,
-            false,
+    // A fresh review-level comment, or a reply whose thread is not on screen.
+    if is_review_comment_mode && app.editing_comment_id.is_none() && !review_reply_input_drawn {
+        let drawn = crate::ui::diff_view::push_comment_input(
+            app,
+            &mut lines,
+            &mut line_idx,
             comment_width,
-            app.comment_vim_mode_label()
-                .as_ref()
-                .map(|(t, w)| (t.as_str(), *w)),
-            app.supports_keyboard_enhancement,
-            app.comment_reply_author().as_deref(),
+            current_line_idx,
+            false,
         );
-        comment_cursor_logical_line = Some(line_idx + cursor_info.line_offset);
-        comment_cursor_column = 1 + cursor_info.column;
-        comment_input_box_range = Some((line_idx, line_idx + input_lines.len().saturating_sub(1)));
-        app.comment_input_annotation_offset = Some((line_idx, input_lines.len(), 0));
-
-        for mut input_line in input_lines {
-            let indicator = cursor_indicator(line_idx, current_line_idx);
-            input_line.spans.insert(
-                0,
-                Span::styled(indicator, styles::current_line_indicator_style(&app.theme)),
-            );
-            lines.push(input_line);
-            line_idx += 1;
-        }
+        comment_cursor_logical_line = Some(drawn.cursor_line);
+        comment_cursor_column = drawn.cursor_column;
+        comment_input_box_range = Some(drawn.box_range);
+        app.comment_input_annotation_offset = Some((drawn.box_range.0, drawn.rows, 0));
     }
 
     crate::ui::pr_info_panel::append_issue_comments_section(
@@ -725,8 +791,18 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                             && file_idx == app.diff_state.current_file_idx
                             && app.comment_line == Some((old_ln, LineSide::Old));
 
+                        // A reply belongs under the thread it answers, not at
+                        // the bottom of every thread on the line. The index
+                        // is absolute into the line's stored comments.
+                        let reply_slot = if is_line_comment_mode {
+                            app.line_comment_reply_slot(path, old_ln)
+                        } else {
+                            None
+                        };
+                        let mut reply_input_drawn = false;
+
                         if let Some(comments) = line_comments.get(&old_ln) {
-                            for comment in comments {
+                            for (comment_idx, comment) in comments.iter().enumerate() {
                                 if comment.side == Some(LineSide::Old)
                                     && app.comment_visible(comment)
                                 {
@@ -844,6 +920,30 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                                             comment_bar_range(comment, line_range),
                                         );
                                     }
+
+                                    // A reply's editor opens in the slot the
+                                    // reply will be stored in — under the
+                                    // thread it answers.
+                                    if is_line_comment_mode
+                                        && app.editing_comment_id.is_none()
+                                        && reply_slot == Some(comment_idx)
+                                    {
+                                        let drawn = push_line_comment_input(
+                                            app,
+                                            &mut lines,
+                                            &mut line_idx,
+                                            comment_width,
+                                            current_line_idx,
+                                            old_ln,
+                                            &mut comment_bars,
+                                        );
+                                        comment_cursor_logical_line = Some(drawn.cursor_line);
+                                        comment_cursor_column = drawn.cursor_column;
+                                        comment_input_box_range = Some(drawn.box_range);
+                                        app.comment_input_annotation_offset =
+                                            Some((drawn.box_range.0, drawn.rows, 0));
+                                        reply_input_drawn = true;
+                                    }
                                 }
                             }
                         }
@@ -860,52 +960,26 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                             &mut comment_bars,
                         );
 
-                        // Render inline input for new line comment (old side)
-                        if is_line_comment_mode && app.editing_comment_id.is_none() {
-                            let line_range = app
-                                .comment_line_range
-                                .map(|(r, _)| r)
-                                .or_else(|| Some(LineRange::single(old_ln)));
-                            let (input_lines, cursor_info) =
-                                comment_panel::format_comment_input_lines(
-                                    &app.theme,
-                                    comment_type_presentation(app, &app.comment_type),
-                                    &app.comment_buffer,
-                                    app.comment_cursor,
-                                    line_range,
-                                    false,
-                                    comment_width,
-                                    app.comment_vim_mode_label()
-                                        .as_ref()
-                                        .map(|(t, w)| (t.as_str(), *w)),
-                                    app.supports_keyboard_enhancement,
-                                    app.comment_reply_author().as_deref(),
-                                );
-                            comment_cursor_logical_line = Some(line_idx + cursor_info.line_offset);
-                            comment_cursor_column = 1 + cursor_info.column;
-                            let box_top_row = line_idx;
-                            comment_input_box_range =
-                                Some((line_idx, line_idx + input_lines.len().saturating_sub(1)));
-                            app.comment_input_annotation_offset =
-                                Some((line_idx, input_lines.len(), 0));
-
-                            for mut input_line in input_lines {
-                                let indicator = cursor_indicator(line_idx, current_line_idx);
-                                input_line.spans.insert(
-                                    0,
-                                    Span::styled(
-                                        indicator,
-                                        styles::current_line_indicator_style(&app.theme),
-                                    ),
-                                );
-                                lines.push(input_line);
-                                line_idx += 1;
-                            }
-                            push_comment_bar(
+                        // Render inline input for a new line comment, or a
+                        // reply whose thread is not on this line's rows.
+                        if is_line_comment_mode
+                            && app.editing_comment_id.is_none()
+                            && !reply_input_drawn
+                        {
+                            let drawn = push_line_comment_input(
+                                app,
+                                &mut lines,
+                                &mut line_idx,
+                                comment_width,
+                                current_line_idx,
+                                old_ln,
                                 &mut comment_bars,
-                                box_top_row,
-                                (!app.composing_reply()).then_some(line_range).flatten(),
                             );
+                            comment_cursor_logical_line = Some(drawn.cursor_line);
+                            comment_cursor_column = drawn.cursor_column;
+                            comment_input_box_range = Some(drawn.box_range);
+                            app.comment_input_annotation_offset =
+                                Some((drawn.box_range.0, drawn.rows, 0));
                         }
                     }
 
@@ -917,8 +991,17 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                             && file_idx == app.diff_state.current_file_idx
                             && app.comment_line == Some((new_ln, LineSide::New));
 
+                        // Same reply slot as the old side: the editor opens
+                        // where the reply will be stored.
+                        let reply_slot = if is_line_comment_mode {
+                            app.line_comment_reply_slot(path, new_ln)
+                        } else {
+                            None
+                        };
+                        let mut reply_input_drawn = false;
+
                         if let Some(comments) = line_comments.get(&new_ln) {
-                            for comment in comments {
+                            for (comment_idx, comment) in comments.iter().enumerate() {
                                 if comment.side != Some(LineSide::Old)
                                     && app.comment_visible(comment)
                                 {
@@ -1035,6 +1118,30 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                                             comment_bar_range(comment, line_range),
                                         );
                                     }
+
+                                    // A reply's editor opens in the slot the
+                                    // reply will be stored in — under the
+                                    // thread it answers.
+                                    if is_line_comment_mode
+                                        && app.editing_comment_id.is_none()
+                                        && reply_slot == Some(comment_idx)
+                                    {
+                                        let drawn = push_line_comment_input(
+                                            app,
+                                            &mut lines,
+                                            &mut line_idx,
+                                            comment_width,
+                                            current_line_idx,
+                                            new_ln,
+                                            &mut comment_bars,
+                                        );
+                                        comment_cursor_logical_line = Some(drawn.cursor_line);
+                                        comment_cursor_column = drawn.cursor_column;
+                                        comment_input_box_range = Some(drawn.box_range);
+                                        app.comment_input_annotation_offset =
+                                            Some((drawn.box_range.0, drawn.rows, 0));
+                                        reply_input_drawn = true;
+                                    }
                                 }
                             }
                         }
@@ -1051,52 +1158,26 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                             &mut comment_bars,
                         );
 
-                        // Render inline input for new line comment (new side)
-                        if is_line_comment_mode && app.editing_comment_id.is_none() {
-                            let line_range = app
-                                .comment_line_range
-                                .map(|(r, _)| r)
-                                .or_else(|| Some(LineRange::single(new_ln)));
-                            let (input_lines, cursor_info) =
-                                comment_panel::format_comment_input_lines(
-                                    &app.theme,
-                                    comment_type_presentation(app, &app.comment_type),
-                                    &app.comment_buffer,
-                                    app.comment_cursor,
-                                    line_range,
-                                    false,
-                                    comment_width,
-                                    app.comment_vim_mode_label()
-                                        .as_ref()
-                                        .map(|(t, w)| (t.as_str(), *w)),
-                                    app.supports_keyboard_enhancement,
-                                    app.comment_reply_author().as_deref(),
-                                );
-                            comment_cursor_logical_line = Some(line_idx + cursor_info.line_offset);
-                            comment_cursor_column = 1 + cursor_info.column;
-                            let box_top_row = line_idx;
-                            comment_input_box_range =
-                                Some((line_idx, line_idx + input_lines.len().saturating_sub(1)));
-                            app.comment_input_annotation_offset =
-                                Some((line_idx, input_lines.len(), 0));
-
-                            for mut input_line in input_lines {
-                                let indicator = cursor_indicator(line_idx, current_line_idx);
-                                input_line.spans.insert(
-                                    0,
-                                    Span::styled(
-                                        indicator,
-                                        styles::current_line_indicator_style(&app.theme),
-                                    ),
-                                );
-                                lines.push(input_line);
-                                line_idx += 1;
-                            }
-                            push_comment_bar(
+                        // Render inline input for a new line comment, or a
+                        // reply whose thread is not on this line's rows.
+                        if is_line_comment_mode
+                            && app.editing_comment_id.is_none()
+                            && !reply_input_drawn
+                        {
+                            let drawn = push_line_comment_input(
+                                app,
+                                &mut lines,
+                                &mut line_idx,
+                                comment_width,
+                                current_line_idx,
+                                new_ln,
                                 &mut comment_bars,
-                                box_top_row,
-                                (!app.composing_reply()).then_some(line_range).flatten(),
                             );
+                            comment_cursor_logical_line = Some(drawn.cursor_line);
+                            comment_cursor_column = drawn.cursor_column;
+                            comment_input_box_range = Some(drawn.box_range);
+                            app.comment_input_annotation_offset =
+                                Some((drawn.box_range.0, drawn.rows, 0));
                         }
                     }
                 }
@@ -1797,6 +1878,56 @@ mod remote_comments_snapshot_tests {
         assert!(
             editor < second,
             "the editor opened below later threads:\n{text}"
+        );
+    }
+
+    /// Line-scope mirror of the file-level test above: several threads on
+    /// one line, and the reply editor must open inside the thread it
+    /// answers, not under the last one.
+    #[test]
+    fn line_reply_editor_opens_under_the_thread_it_answers_in_unified() {
+        use crate::model::{Comment, CommentType, LineSide};
+        let file = sample_diff_file();
+        let path = file.display_path().clone();
+        let mut app = make_revision_app(vec![file]);
+        let mut reply_ids = Vec::new();
+        {
+            let review = app.session.get_file_mut(&path).expect("file in session");
+            for tag in ["THREAD-A", "THREAD-B"] {
+                let root = Comment::new(
+                    format!("{tag} root"),
+                    CommentType::from_id("issue"),
+                    Some(LineSide::New),
+                );
+                let mut reply = Comment::new(
+                    format!("{tag} agent reply"),
+                    CommentType::None,
+                    Some(LineSide::New),
+                );
+                reply.in_reply_to = Some(root.id.clone());
+                reply.author = "Claude".to_string();
+                reply_ids.push(reply.id.clone());
+                review.add_line_comment(2, root);
+                review.add_line_comment(2, reply);
+            }
+        }
+        app.rebuild_annotations();
+
+        app.input_mode = InputMode::Comment;
+        app.comment_is_file_level = false;
+        app.comment_line = Some((2, LineSide::New));
+        app.local_reply_target = Some(reply_ids[0].clone());
+        app.comment_buffer = "ANSWERINGTHREADA".to_string();
+
+        let text = body_text(&draw(&mut app));
+        let a_reply_at = text
+            .find("THREAD-A agent reply")
+            .expect("thread A on screen");
+        let editor_at = text.find("ANSWERINGTHREADA").expect("editor on screen");
+        let b_root_at = text.find("THREAD-B root").expect("thread B on screen");
+        assert!(
+            a_reply_at < editor_at && editor_at < b_root_at,
+            "the reply editor must open inside thread A, not under thread B:\n{text}"
         );
     }
 
