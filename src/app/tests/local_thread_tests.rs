@@ -3310,3 +3310,58 @@ fn should_open_a_reply_under_the_thread_it_answers() {
         None
     );
 }
+
+#[test]
+fn should_ask_the_store_again_when_the_commits_under_review_change() {
+    // Hydration runs before a selector transition knows its commits. Assigning
+    // the list without asking again is how a review ends up marked migrated
+    // and showing none of its comments.
+    let temp = tempfile::tempdir().unwrap();
+    let mut app = app_on_store(temp.path());
+    let store = crate::persistence::comment_store::CommentStore::new(temp.path(), "repo");
+    let scope = crate::model::CommentScope::commit("bbbb2222");
+    let mut stored = Comment::new(
+        "about the other commit".to_string(),
+        CommentType::from_id("issue"),
+        None,
+    );
+    stored.anchor = Some(crate::model::CommentAnchor::review(scope.clone()));
+    let id = stored.id.clone();
+    store.add(&scope, Some("another change"), stored).unwrap();
+    app.session.commit_range = Some(vec!["bbbb2222".to_string()]);
+
+    app.adopt_review_commits(vec![commit_info("bbbb2222", "another change")]);
+
+    assert!(
+        app.session.review_comments.iter().any(|c| c.id == id),
+        "adopting commits asks the store what it holds about them"
+    );
+}
+
+#[test]
+fn should_notice_a_comment_an_agent_wrote_into_the_store() {
+    // An agent's comment never touches the session file on a migrated
+    // repository, so a poll that only watches that file leaves the reader
+    // looking at a review that has already moved on.
+    let temp = tempfile::tempdir().unwrap();
+    let mut app = app_on_store(temp.path());
+    app.reload_persisted_session_if_changed(true).ok();
+
+    let store = crate::persistence::comment_store::CommentStore::new(temp.path(), "repo");
+    let scope = crate::model::CommentScope::commit("aaaa1111");
+    let mut written = Comment::new(
+        "from an agent".to_string(),
+        CommentType::from_id("issue"),
+        None,
+    );
+    written.anchor = Some(crate::model::CommentAnchor::review(scope.clone()));
+    let id = written.id.clone();
+    store.add(&scope, Some("a change"), written).unwrap();
+
+    app.reload_persisted_session_if_changed(false).ok();
+
+    assert!(
+        app.session.review_comments.iter().any(|c| c.id == id),
+        "the reader sees it without restarting"
+    );
+}
