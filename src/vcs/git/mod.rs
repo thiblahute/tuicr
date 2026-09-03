@@ -392,6 +392,10 @@ impl VcsBackend for GitBackend {
         }
     }
 
+    fn reachable_from_refs(&self, of: &[String]) -> Result<std::collections::HashSet<String>> {
+        lineage::reachable_from_refs(&self.info().root_path, of)
+    }
+
     fn predecessors(
         &self,
         of: &[String],

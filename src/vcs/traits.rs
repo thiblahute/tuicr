@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use crate::error::Result;
@@ -295,6 +295,20 @@ pub trait VcsBackend: Send {
     /// and hg from obsolescence markers, neither of which resembles a reflog.
     fn predecessors(&self, _of: &[String]) -> Result<HashMap<String, Vec<String>>> {
         Ok(HashMap::new())
+    }
+
+    /// Whether these commits are still part of the repository's live history —
+    /// reachable from some branch or tag.
+    ///
+    /// Not "does the object exist": a commit a rebase left behind still
+    /// resolves for as long as the reflog holds it, which is months. A review
+    /// asking whether an old version of its commit is gone would be told
+    /// "still here" and leave its comments stranded on it.
+    ///
+    /// Defaults to "all of them are live", the conservative answer: a backend
+    /// that cannot say never claims another commit's comments.
+    fn reachable_from_refs(&self, of: &[String]) -> Result<HashSet<String>> {
+        Ok(of.iter().cloned().collect())
     }
 
     /// Get a combined diff from the parent of the oldest commit through to the working tree.

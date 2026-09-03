@@ -1098,12 +1098,26 @@ impl App {
             }
         };
 
-        let vcs = &self.vcs;
-        let still_exists = |sha: &str| {
-            vcs.get_commits_info(std::slice::from_ref(&sha.to_string()))
-                .map(|found| !found.is_empty())
-                .unwrap_or(false)
-        };
+        // Which of the store's other commits are still somebody's history.
+        // Asked once for the whole index rather than per row, and asked as
+        // "is a ref pointing at it" — a rebased-away commit still resolves for
+        // months, so existence would call every dead ancestor live and leave
+        // its comments stranded.
+        let dead_candidates: Vec<String> = store
+            .index()
+            .map(|index| {
+                index
+                    .rows
+                    .iter()
+                    .filter_map(|row| row.scope.sha().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let live_shas = self
+            .vcs
+            .reachable_from_refs(&dead_candidates)
+            .unwrap_or_else(|_| dead_candidates.iter().cloned().collect());
+        let still_exists = |sha: &str| live_shas.contains(sha);
         let resolved = match crate::persistence::comment_store::resolve_for_review(
             &store,
             &live,

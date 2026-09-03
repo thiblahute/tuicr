@@ -66,6 +66,39 @@ fn classify(message: &str) -> Op {
     }
 }
 
+/// Which of `of` are still reachable from a branch or tag.
+///
+/// `rev-parse` is the wrong question: a commit a rebase left behind resolves
+/// for as long as its reflog entry lives, which is months. `for-each-ref
+/// --contains` asks the one that matters — is anything still pointing at it.
+pub fn reachable_from_refs(repo: &Path, of: &[String]) -> Result<HashSet<String>> {
+    let mut live = HashSet::new();
+    for sha in of {
+        match git(
+            repo,
+            &[
+                "for-each-ref",
+                "--count=1",
+                "--format=%(refname)",
+                "--contains",
+                sha,
+            ],
+        ) {
+            // A commit git cannot answer about counts as live: declining to
+            // claim its comments is the recoverable mistake, taking another
+            // branch's thread is not.
+            Err(_) => {
+                live.insert(sha.clone());
+            }
+            Ok(refs) if !refs.trim().is_empty() => {
+                live.insert(sha.clone());
+            }
+            Ok(_) => {}
+        }
+    }
+    Ok(live)
+}
+
 /// The commits `of` were built from: every amend, rebase and squash that led
 /// to them, transitively. Keyed by the sha asked about.
 pub(crate) fn predecessors(repo: &Path, of: &[String]) -> Result<HashMap<String, Vec<String>>> {
@@ -817,5 +850,28 @@ mod tests {
             let subject = git(&repo, &["log", "-1", "--format=%s", sha]).unwrap();
             println!("   {} {}", &sha[..8], subject.trim());
         }
+    }
+
+    #[test]
+    fn should_call_a_rebased_away_commit_dead_even_though_it_still_resolves() {
+        // git keeps a rewritten commit resolvable for as long as its reflog
+        // entry lives. Asking "does this object exist" says yes for months and
+        // leaves a review's comments stranded on the version it replaced.
+        let mut fx = Fixture::new(&["base"]);
+        let base = fx.shas[0].clone();
+        let left_behind = fx.commit_on(&base, "first draft");
+        // The branch never moved to it: exactly the state a rebase leaves the
+        // version it replaced in.
+        let live = reachable_from_refs(&fx.path, &[base.clone(), left_behind.clone()]).unwrap();
+
+        assert!(live.contains(&base), "the branch tip is live");
+        assert!(
+            !live.contains(&left_behind),
+            "nothing points at the replaced version, though it still resolves"
+        );
+        assert!(
+            git(&fx.path, &["rev-parse", "--verify", &left_behind]).is_ok(),
+            "and this is exactly why resolving is the wrong question"
+        );
     }
 }

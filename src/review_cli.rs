@@ -1306,20 +1306,24 @@ fn comments_of(session: &ReviewSession) -> Vec<crate::model::Comment> {
         .unwrap_or_default()
         .into_iter()
         .collect();
+    // Reachable from a ref, not merely resolvable: a commit a rebase left
+    // behind still resolves for as long as the reflog holds it, so existence
+    // would call every dead ancestor live and strand its comments there.
     let repo_path = session.repo_path.clone();
     let still_exists = move |sha: &str| {
         std::process::Command::new("git")
             .arg("-C")
             .arg(&repo_path)
             .args([
-                "rev-parse",
-                "--verify",
-                "--quiet",
-                &format!("{sha}^{{commit}}"),
+                "for-each-ref",
+                "--count=1",
+                "--format=%(refname)",
+                "--contains",
+                sha,
             ])
             .output()
-            .map(|out| out.status.success())
-            .unwrap_or(false)
+            .map(|out| !out.status.success() || !out.stdout.is_empty())
+            .unwrap_or(true)
     };
     match crate::persistence::comment_store::resolve_for_review(
         &store,
