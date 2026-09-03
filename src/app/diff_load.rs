@@ -1002,7 +1002,7 @@ impl App {
     }
 
     pub(in crate::app) fn reanchor_comments(&mut self) -> usize {
-        let changed = self.migrate_commit_message_comments();
+        let mut changed = self.migrate_commit_message_comments();
         let mut needs_context: Vec<String> = Vec::new();
         for file in &self.diff_files {
             let path = file.display_path().clone();
@@ -1012,6 +1012,7 @@ impl App {
 
             let mut moved: Vec<(u32, Comment)> = Vec::new();
             let mut stranded: Vec<Comment> = Vec::new();
+            let mut changed_here = 0usize;
             let mut lines: Vec<u32> = review.line_comments.keys().copied().collect();
             lines.sort_unstable();
 
@@ -1023,10 +1024,12 @@ impl App {
                 for mut comment in comments.drain(..) {
                     match Self::find_anchor(file, &comment, line) {
                         Some(found) if found == line => {
+                            changed_here += usize::from(comment.outdated);
                             comment.outdated = false;
                             kept.push(comment);
                         }
                         Some(found) => {
+                            changed_here += 1;
                             comment.outdated = false;
                             if let Some(range) = comment.line_range.as_mut() {
                                 let span = range.end.saturating_sub(range.start);
@@ -1036,6 +1039,7 @@ impl App {
                             moved.push((found, comment));
                         }
                         None => {
+                            changed_here += usize::from(!comment.outdated);
                             comment.outdated = true;
                             needs_context.push(comment.id.clone());
                             // Detach it from the line. Keeping it there badged
@@ -1076,10 +1080,13 @@ impl App {
             });
 
             review.line_comments.retain(|_, v| !v.is_empty());
+            let returning_count = returning.len();
             for (line, comment) in moved.into_iter().chain(returning) {
                 review.line_comments.entry(line).or_default().push(comment);
             }
+            changed_here += stranded.len() + returning_count;
             review.file_comments.extend(stranded);
+            changed += changed_here;
         }
         self.recover_detached_context(&needs_context);
         changed
