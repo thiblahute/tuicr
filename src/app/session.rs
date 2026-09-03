@@ -1098,26 +1098,24 @@ impl App {
             }
         };
 
-        // Which of the store's other commits are still somebody's history.
-        // Asked once for the whole index rather than per row, and asked as
-        // "is a ref pointing at it" — a rebased-away commit still resolves for
-        // months, so existence would call every dead ancestor live and leave
-        // its comments stranded.
-        let dead_candidates: Vec<String> = store
-            .index()
-            .map(|index| {
-                index
-                    .rows
-                    .iter()
-                    .filter_map(|row| row.scope.sha().map(String::from))
-                    .collect()
-            })
-            .unwrap_or_default();
-        let live_shas = self
-            .vcs
-            .reachable_from_refs(&dead_candidates)
-            .unwrap_or_else(|_| dead_candidates.iter().cloned().collect());
-        let still_exists = |sha: &str| live_shas.contains(sha);
+        // Whether a commit is still somebody's history — asked one sha at a
+        // time, and only about the rows that could actually be claimed, since
+        // each answer costs a git call. Asking about the whole index up front
+        // spent most of a second on a repository with a thousand refs.
+        let asked: std::cell::RefCell<std::collections::HashMap<String, bool>> =
+            std::cell::RefCell::new(std::collections::HashMap::new());
+        let vcs = &self.vcs;
+        let still_exists = |sha: &str| {
+            if let Some(known) = asked.borrow().get(sha) {
+                return *known;
+            }
+            let live = vcs
+                .reachable_from_refs(std::slice::from_ref(&sha.to_string()))
+                .map(|live| live.contains(sha))
+                .unwrap_or(true);
+            asked.borrow_mut().insert(sha.to_string(), live);
+            live
+        };
         let resolved = match crate::persistence::comment_store::resolve_for_review(
             &store,
             &live,
