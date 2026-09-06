@@ -302,6 +302,21 @@ tuicr review reply --repo /path/to/repo --session <slug> \
   "Fixed in def4567 — returns early on empty input."
 ```
 
+Comments are markdown. The body is syntax-highlighted with a markdown grammar
+and the text is shown exactly as written — the `**` and backticks stay visible,
+so this is highlighting rather than rendering. Write ordinary markdown and keep
+it light: backticks for identifiers, paths and shas, a fenced block for a patch
+or an error, short bullet lists, `**bold**` for the one thing that matters.
+Fenced blocks keep their highlighting across lines.
+
+Two things do not survive. **Tables are not laid out** — every line is wrapped
+to the width of the comment box, so any row wider than the box folds and the
+columns stop lining up; use a list instead. And **links are not clickable**,
+so write the URL plainly if the reader needs it.
+
+Remember the box is narrow — often a side pane. Long paragraphs wrap into a
+wall; several short ones read better.
+
 Rules for the loop:
 
 - Work in threads, not in single comments. A thread is a root comment plus
