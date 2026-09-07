@@ -424,6 +424,34 @@ impl Comment {
     }
 }
 
+/// How settled local threads present in the diff.
+///
+/// The local counterpart of `PrCommentsVisibility`: a settled thread is still
+/// part of the review, so the reader decides how much room it gets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ResolvedThreadsVisibility {
+    /// Full boxes, replies and all — the same as an open thread.
+    Expanded,
+    /// The root shrinks to a one-line marker and its replies drop out.
+    #[default]
+    Collapsed,
+    /// Nothing at all: root and replies both leave the diff.
+    Hidden,
+}
+
+impl ResolvedThreadsVisibility {
+    /// The next state for the single key that walks them. Starting from the
+    /// default, one press expands — what the old two-way toggle did — and the
+    /// second press hides.
+    pub fn cycled(self) -> Self {
+        match self {
+            Self::Collapsed => Self::Expanded,
+            Self::Expanded => Self::Hidden,
+            Self::Hidden => Self::Collapsed,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

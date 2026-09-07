@@ -69,6 +69,13 @@ impl App {
         let mut mappable: Vec<InlineComment> = Vec::new();
         let mut unmappable: Vec<UnmappableItem> = Vec::new();
         let mut total_local_drafts = 0_usize;
+        // The commit-selection filter only. What is submitted is a fact about
+        // the review, not about how the diff is currently folded: a reader who
+        // hid settled threads to see the open ones still submits the lot.
+        // `fold_threads` has already folded replies into their roots, so the
+        // thread half of `comment_visible` would have nothing to say here
+        // anyway.
+        let commit_set = self.selected_commit_set();
 
         // Walk file-level and line comments in display order. Review-level
         // comments (session.review_comments) are NOT inline-mapped; they
@@ -78,7 +85,8 @@ impl App {
                 continue;
             };
             for comment in &fold_threads(&review.file_comments) {
-                if comment.is_locked() || !self.comment_visible(comment) {
+                if comment.is_locked() || !Self::comment_visible_with(comment, commit_set.as_ref())
+                {
                     continue;
                 }
                 total_local_drafts += 1;
@@ -92,7 +100,9 @@ impl App {
             keys.sort();
             for key in keys {
                 for comment in &fold_threads(&review.line_comments[key]) {
-                    if comment.is_locked() || !self.comment_visible(comment) {
+                    if comment.is_locked()
+                        || !Self::comment_visible_with(comment, commit_set.as_ref())
+                    {
                         continue;
                     }
                     total_local_drafts += 1;
