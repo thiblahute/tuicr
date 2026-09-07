@@ -193,15 +193,24 @@ impl App {
         // newest-first (display mirrors it for `commit_order = ascending`),
         // so reverse here as every load path does — or the pane comes back
         // from a reload upside down.
-        let adopted: Vec<crate::vcs::CommitInfo> = self
+        let adopted: Vec<CommitInfo> = self
             .vcs
             .get_commits_info(&commits)
             .unwrap_or_default()
             .into_iter()
             .rev()
             .collect();
-        self.adopt_review_commits(adopted);
-        self.commit_selection_range = None;
+        // The pane replacement goes through the same install every other
+        // path uses: it re-copies `commit_list`, clears the row-indexed
+        // `commit_diff_cache`, and re-anchors the cursor — adopting the rows
+        // alone leaves all of those describing the commits from before the
+        // reload, and cycling then shows one commit's diff under another
+        // commit's name. The selection resets to the full range, as it did
+        // before the pane install was shared.
+        self.install_refreshed_commit_pane(adopted, None);
+        self.show_commit_selector = self.review_commits.len() > 1;
+        // The old full-range diff is no longer this review's full range.
+        self.range_diff_files = None;
 
         // Load the new diff and re-anchor *before* saving. Adopting a range
         // without it writes the comments back at coordinates that belonged to
@@ -209,6 +218,11 @@ impl App {
         // looking untouched. Leaving this to a later reload made it depend on
         // the caller, and the one caller that mattered ran it too late.
         let reanchored = self.reload_diff_files();
+        if reanchored.is_ok() {
+            // The selection is the full range again, and this is its diff:
+            // cache it so returning from a narrowed selection needs no fetch.
+            self.range_diff_files = Some(self.diff_files.clone());
+        }
 
         let new_path = self.save_current_session_merging_external()?;
         if new_path != previous_path {

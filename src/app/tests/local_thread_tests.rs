@@ -12,6 +12,8 @@ struct DummyVcs {
     /// What `resolve_revision_range` answers, oldest-first — the order the
     /// real resolver documents. `None` keeps the trait's unsupported error.
     resolved_range: Option<Vec<String>>,
+    /// What the reflog says each commit was built from.
+    predecessors: std::collections::HashMap<String, Vec<String>>,
 }
 
 impl VcsBackend for DummyVcs {
@@ -27,6 +29,19 @@ impl VcsBackend for DummyVcs {
                     .iter()
                     .find(|commit| commit.short_id == *id || commit.id == *id)
                     .cloned()
+            })
+            .collect())
+    }
+    fn predecessors(
+        &self,
+        of: &[String],
+    ) -> Result<std::collections::HashMap<String, Vec<String>>> {
+        Ok(of
+            .iter()
+            .filter_map(|sha| {
+                self.predecessors
+                    .get(sha)
+                    .map(|old| (sha.clone(), old.clone()))
             })
             .collect())
     }
@@ -126,6 +141,7 @@ fn app_with_session_and_vcs(
             info: vcs_info.clone(),
             commits,
             resolved_range,
+            predecessors: Default::default(),
         }),
         vcs_info,
         Theme::dark(),
@@ -1168,45 +1184,43 @@ fn should_record_the_revset_so_a_reload_can_re_run_it() {
 }
 
 #[test]
-fn should_tell_the_reviewer_when_an_agent_changed_the_code() {
-    let (session, _root) = session_with_line_comment();
-    let mut app = app_for(session);
-    app.pending_agent_update = Some(crate::model::review::AgentUpdate {
-        at: chrono::Utc::now(),
-        message: Some("rebased onto main, dropped the duplicate".to_string()),
-    });
+fn should_keep_commits_newest_first_when_a_reload_re_resolves_the_range() {
+    // `review_commits` stores newest-first; `commit_order = ascending` only
+    // mirrors it for display. The reload re-resolve adopted the resolver's
+    // oldest-first list as-is, so after `:e` picked up an amended branch the
+    // pane — and the mirrored display with it — came back upside down.
+    let (mut session, _root) = session_with_line_comment();
+    session.revset = Some("main..HEAD".to_string());
+    session.commit_range = Some(vec!["old1".to_string()]);
+    let commits: Vec<crate::vcs::CommitInfo> = ["aaa", "bbb", "ccc"]
+        .iter()
+        .enumerate()
+        .map(|(i, id)| crate::vcs::CommitInfo {
+            id: (*id).to_string(),
+            short_id: (*id).to_string(),
+            branch_name: None,
+            summary: format!("commit {i}"),
+            body: None,
+            author: "t".to_string(),
+            time: chrono::Utc::now(),
+        })
+        .collect();
+    // Oldest-first, as the real resolver documents its `commit_ids`.
+    let resolved = vec!["aaa".to_string(), "bbb".to_string(), "ccc".to_string()];
+    let mut app = app_with_session_and_vcs(session, commits, Some(resolved));
+    app.diff_files = vec![diff_file("src/main.rs")];
 
-    assert!(app.poll_agent_update_for_test());
+    let count = app
+        .resolve_revset_to_current_commits()
+        .expect("re-resolve should adopt the branch");
+    assert_eq!(count, 3);
 
-    let shown = app.message.clone().expect("a message was shown");
-    assert!(
-        shown.content.contains("rebased onto main"),
-        "{:?}",
-        shown.content
+    let ids: Vec<&str> = app.review_commits.iter().map(|c| c.id.as_str()).collect();
+    assert_eq!(
+        ids,
+        ["ccc", "bbb", "aaa"],
+        "review_commits must stay newest-first across a reload"
     );
-    // Naming the command matters: the diff on screen is stale until they run it.
-    assert!(shown.content.contains(":reload"), "{:?}", shown.content);
-    // Announced once, not on every poll.
-    assert!(!app.poll_agent_update_for_test());
-}
-
-#[test]
-fn should_hold_the_announcement_while_a_comment_is_open() {
-    // Interrupting someone mid-comment to say the branch moved would be worse
-    // than telling them a second later.
-    let (session, _root) = session_with_line_comment();
-    let mut app = app_for(session);
-    app.input_mode = InputMode::Comment;
-    app.pending_agent_update = Some(crate::model::review::AgentUpdate {
-        at: chrono::Utc::now(),
-        message: None,
-    });
-
-    assert!(!app.poll_agent_update_for_test());
-    assert!(app.pending_agent_update.is_some(), "kept for later");
-
-    app.input_mode = InputMode::Normal;
-    assert!(app.poll_agent_update_for_test());
 }
 
 /// A cumulative diff after fixup commits rewrote the commented lines: the
@@ -1450,6 +1464,105 @@ fn should_stamp_a_new_comment_context_with_the_head_of_the_range() {
         Some("bbb"),
         "context must name the head of the range, not the oldest commit"
     );
+}
+
+#[test]
+fn should_replace_the_whole_commit_pane_when_a_reload_re_resolves_the_range() {
+    // Adopting the new rows alone left `commit_list`, the row-indexed
+    // `commit_diff_cache`, and `range_diff_files` describing the commits
+    // from before the reload: cycling then showed one commit's diff under
+    // another commit's name in the pane.
+    let (mut session, _root) = session_with_line_comment();
+    session.revset = Some("main..HEAD".to_string());
+    session.commit_range = Some(vec!["aaa".to_string(), "bbb".to_string()]);
+    let commits: Vec<crate::vcs::CommitInfo> = ["aaa", "bbb", "ccc"]
+        .iter()
+        .map(|id| commit_info(id, "a commit"))
+        .collect();
+    let resolved = vec!["aaa".to_string(), "bbb".to_string(), "ccc".to_string()];
+    let mut app = app_with_session_and_vcs(session, commits, Some(resolved));
+    app.diff_files = vec![diff_file("src/main.rs")];
+
+    // The pane as the review left it before the agent's fixup landed.
+    app.adopt_review_commits(vec![
+        commit_info("bbb", "old head"),
+        commit_info("aaa", "a commit"),
+    ]);
+    app.commit_list = app.review_commits.clone();
+    app.visible_commit_count = 2;
+    app.commit_diff_cache.insert(
+        (0, 0),
+        vec![diff_file_with_line("src/main.rs", "the old head's diff")],
+    );
+    app.range_diff_files = Some(vec![diff_file_with_line("src/main.rs", "the old range")]);
+
+    app.resolve_revset_to_current_commits()
+        .expect("re-resolve should adopt the branch");
+
+    let pane: Vec<&str> = app.review_commits.iter().map(|c| c.id.as_str()).collect();
+    assert_eq!(pane, ["ccc", "bbb", "aaa"]);
+    let listed: Vec<&str> = app.commit_list.iter().map(|c| c.id.as_str()).collect();
+    assert_eq!(
+        listed, pane,
+        "the selector list must describe the same commits"
+    );
+    assert_eq!(app.visible_commit_count, 3);
+    assert!(
+        app.commit_diff_cache.is_empty(),
+        "row-indexed cached diffs name different commits now"
+    );
+    assert_eq!(app.commit_selection_range, None, "back to the full range");
+    let range = app
+        .range_diff_files
+        .as_ref()
+        .expect("full-range diff cached");
+    assert_eq!(
+        range[0].content_hash,
+        diff_file("src/main.rs").content_hash,
+        "the cached full range is the freshly reloaded diff, not the old one"
+    );
+}
+
+#[test]
+fn should_tell_the_reviewer_when_an_agent_changed_the_code() {
+    let (session, _root) = session_with_line_comment();
+    let mut app = app_for(session);
+    app.pending_agent_update = Some(crate::model::review::AgentUpdate {
+        at: chrono::Utc::now(),
+        message: Some("rebased onto main, dropped the duplicate".to_string()),
+    });
+
+    assert!(app.poll_agent_update_for_test());
+
+    let shown = app.message.clone().expect("a message was shown");
+    assert!(
+        shown.content.contains("rebased onto main"),
+        "{:?}",
+        shown.content
+    );
+    // Naming the command matters: the diff on screen is stale until they run it.
+    assert!(shown.content.contains(":reload"), "{:?}", shown.content);
+    // Announced once, not on every poll.
+    assert!(!app.poll_agent_update_for_test());
+}
+
+#[test]
+fn should_hold_the_announcement_while_a_comment_is_open() {
+    // Interrupting someone mid-comment to say the branch moved would be worse
+    // than telling them a second later.
+    let (session, _root) = session_with_line_comment();
+    let mut app = app_for(session);
+    app.input_mode = InputMode::Comment;
+    app.pending_agent_update = Some(crate::model::review::AgentUpdate {
+        at: chrono::Utc::now(),
+        message: None,
+    });
+
+    assert!(!app.poll_agent_update_for_test());
+    assert!(app.pending_agent_update.is_some(), "kept for later");
+
+    app.input_mode = InputMode::Normal;
+    assert!(app.poll_agent_update_for_test());
 }
 
 fn working(message: &str, agent: &str) -> crate::model::review::AgentActivity {
@@ -2201,6 +2314,7 @@ fn should_not_file_a_comment_under_a_commit_it_was_never_about() {
         info: app.vcs_info.clone(),
         commits: vec![commit_info("c82a8fa", "the commit this comment is about")],
         resolved_range: None,
+        predecessors: Default::default(),
     });
 
     app.diff_files = vec![commit_message_file(
