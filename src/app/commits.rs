@@ -742,29 +742,57 @@ impl App {
     /// Allocates the commit set on every call. Callers in hot paths
     /// (per-comment-per-frame renderers, height calculation) should
     /// compute [`selected_commit_set`] once and use
-    /// [`comment_visible_with`] instead.
+    /// [`comment_visible_in`] instead.
     pub fn comment_visible(&self, comment: &crate::model::Comment) -> bool {
         // A settled thread collapses to its root: the replies drop out of the
         // diff entirely, and the root renders as a one-line marker (see
-        // `thread_collapsed`). Every filtering site goes through here, so the
-        // height model and the renderers cannot disagree about it.
-        if comment.resolved && comment.is_reply() && !self.thread_expanded(comment) {
+        // `thread_collapsed`). Under `Hidden` the root goes too. Every
+        // filtering site goes through here, so the height model and the
+        // renderers cannot disagree about it.
+        self.comment_visible_in(comment, self.selected_commit_set().as_ref())
+    }
+
+    /// [`comment_visible`] against a commit set the caller already computed —
+    /// for the loops that walk many comments and cannot afford to rebuild it
+    /// per comment. Both filters live here so no caller can apply one and
+    /// forget the other.
+    pub fn comment_visible_in(
+        &self,
+        comment: &crate::model::Comment,
+        commit_set: Option<&std::collections::HashSet<String>>,
+    ) -> bool {
+        !self.thread_dropped(comment) && Self::comment_visible_with(comment, commit_set)
+    }
+
+    /// True when this comment leaves the diff because its thread is settled:
+    /// a reply under a folded thread, or anything at all under `Hidden`.
+    pub fn thread_dropped(&self, comment: &crate::model::Comment) -> bool {
+        if !comment.resolved || self.thread_expanded(comment) {
             return false;
         }
-        Self::comment_visible_with(comment, self.selected_commit_set().as_ref())
+        comment.is_reply() || self.resolved_threads == ResolvedThreadsVisibility::Hidden
     }
 
     /// True when this comment should render as a collapsed marker rather than
-    /// a full box — a settled thread's root while resolved threads are hidden.
+    /// a full box — a settled thread's root while resolved threads are folded.
     pub fn thread_collapsed(&self, comment: &crate::model::Comment) -> bool {
-        comment.resolved && !comment.is_reply() && !self.thread_expanded(comment)
+        self.resolved_threads != ResolvedThreadsVisibility::Hidden
+            && comment.resolved
+            && !comment.is_reply()
+            && !self.thread_expanded(comment)
     }
 
     /// True when this comment's thread is shown in full — the review-wide
-    /// setting, flipped for threads the reader toggled individually.
+    /// setting, flipped for threads the reader toggled individually. `Hidden`
+    /// is the exception: it leaves no row to press Enter on, so nothing can
+    /// be flipped out of it.
     pub fn thread_expanded(&self, comment: &crate::model::Comment) -> bool {
+        if self.resolved_threads == ResolvedThreadsVisibility::Hidden {
+            return false;
+        }
         let root = comment.in_reply_to.as_deref().unwrap_or(&comment.id);
-        self.show_resolved_threads != self.thread_display_overrides.contains(root)
+        let expanded_by_default = self.resolved_threads == ResolvedThreadsVisibility::Expanded;
+        expanded_by_default != self.thread_display_overrides.contains(root)
     }
 
     /// How this comment's box should present: open, resolved-but-expanded, or

@@ -1194,3 +1194,35 @@ fn should_yank_nothing_when_cursor_is_not_on_a_comment() {
     app.diff_state.cursor_line = idx;
     assert_eq!(app.comment_content_at_cursor(), None);
 }
+
+#[test]
+fn should_submit_settled_threads_even_when_they_are_hidden_from_the_diff() {
+    // Folding the diff is a reading aid. What goes to the forge is a fact
+    // about the review, so `:threads hide` must not quietly drop a settled
+    // thread from the payload.
+    use crate::model::ResolvedThreadsVisibility;
+
+    let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+    let settled = Comment::new(
+        "was wrong, now fixed".to_string(),
+        CommentType::from_id("issue"),
+        Some(LineSide::New),
+    );
+    let settled_id = settled.id.clone();
+    add_line_comment(&mut app, "src/lib.rs", 11, settled);
+    crate::review_store::set_thread_resolved(&mut app.session, &settled_id, true).unwrap();
+
+    app.set_resolved_threads_visibility(ResolvedThreadsVisibility::Hidden);
+    assert!(
+        !app.comment_visible(
+            &app.session.files[&PathBuf::from("src/lib.rs")].line_comments[&11][0]
+        ),
+        "precondition: the thread is off the diff"
+    );
+
+    app.start_submit(SubmitEvent::Comment);
+
+    let state = app.submit_state.as_ref().expect("submit state");
+    let carried = state.mappable.len() + state.unmappable.len();
+    assert_eq!(carried, 1, "the settled thread is still submitted");
+}

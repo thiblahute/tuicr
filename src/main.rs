@@ -674,10 +674,11 @@ fn main() -> anyhow::Result<()> {
                                 app.toggle_thread_resolved_at_cursor();
                                 continue;
                             }
-                            // `<leader>R` shows or hides settled threads as a
-                            // whole, the counterpart to `<leader>r` on one.
+                            // `<leader>R` walks settled threads as a whole
+                            // through collapsed → expanded → hidden, the
+                            // counterpart to `<leader>r` on one.
                             crossterm::event::KeyCode::Char('R') => {
-                                app.toggle_show_resolved_threads();
+                                app.cycle_resolved_threads_visibility();
                                 continue;
                             }
                             _ => {}

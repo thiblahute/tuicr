@@ -8,7 +8,7 @@ use crate::app::{
 use crate::forge::remote_comments::PrCommentsVisibility;
 use crate::forge::submit::SubmitEvent;
 use crate::input::Action;
-use crate::model::{ClearScope, LineSide};
+use crate::model::{ClearScope, LineSide, ResolvedThreadsVisibility};
 use crate::output::{copy_text_to_clipboard, export_to_clipboard, generate_export_content};
 use crate::text_edit::{
     delete_char_before, delete_word_before, next_char_boundary, prev_char_boundary,
@@ -111,9 +111,16 @@ const COMMAND_SPECS: &[CommandSpec] = &[
     ),
     CommandSpec::new(
         &["threads resolved"],
-        CommandKind::ShowResolvedThreads(true),
+        CommandKind::ResolvedThreads(ResolvedThreadsVisibility::Expanded),
     ),
-    CommandSpec::new(&["threads open"], CommandKind::ShowResolvedThreads(false)),
+    CommandSpec::new(
+        &["threads open"],
+        CommandKind::ResolvedThreads(ResolvedThreadsVisibility::Collapsed),
+    ),
+    CommandSpec::new(
+        &["threads hide"],
+        CommandKind::ResolvedThreads(ResolvedThreadsVisibility::Hidden),
+    ),
     CommandSpec::new(&["resolve"], CommandKind::SetThreadResolved(true)),
     CommandSpec::new(&["unresolve"], CommandKind::SetThreadResolved(false)),
 ];
@@ -170,8 +177,9 @@ enum CommandKind {
     Comments(PrCommentsVisibility),
     /// Settle (or reopen) the local comment thread under the cursor.
     SetThreadResolved(bool),
-    /// Show settled threads in full, or collapse them to their marker row.
-    ShowResolvedThreads(bool),
+    /// Show settled threads in full, collapse them to their marker row, or
+    /// take them off the diff entirely.
+    ResolvedThreads(ResolvedThreadsVisibility),
     /// Hand the review to a waiting agent.
     SubmitToAgent,
 }
@@ -1041,8 +1049,8 @@ fn dispatch_command(app: &mut App, kind: CommandKind) -> CommandAfterDispatch {
             app.set_thread_resolved_at_cursor(resolved);
             CommandAfterDispatch::ExitCommandMode
         }
-        CommandKind::ShowResolvedThreads(show) => {
-            app.set_show_resolved_threads(show);
+        CommandKind::ResolvedThreads(visibility) => {
+            app.set_resolved_threads_visibility(visibility);
             CommandAfterDispatch::ExitCommandMode
         }
         CommandKind::SubmitToAgent => {

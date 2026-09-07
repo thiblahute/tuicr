@@ -3601,6 +3601,53 @@ mod remote_comments_side_by_side_snapshot_tests {
         reply_id
     }
 
+    /// The reader's own words about `:threads hide`: a settled thread must
+    /// leave no trace on the diff — not the box, not the marker row the
+    /// collapsed state keeps.
+    #[test]
+    fn hidden_settled_threads_draw_nothing_at_all() {
+        use crate::model::ResolvedThreadsVisibility;
+
+        let mut app = make_pr_app();
+        app.session.add_diff_file(&app.diff_files[0]);
+        add_line_thread(&mut app, 2, "SETTLED");
+        add_line_thread(&mut app, 2, "STILLOPEN");
+        let settled_root = {
+            let path = app.diff_files[0].display_path().clone();
+            let review = app.session.get_file_mut(&path).expect("file");
+            review.line_comments.get(&2).expect("comments")[0]
+                .id
+                .clone()
+        };
+        crate::review_store::set_thread_resolved(&mut app.session, &settled_root, true).unwrap();
+
+        app.set_resolved_threads_visibility(ResolvedThreadsVisibility::Collapsed);
+        app.rebuild_annotations();
+        let collapsed = body_text(&draw(&mut app));
+        assert!(
+            collapsed.contains("\u{25b8} resolved"),
+            "the marker row is what collapsing keeps:\n{collapsed}"
+        );
+
+        app.set_resolved_threads_visibility(ResolvedThreadsVisibility::Hidden);
+        app.rebuild_annotations();
+        let hidden = body_text(&draw(&mut app));
+        assert!(
+            !hidden.contains("SETTLED"),
+            "the settled thread must be off the diff:\n{hidden}"
+        );
+        // `▸ resolved` is the marker glyph; the status bar says the word too,
+        // and that line is the feedback that the state changed.
+        assert!(
+            !hidden.contains("\u{25b8} resolved"),
+            "and so must the marker row it collapsed to:\n{hidden}"
+        );
+        assert!(
+            hidden.contains("STILLOPEN"),
+            "while the open thread stays:\n{hidden}"
+        );
+    }
+
     /// With several threads piled on one line — what re-anchoring leaves
     /// behind — a reply to the first thread must not open its editor under
     /// the last one.
@@ -3696,7 +3743,7 @@ mod remote_comments_side_by_side_snapshot_tests {
                 }
             }
         }
-        app.show_resolved_threads = false;
+        app.resolved_threads = crate::model::ResolvedThreadsVisibility::Collapsed;
         app.rebuild_annotations();
 
         app.input_mode = InputMode::Comment;

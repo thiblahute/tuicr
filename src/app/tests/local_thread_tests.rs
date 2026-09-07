@@ -698,7 +698,7 @@ fn should_collapse_a_settled_thread_to_one_marker_row() {
     );
 
     // Expanded: the whole thread is back at full height.
-    app.set_show_resolved_threads(true);
+    app.set_resolved_threads_visibility(ResolvedThreadsVisibility::Expanded);
     let thread = line_thread(&app.session);
     assert!(thread.iter().all(|c| app.comment_visible(c)));
     assert!(app.comment_rows(&thread[0], 80) > 1);
@@ -706,6 +706,147 @@ fn should_collapse_a_settled_thread_to_one_marker_row() {
         app.thread_display(&thread[0]),
         crate::ui::comment_panel::ThreadDisplay::Resolved
     );
+}
+
+#[test]
+fn should_route_the_threads_commands_through_the_command_handler() {
+    use crate::handler::handle_command_action;
+    use crate::input::Action;
+
+    let (mut session, root) = session_with_line_comment();
+    crate::review_store::set_thread_resolved(&mut session, &root.id, true).unwrap();
+    let mut app = app_for(session);
+    app.diff_state.viewport_width = 80;
+
+    for (command, expected) in [
+        ("threads hide", ResolvedThreadsVisibility::Hidden),
+        ("threads resolved", ResolvedThreadsVisibility::Expanded),
+        ("threads open", ResolvedThreadsVisibility::Collapsed),
+    ] {
+        app.input_mode = InputMode::Command;
+        app.command_buffer = command.to_string();
+        handle_command_action(&mut app, Action::SubmitInput);
+        assert_eq!(app.resolved_threads, expected, "`:{command}`");
+    }
+}
+
+#[test]
+fn should_take_a_settled_thread_off_the_diff_when_threads_are_hidden() {
+    let (mut session, root) = session_with_line_comment();
+    reply(&mut session, &root.id, "fixed in def4567");
+    crate::review_store::set_thread_resolved(&mut session, &root.id, true).unwrap();
+    let mut app = app_for(session);
+    app.diff_state.viewport_width = 80;
+
+    app.set_resolved_threads_visibility(ResolvedThreadsVisibility::Hidden);
+
+    // Not a marker, not a box: the whole thread leaves the diff. The marker
+    // row is what `Collapsed` keeps, and hiding is the state that drops it.
+    let thread = line_thread(&app.session);
+    assert!(
+        thread.iter().all(|c| !app.comment_visible(c)),
+        "root and replies both go"
+    );
+    assert!(!app.thread_collapsed(&thread[0]), "no marker row is left");
+    assert!(
+        !app.line_annotations
+            .iter()
+            .any(|a| matches!(a, AnnotatedLine::LineComment { .. })),
+        "and nothing is left in the annotation model either"
+    );
+    // Hiding is presentation only — the thread is still settled and stored.
+    assert!(thread.iter().all(|c| c.resolved));
+    assert_eq!(app.resolved_thread_count(), 1);
+}
+
+#[test]
+fn should_leave_open_threads_alone_when_settled_ones_are_hidden() {
+    let (session, _root) = session_with_line_comment();
+    let mut app = app_for(session);
+    app.diff_state.viewport_width = 80;
+
+    app.set_resolved_threads_visibility(ResolvedThreadsVisibility::Hidden);
+
+    // Only settled threads are in scope: an unanswered comment is the whole
+    // point of the screen.
+    let thread = line_thread(&app.session);
+    assert!(app.comment_visible(&thread[0]));
+    assert!(app.comment_rows(&thread[0], 80) > 1);
+}
+
+#[test]
+fn should_cycle_settled_threads_through_the_three_presentations() {
+    let (mut session, root) = session_with_line_comment();
+    crate::review_store::set_thread_resolved(&mut session, &root.id, true).unwrap();
+    let mut app = app_for(session);
+    app.diff_state.viewport_width = 80;
+
+    // The first press has to keep doing what the old two-way toggle did.
+    assert_eq!(app.resolved_threads, ResolvedThreadsVisibility::Collapsed);
+    app.cycle_resolved_threads_visibility();
+    assert_eq!(app.resolved_threads, ResolvedThreadsVisibility::Expanded);
+    app.cycle_resolved_threads_visibility();
+    assert_eq!(app.resolved_threads, ResolvedThreadsVisibility::Hidden);
+    app.cycle_resolved_threads_visibility();
+    assert_eq!(app.resolved_threads, ResolvedThreadsVisibility::Collapsed);
+}
+
+#[test]
+fn should_drop_per_thread_overrides_when_settled_threads_are_hidden() {
+    // A thread the reader opened by hand must not survive a review-wide hide:
+    // there is no marker row left to fold it back with.
+    let (mut session, root) = session_with_line_comment();
+    reply(&mut session, &root.id, "fixed in def4567");
+    crate::review_store::set_thread_resolved(&mut session, &root.id, true).unwrap();
+    let mut app = app_for(session);
+    app.diff_state.viewport_width = 80;
+    cursor_on_line_comment(&mut app, 0);
+    assert!(app.toggle_collapsed_thread_at_cursor());
+    assert!(!app.thread_display_overrides.is_empty());
+
+    app.set_resolved_threads_visibility(ResolvedThreadsVisibility::Hidden);
+
+    assert!(app.thread_display_overrides.is_empty());
+    assert!(
+        line_thread(&app.session)
+            .iter()
+            .all(|c| !app.comment_visible(c))
+    );
+}
+
+#[test]
+fn should_keep_the_height_model_in_step_when_settled_threads_are_hidden() {
+    // `total_lines()` is computed from the file-height math, not from
+    // `line_annotations`; if the two disagree the cursor lands on the wrong
+    // row and the page scrolls past the end of the document.
+    let (mut session, root) = session_with_line_comment();
+    reply(&mut session, &root.id, "fixed in def4567");
+    reply(&mut session, &root.id, "and covered by a test");
+    let review = Comment::new(
+        "reads well overall".to_string(),
+        CommentType::from_id("note"),
+        None,
+    );
+    let review_id = review.id.clone();
+    session.review_comments.push(review);
+    crate::review_store::set_thread_resolved(&mut session, &review_id, true).unwrap();
+    crate::review_store::set_thread_resolved(&mut session, &root.id, true).unwrap();
+    let mut app = app_for(session);
+    app.diff_state.viewport_width = 80;
+
+    for visibility in [
+        ResolvedThreadsVisibility::Collapsed,
+        ResolvedThreadsVisibility::Expanded,
+        ResolvedThreadsVisibility::Hidden,
+    ] {
+        app.set_resolved_threads_visibility(visibility);
+        app.rebuild_annotations();
+        assert_eq!(
+            app.line_annotations.len(),
+            app.total_lines(),
+            "height model and annotations disagree under {visibility:?}"
+        );
+    }
 }
 
 #[test]
@@ -738,7 +879,7 @@ fn should_keep_annotations_in_step_with_the_collapsed_height() {
     );
     assert!(rows_when_collapsed < rows_when_open);
 
-    app.set_show_resolved_threads(true);
+    app.set_resolved_threads_visibility(ResolvedThreadsVisibility::Expanded);
     let rows_expanded = app
         .line_annotations
         .iter()
@@ -807,7 +948,7 @@ fn should_expand_settled_threads_with_enter_on_the_marker() {
 
     assert!(app.toggle_collapsed_thread_at_cursor());
     // Only this thread opens; the review-wide setting is untouched.
-    assert!(!app.show_resolved_threads);
+    assert_eq!(app.resolved_threads, ResolvedThreadsVisibility::Collapsed);
     assert!(!app.thread_collapsed(&line_thread(&app.session)[0]));
     // Expanding must not unresolve: the thread is still settled, just visible.
     assert!(line_thread(&app.session).iter().all(|c| c.resolved));
@@ -820,7 +961,7 @@ fn should_collapse_again_with_enter_inside_an_expanded_thread() {
     crate::review_store::set_thread_resolved(&mut session, &root.id, true).unwrap();
     let mut app = app_for(session);
     app.diff_state.viewport_width = 80;
-    app.set_show_resolved_threads(true);
+    app.set_resolved_threads_visibility(ResolvedThreadsVisibility::Expanded);
     app.rebuild_annotations();
 
     // Enter from a reply row folds the thread back to its marker.
@@ -846,7 +987,7 @@ fn should_leave_enter_alone_when_the_cursor_is_not_on_a_marker() {
     // An open thread's box is not a marker, so Enter falls through to the
     // gap/expander handling it has always done.
     assert!(!app.toggle_collapsed_thread_at_cursor());
-    assert!(!app.show_resolved_threads);
+    assert_eq!(app.resolved_threads, ResolvedThreadsVisibility::Collapsed);
     assert!(app.thread_display_overrides.is_empty());
 }
 
@@ -995,7 +1136,7 @@ fn should_skip_settled_threads_when_iterating_comments() {
 
     // Showing settled threads puts them back: what is on screen is what `m`
     // visits.
-    app.set_show_resolved_threads(true);
+    app.set_resolved_threads_visibility(ResolvedThreadsVisibility::Expanded);
     let ids: Vec<String> = app
         .build_comment_navigator_items()
         .iter()

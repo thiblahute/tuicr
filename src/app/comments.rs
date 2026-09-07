@@ -1304,12 +1304,13 @@ impl App {
         }
     }
 
-    /// Show settled threads in full, or collapse them back to their marker.
-    pub fn set_show_resolved_threads(&mut self, show: bool) {
-        if self.show_resolved_threads == show {
+    /// Choose how much room settled threads get: full boxes, a marker row, or
+    /// nothing at all.
+    pub fn set_resolved_threads_visibility(&mut self, visibility: ResolvedThreadsVisibility) {
+        if self.resolved_threads == visibility {
             return;
         }
-        self.show_resolved_threads = show;
+        self.resolved_threads = visibility;
         // A review-wide decision supersedes the per-thread ones.
         self.thread_display_overrides.clear();
         // Same reasoning as the per-thread toggle: hold the cursor's row on
@@ -1335,18 +1336,31 @@ impl App {
             Some(root_id) => self.restore_thread_anchor(&root_id, anchor_screen_row),
             None => self.clamp_cursor_to_document(),
         }
-        let hidden = self.resolved_thread_count();
-        self.set_message(match (show, hidden) {
-            (true, 0) => "Showing resolved threads (none in this review)".to_string(),
-            (true, 1) => "Showing 1 resolved thread".to_string(),
-            (true, n) => format!("Showing {n} resolved threads"),
-            (false, 1) => "1 resolved thread collapsed".to_string(),
-            (false, n) => format!("{n} resolved threads collapsed"),
+        let settled = self.resolved_thread_count();
+        let threads = match settled {
+            1 => "1 resolved thread".to_string(),
+            n => format!("{n} resolved threads"),
+        };
+        self.set_message(match (visibility, settled) {
+            (ResolvedThreadsVisibility::Expanded, 0) => {
+                "Showing resolved threads (none in this review)".to_string()
+            }
+            (ResolvedThreadsVisibility::Expanded, _) => format!("Showing {threads}"),
+            (ResolvedThreadsVisibility::Collapsed, 0) => {
+                "Collapsing resolved threads (none in this review)".to_string()
+            }
+            (ResolvedThreadsVisibility::Collapsed, _) => format!("{threads} collapsed"),
+            (ResolvedThreadsVisibility::Hidden, 0) => {
+                "Hiding resolved threads (none in this review)".to_string()
+            }
+            (ResolvedThreadsVisibility::Hidden, _) => format!("{threads} hidden"),
         });
     }
 
-    pub fn toggle_show_resolved_threads(&mut self) {
-        self.set_show_resolved_threads(!self.show_resolved_threads);
+    /// Step to the next presentation for settled threads: from the default,
+    /// one press expands them and the next takes them off the diff.
+    pub fn cycle_resolved_threads_visibility(&mut self) {
+        self.set_resolved_threads_visibility(self.resolved_threads.cycled());
     }
 
     /// Settled threads in the session, counted by their roots.

@@ -19,7 +19,7 @@ Full reference. Press `?` inside tuicr for an in-app version of this list.
 | `{N}{motion}` | Vim-style count prefix — repeats `j` / `k` / `h` / `l` / `{` / `}` / `[` / `]` `N` times |
 | `{` / `}` | Jump to previous / next file |
 | `[` / `]` | Jump to previous / next hunk |
-| `m` / `M` | Jump to next / previous comment. Settled threads are skipped while folded (`<leader>R` brings them back); comments whose code an amend removed are cycled too, badged `outdated` and shown at file level |
+| `m` / `M` | Jump to next / previous comment. Settled threads are skipped while folded and gone entirely under `:threads hide` (`<leader>R` brings them back); comments whose code an amend removed are cycled too, badged `outdated` and shown at file level |
 | `/` | Search within diff (case-insensitive); matches on diff content are highlighted and the status bar shows the `[current/total]` position (headers, comments, and PR info are searchable but not highlighted) |
 | `n` / `N` | Next / previous search match (wraps around) |
 | `↑` / `↓` | At the `/` prompt: recall the previous / next search pattern (see [Search history](#search-history)) |
@@ -151,8 +151,8 @@ Shown below the file tree when local comments or visible remote PR threads exist
 | `C` | Add file comment |
 | `<leader>c` | Add review comment |
 | `<leader>r` | Resolve / reopen the comment thread at the cursor (also `:resolve` / `:unresolve`) |
-| `<leader>R` | Show or collapse settled threads (also `:threads resolved` / `:threads open`) |
-| `Enter` | On a settled thread: show or collapse settled threads (does not unresolve) |
+| `<leader>R` | Cycle how settled threads present: collapsed to a marker (default) → shown in full → off the diff entirely. `:threads open` / `:threads resolved` / `:threads hide` name the three directly |
+| `Enter` | On a settled thread's marker: open just that thread, or fold it back (does not unresolve) |
 | `v` / `V` | Visual select from the cursor (`v`) or whole lines (`V`) |
 | `dd` | Delete comment at cursor |
 | `i` | Edit comment at cursor (vim: text cursor at start) |

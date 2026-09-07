@@ -178,7 +178,8 @@ and the command prints the thread's root. Replying to a resolved thread reopens
 it: a new message means it was not settled after all.
 
 In the TUI a settled thread collapses to a single `▸ resolved (n replies)`
-marker row; `<leader>R` (or `:threads resolved`) shows them in full again.
+marker row; `:threads resolved` shows them in full again and `:threads hide`
+takes them off the diff altogether. `<leader>R` cycles the three.
 
 `resolved` and `outdated` appear on every entry of `review comments`.
 `outdated` means the code the comment was written against is gone — an amend or

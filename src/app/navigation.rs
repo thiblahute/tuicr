@@ -1056,8 +1056,14 @@ impl App {
         for summary in &self.forge_review_summaries {
             height += crate::forge::remote_comments::summary_display_lines(summary);
         }
+        // Must mirror the review-comment loop in `rebuild_annotations`: a
+        // settled thread is a marker row or no row at all, and a comment
+        // outside the commit selection is not there.
         for comment in &self.session.review_comments {
-            height += Self::comment_display_lines(comment, self.diff_state.viewport_width);
+            if !self.comment_visible(comment) {
+                continue;
+            }
+            height += self.comment_rows(comment, self.diff_state.viewport_width.saturating_sub(1));
         }
         // Review-level remote threads (line: None) — must mirror the filter
         // in `rebuild_annotations` or scroll offsets fall out of sync.
@@ -1157,11 +1163,11 @@ impl App {
 
         if let Some(review) = self.session.files.get(path) {
             for comment in &review.file_comments {
-                if !Self::comment_visible_with(comment, commit_set.as_ref()) {
+                if !self.comment_visible_in(comment, commit_set.as_ref()) {
                     continue;
                 }
                 comment_lines +=
-                    Self::comment_display_lines(comment, self.diff_state.viewport_width);
+                    self.comment_rows(comment, self.diff_state.viewport_width.saturating_sub(1));
             }
         }
 
@@ -1210,10 +1216,7 @@ impl App {
                                 {
                                     for comment in comments {
                                         if comment.side == Some(LineSide::Old)
-                                            && Self::comment_visible_with(
-                                                comment,
-                                                commit_set.as_ref(),
-                                            )
+                                            && self.comment_visible_in(comment, commit_set.as_ref())
                                         {
                                             comment_lines += Self::comment_display_lines_for_box(
                                                 comment,
@@ -1229,10 +1232,7 @@ impl App {
                                 {
                                     for comment in comments {
                                         if comment.side != Some(LineSide::Old)
-                                            && Self::comment_visible_with(
-                                                comment,
-                                                commit_set.as_ref(),
-                                            )
+                                            && self.comment_visible_in(comment, commit_set.as_ref())
                                         {
                                             comment_lines += Self::comment_display_lines_for_box(
                                                 comment,
@@ -1277,7 +1277,7 @@ impl App {
                                     {
                                         for comment in comments {
                                             if comment.side != Some(LineSide::Old)
-                                                && Self::comment_visible_with(
+                                                && self.comment_visible_in(
                                                     comment,
                                                     commit_set.as_ref(),
                                                 )
@@ -1331,7 +1331,7 @@ impl App {
                                             {
                                                 for comment in comments {
                                                     if comment.side == Some(LineSide::Old)
-                                                        && Self::comment_visible_with(
+                                                        && self.comment_visible_in(
                                                             comment,
                                                             commit_set.as_ref(),
                                                         )
@@ -1353,7 +1353,7 @@ impl App {
                                             {
                                                 for comment in comments {
                                                     if comment.side != Some(LineSide::Old)
-                                                        && Self::comment_visible_with(
+                                                        && self.comment_visible_in(
                                                             comment,
                                                             commit_set.as_ref(),
                                                         )
@@ -1399,7 +1399,7 @@ impl App {
                                     {
                                         for comment in comments {
                                             if comment.side != Some(LineSide::Old)
-                                                && Self::comment_visible_with(
+                                                && self.comment_visible_in(
                                                     comment,
                                                     commit_set.as_ref(),
                                                 )
@@ -1537,9 +1537,11 @@ impl App {
         self.total_lines().saturating_sub(1)
     }
 
-    /// Calculate the number of display lines a comment takes (header + content + footer).
-    /// Uses viewport_width to account for pre-wrapped visual segments so the
-    /// annotation count stays in sync with what format_comment_lines renders.
+    /// Rows a full-width, never-collapsed comment box takes: header, content,
+    /// footer. Test-only. The height model itself has to ask [`comment_rows`]
+    /// instead, because a settled thread is a marker row or no row at all and
+    /// this cannot see which.
+    #[cfg(test)]
     pub(crate) fn comment_display_lines(comment: &Comment, viewport_width: usize) -> usize {
         // Full-width boxes get `viewport_width - 1` (the cursor indicator
         // column) as their format width.

@@ -663,7 +663,7 @@ impl App {
             comment_line: None,
             editing_comment_id: None,
             comment_reply_target: None,
-            show_resolved_threads: false,
+            resolved_threads: ResolvedThreadsVisibility::default(),
             pending_agent_update: None,
             thread_display_overrides: std::collections::HashSet::new(),
             local_reply_target: None,

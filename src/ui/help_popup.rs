@@ -571,7 +571,7 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 format!("  {}R        ", app.leader_key),
                 Style::default().add_modifier(Modifier::BOLD),
             ),
-            Span::raw("Show or collapse settled threads (also ⏎ on one)"),
+            Span::raw("Settled threads: collapse / show / hide (⏎ for one)"),
         ]),
         Line::from(vec![
             Span::styled(
@@ -832,6 +832,27 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::raw("  Hide remote comments in PR mode"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  :threads open",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  Collapse settled local threads to a marker (default)"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  :threads resolved",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  Show settled local threads in full"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  :threads hide",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  Drop settled local threads from the diff"),
         ]),
         Line::from(vec![
             Span::styled(

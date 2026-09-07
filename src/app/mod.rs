@@ -15,7 +15,7 @@ use crate::forge::traits::{ForgeBackend, ForgeRepository};
 use crate::model::review::FileReview;
 use crate::model::{
     ClearScope, Comment, CommentType, DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin,
-    LineRange, LineSide, ReviewSession, SessionDiffSource,
+    LineRange, LineSide, ResolvedThreadsVisibility, ReviewSession, SessionDiffSource,
 };
 use crate::persistence::load_latest_session_for_context;
 use crate::review_store::{AddCommentRequest, CommentTarget, add_comment_to_session};
@@ -1261,19 +1261,21 @@ pub struct App {
     /// review thread at this index in `forge_review_threads`. Saving posts
     /// the reply straight to the forge instead of storing a local draft.
     pub comment_reply_target: Option<usize>,
-    /// Whether settled threads are shown in full. Off by default: a resolved
-    /// thread collapses to its root's first line, marked `▸ resolved`, so the
+    /// How much room settled threads get. `Collapsed` by default: a resolved
+    /// thread shrinks to its root's first line, marked `▸ resolved`, so the
     /// diff shows what still needs attention without losing the record.
-    pub show_resolved_threads: bool,
+    /// `Hidden` drops them from the diff entirely.
+    pub resolved_threads: crate::model::ResolvedThreadsVisibility,
     /// An agent's announcement that the code under review changed, waiting to
     /// be shown. Held rather than shown immediately so it survives until the
     /// reviewer is out of the comment editor.
     pub pending_agent_update: Option<crate::model::review::AgentUpdate>,
-    /// Roots of settled threads whose visibility differs from
-    /// `show_resolved_threads` — Enter flips one thread rather than the whole
+    /// Roots of settled threads the reader expanded against a `Collapsed`
+    /// `resolved_threads` — Enter flips one thread rather than the whole
     /// review, which would insert rows above the cursor and throw the page.
     /// Read it as an override: shown when the global setting and membership
-    /// disagree, so one key works in both directions.
+    /// disagree, so one key works in both directions. Only `Collapsed` leaves
+    /// a marker row to press Enter on, so the set is empty in the other two.
     pub thread_display_overrides: std::collections::HashSet<String>,
     /// When `Some`, the comment editor is composing a reply to the local
     /// comment with this id. Saving stores a local draft reply beside it

@@ -15,8 +15,8 @@ pub(in crate::app) struct CommentLayout<'a> {
     /// This file's per-side widths, `(old, new)`.
     pub box_widths: (usize, usize),
     pub commit_set: Option<&'a std::collections::HashSet<String>>,
-    pub show_resolved: bool,
-    /// Roots whose visibility is flipped relative to `show_resolved`.
+    pub resolved_threads: ResolvedThreadsVisibility,
+    /// Roots the reader expanded against a `Collapsed` `resolved_threads`.
     pub overrides: &'a std::collections::HashSet<String>,
 }
 
@@ -36,17 +36,31 @@ impl CommentLayout<'_> {
     }
 
     /// Whether this comment's thread is expanded — globally or on its own.
+    /// Mirrors `App::thread_expanded`; the two must not drift, or the height
+    /// model and the renderers disagree about how tall a thread is.
     fn thread_shown(&self, comment: &crate::model::Comment) -> bool {
+        if self.resolved_threads == ResolvedThreadsVisibility::Hidden {
+            return false;
+        }
         let root = comment.in_reply_to.as_deref().unwrap_or(&comment.id);
-        self.show_resolved != self.overrides.contains(root)
+        let expanded_by_default = self.resolved_threads == ResolvedThreadsVisibility::Expanded;
+        expanded_by_default != self.overrides.contains(root)
     }
 
     fn collapsed(&self, comment: &crate::model::Comment) -> bool {
-        comment.resolved && !comment.is_reply() && !self.thread_shown(comment)
+        self.resolved_threads != ResolvedThreadsVisibility::Hidden
+            && comment.resolved
+            && !comment.is_reply()
+            && !self.thread_shown(comment)
     }
 
-    fn reply_hidden(&self, comment: &crate::model::Comment) -> bool {
-        comment.resolved && comment.is_reply() && !self.thread_shown(comment)
+    /// Mirrors `App::thread_dropped`: a reply under a folded thread, or a
+    /// whole settled thread under `Hidden`.
+    fn dropped(&self, comment: &crate::model::Comment) -> bool {
+        if !comment.resolved || self.thread_shown(comment) {
+            return false;
+        }
+        comment.is_reply() || self.resolved_threads == ResolvedThreadsVisibility::Hidden
     }
 }
 
@@ -121,14 +135,13 @@ impl App {
         // Commit-selection filter: comments scoped to a commit outside the
         // current inline selection are hidden. `None` => no selector, show all.
         let commit_set = self.selected_commit_set();
-        let show_resolved = self.show_resolved_threads;
         let full_width = self.diff_state.viewport_width.saturating_sub(1);
         let layout = CommentLayout {
             viewport_width: self.diff_state.viewport_width,
             box_width: full_width,
             box_widths: (full_width, full_width),
             commit_set: commit_set.as_ref(),
-            show_resolved,
+            resolved_threads: self.resolved_threads,
             overrides: &self.thread_display_overrides,
         };
 
@@ -251,7 +264,7 @@ impl App {
             if let Some(review) = self.session.files.get(path) {
                 for (comment_idx, comment) in review.file_comments.iter().enumerate() {
                     if !Self::comment_visible_with(comment, commit_set.as_ref())
-                        || layout.reply_hidden(comment)
+                        || layout.dropped(comment)
                     {
                         continue;
                     }
@@ -496,9 +509,7 @@ impl App {
 
             // Hide comments scoped to a commit outside the current selection.
             // Uses the shared predicate so height math and rendering agree.
-            if !Self::comment_visible_with(comment, layout.commit_set)
-                || layout.reply_hidden(comment)
-            {
+            if !Self::comment_visible_with(comment, layout.commit_set) || layout.dropped(comment) {
                 continue;
             }
 
