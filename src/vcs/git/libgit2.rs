@@ -1,4 +1,5 @@
-use git2::Repository;
+use git2::{Repository, RepositoryOpenFlags};
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::Once;
 
@@ -32,7 +33,7 @@ fn register_supported_extensions() {
     static REGISTER: Once = Once::new();
     REGISTER.call_once(|| {
         // SAFETY: libgit2 stores extensions in a process-wide static. We call
-        // this exactly once, before any `Repository::discover`, via `Once`.
+        // this exactly once, before any repository is opened, via `Once`.
         unsafe {
             let _ = git2::opts::set_extensions(&["relativeworktrees"]);
         }
@@ -42,7 +43,12 @@ fn register_supported_extensions() {
 impl Libgit2Backend {
     pub(super) fn discover_from(cwd: &Path, whitespace_mode: DiffWhitespaceMode) -> Result<Self> {
         register_supported_extensions();
-        let repo = Repository::discover(cwd).map_err(|_| TuicrError::NotARepository)?;
+        // Not `Repository::discover`: it reopens the resolved git dir, which
+        // roots a `.git`-file checkout (`git init --separate-git-dir`) at that
+        // dir's parent. `open_ext` keeps the gitlink's directory, like git.
+        // `CROSS_FS` preserves the filesystem-crossing search `discover` did.
+        let repo = Repository::open_ext(cwd, RepositoryOpenFlags::CROSS_FS, &[] as &[&OsStr])
+            .map_err(|_| TuicrError::NotARepository)?;
 
         let root_path = repo
             .workdir()
@@ -325,5 +331,45 @@ mod tests {
             backend.repo.workdir().is_some(),
             "worktree must report a workdir"
         );
+    }
+
+    #[test]
+    fn should_root_separate_git_dir_checkout_at_the_gitlink() {
+        // given: `git init --separate-git-dir` leaves a `.git` *file* in the
+        // checkout pointing at a git dir elsewhere, with no `core.worktree`.
+        // git roots the worktree at that file. `Repository::discover` reopens
+        // the resolved git dir and roots it at the git dir's parent instead,
+        // one level above the checkout.
+        let temp = tempfile::tempdir().expect("temp dir");
+        let checkout = temp.path().join("checkout");
+        let gitdir = temp.path().join("checkout.git");
+        let sub = checkout.join("sub");
+        fs::create_dir_all(&sub).unwrap();
+        git(
+            &checkout,
+            &[
+                "init",
+                "-q",
+                "-b",
+                "main",
+                "--separate-git-dir",
+                gitdir.to_str().unwrap(),
+            ],
+        );
+
+        let expected = checkout.canonicalize().unwrap();
+        for start in [&checkout, &sub] {
+            // when
+            let backend = Libgit2Backend::discover_from(start, DiffWhitespaceMode::Normal)
+                .expect("separate-git-dir checkout should open");
+
+            // then
+            assert_eq!(
+                backend.info().root_path.canonicalize().unwrap(),
+                expected,
+                "root discovered from {}",
+                start.display()
+            );
+        }
     }
 }
