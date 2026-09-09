@@ -139,6 +139,87 @@ fn inline_thread(id: &str, line: u32) -> RemoteReviewThread {
 }
 
 #[test]
+fn should_yank_the_thread_comment_under_the_cursor() {
+    // given — a thread whose root has a two-line body plus one reply:
+    // row 0 header, rows 1-2 root body, row 3 separator, row 4 reply body,
+    // row 5 closing rule.
+    let mut app = make_pr_app("src/lib.rs");
+    let mut thread = inline_thread("T1", 11);
+    thread.comments[0].body = "Root line one\nRoot line two".to_string();
+    thread.comments.push(RemoteReviewComment {
+        id: "T1-reply".to_string(),
+        author: Some("bob".to_string()),
+        body: "Reply body".to_string(),
+        created_at: None,
+        in_reply_to: Some("T1-root".to_string()),
+        database_id: None,
+        url: "https://example.com/2".to_string(),
+    });
+    app.forge_review_threads = vec![thread];
+    app.rebuild_annotations();
+    let first_row = app
+        .line_annotations
+        .iter()
+        .position(|a| matches!(a, AnnotatedLine::RemoteThreadLine { .. }))
+        .expect("thread rows should be annotated");
+
+    // when/then — rows resolve to the comment whose box they render, and
+    // the closing rule sticks to the last one
+    for offset in 0..=2 {
+        app.diff_state.cursor_line = first_row + offset;
+        assert_eq!(
+            app.remote_comment_content_at_cursor().as_deref(),
+            Some("Root line one\nRoot line two"),
+            "row offset {offset}"
+        );
+    }
+    for offset in 3..=5 {
+        app.diff_state.cursor_line = first_row + offset;
+        assert_eq!(
+            app.remote_comment_content_at_cursor().as_deref(),
+            Some("Reply body"),
+            "row offset {offset}"
+        );
+    }
+
+    // and — a diff line yields nothing
+    let diff_row = app
+        .line_annotations
+        .iter()
+        .position(|a| matches!(a, AnnotatedLine::DiffLine { .. }))
+        .expect("expected a diff line annotation");
+    app.diff_state.cursor_line = diff_row;
+    assert_eq!(app.remote_comment_content_at_cursor(), None);
+}
+
+#[test]
+fn should_yank_a_remote_review_summary_body() {
+    // given — one review summary rendered in the review-scope area
+    let mut app = make_pr_app("src/lib.rs");
+    app.forge_review_summaries = vec![crate::forge::remote_comments::RemoteReviewSummary {
+        id: "R1".to_string(),
+        author: Some("alice".to_string()),
+        body: "Looks good overall".to_string(),
+        state: crate::forge::remote_comments::RemoteReviewState::Approved,
+        created_at: None,
+        url: "https://example.com/r1".to_string(),
+    }];
+    app.rebuild_annotations();
+    let row = app
+        .line_annotations
+        .iter()
+        .position(|a| matches!(a, AnnotatedLine::RemoteReviewSummaryLine { .. }))
+        .expect("summary rows should be annotated");
+    app.diff_state.cursor_line = row;
+
+    // when/then
+    assert_eq!(
+        app.remote_comment_content_at_cursor().as_deref(),
+        Some("Looks good overall")
+    );
+}
+
+#[test]
 fn should_enter_reply_mode_from_thread_row_under_cursor() {
     // given — a PR app with one inline thread on the added line
     let mut app = make_pr_app("src/lib.rs");

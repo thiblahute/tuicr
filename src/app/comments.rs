@@ -609,6 +609,57 @@ impl App {
         }
     }
 
+    /// How many rows into its box the annotation at `idx` sits: 0 for the
+    /// first rendered row of a remote thread or review summary, 1 for the
+    /// next, and so on. The renderer's row accounting (`ui::row_height`)
+    /// resolves through this too, so the result indexes the box's
+    /// formatted lines.
+    pub fn annotation_repeat_row(&self, idx: usize) -> usize {
+        let Some(annotation) = self.line_annotations.get(idx) else {
+            return 0;
+        };
+        self.line_annotations[..idx]
+            .iter()
+            .rev()
+            .take_while(|candidate| match (candidate, annotation) {
+                (
+                    AnnotatedLine::RemoteReviewSummaryLine { summary_idx: a },
+                    AnnotatedLine::RemoteReviewSummaryLine { summary_idx: b },
+                ) => a == b,
+                (
+                    AnnotatedLine::RemoteThreadLine { thread_idx: a },
+                    AnnotatedLine::RemoteThreadLine { thread_idx: b },
+                ) => a == b,
+                _ => false,
+            })
+            .count()
+    }
+
+    /// Body of the remote comment rendered at the cursor row: the thread
+    /// comment (root or reply) whose box rows the cursor sits on, a review
+    /// summary, or an issue comment. Local comments resolve through
+    /// `comment_content_at_cursor` instead.
+    pub fn remote_comment_content_at_cursor(&self) -> Option<String> {
+        let idx = self.diff_state.cursor_line;
+        match self.line_annotations.get(idx)? {
+            AnnotatedLine::RemoteThreadLine { thread_idx } => {
+                let thread = self.forge_review_threads.get(*thread_idx)?;
+                let row = self.annotation_repeat_row(idx);
+                thread.comment_at_row(row).map(|c| c.body.clone())
+            }
+            AnnotatedLine::RemoteReviewSummaryLine { summary_idx } => self
+                .forge_review_summaries
+                .get(*summary_idx)
+                .map(|s| s.body.clone()),
+            AnnotatedLine::IssueComment { comment_idx } => self
+                .pr_info
+                .as_ref()
+                .and_then(|info| info.issue_comments.get(*comment_idx))
+                .map(|c| c.body.clone()),
+            _ => None,
+        }
+    }
+
     fn find_comment_at_cursor(&self) -> Option<CommentLocation> {
         let target = self.diff_state.cursor_line;
         let commit_set = self.selected_commit_set();

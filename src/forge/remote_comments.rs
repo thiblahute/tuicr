@@ -144,6 +144,21 @@ impl RemoteReviewThread {
     pub fn replies(&self) -> impl Iterator<Item = &RemoteReviewComment> {
         self.comments.iter().skip(1)
     }
+
+    /// The comment rendered at display row `row` of this thread's box. Row
+    /// accounting matches `thread_display_lines`: each comment takes a
+    /// header (root) or `↳` separator (reply) row plus one row per body
+    /// line, and the closing rule row maps to the last comment.
+    pub fn comment_at_row(&self, row: usize) -> Option<&RemoteReviewComment> {
+        let mut consumed = 0;
+        for comment in &self.comments {
+            consumed += 1 + comment.body.split('\n').count();
+            if row < consumed {
+                return Some(comment);
+            }
+        }
+        self.comments.last()
+    }
 }
 
 /// User-controlled visibility for remote review comments in PR mode.
@@ -291,6 +306,41 @@ mod tests {
                 database_id: None,
                 url: format!("https://example.com/{id}"),
             }],
+        }
+    }
+
+    #[test]
+    fn should_map_thread_rows_to_the_comment_they_render() {
+        // given — a root with a two-line body and a one-line reply:
+        // row 0 header, rows 1-2 root body, row 3 separator, row 4 reply
+        // body, row 5 closing rule.
+        let mut thread = make_thread("a", "src/lib.rs", Some(10), false, false);
+        thread.comments[0].body = "Root line one\nRoot line two".to_string();
+        thread.comments.push(RemoteReviewComment {
+            id: "a-reply".to_string(),
+            author: Some("bob".to_string()),
+            body: "Reply body".to_string(),
+            created_at: None,
+            in_reply_to: Some("a-root".to_string()),
+            database_id: None,
+            url: "https://example.com/a-reply".to_string(),
+        });
+        assert_eq!(thread_display_lines(&thread), 6);
+
+        // when/then — every row lands on the comment whose box renders it
+        for row in 0..=2 {
+            assert_eq!(
+                thread.comment_at_row(row).map(|c| c.id.as_str()),
+                Some("a-root"),
+                "row {row}"
+            );
+        }
+        for row in 3..=5 {
+            assert_eq!(
+                thread.comment_at_row(row).map(|c| c.id.as_str()),
+                Some("a-reply"),
+                "row {row}"
+            );
         }
     }
 

@@ -46,7 +46,7 @@ pub(crate) fn annotation_row_height(app: &App, idx: usize) -> usize {
             .forge_review_summaries
             .get(*summary_idx)
             .and_then(|summary| {
-                let row = repeated_annotation_row(app, idx, annotation);
+                let row = app.annotation_repeat_row(idx);
                 comment_panel::format_remote_review_summary_lines(
                     &app.theme,
                     summary,
@@ -66,7 +66,7 @@ pub(crate) fn annotation_row_height(app: &App, idx: usize) -> usize {
                     .remote_comments_visibility
                     .render_decision(thread)
                     .unwrap_or(false);
-                let row = repeated_annotation_row(app, idx, annotation);
+                let row = app.annotation_repeat_row(idx);
                 comment_panel::format_remote_thread_lines(
                     &app.theme,
                     thread,
@@ -111,28 +111,6 @@ pub(crate) fn annotation_row_height(app: &App, idx: usize) -> usize {
             wrap_len(&text, viewport_width)
         }
     }
-}
-
-fn repeated_annotation_row(app: &App, idx: usize, annotation: &AnnotatedLine) -> usize {
-    app.line_annotations[..idx]
-        .iter()
-        .rev()
-        .take_while(|candidate| match (candidate, annotation) {
-            (
-                AnnotatedLine::RemoteReviewSummaryLine {
-                    summary_idx: candidate,
-                },
-                AnnotatedLine::RemoteReviewSummaryLine { summary_idx },
-            ) => candidate == summary_idx,
-            (
-                AnnotatedLine::RemoteThreadLine {
-                    thread_idx: candidate,
-                },
-                AnnotatedLine::RemoteThreadLine { thread_idx },
-            ) => candidate == thread_idx,
-            _ => false,
-        })
-        .count()
 }
 
 fn formatted_line_height(mut line: Line<'static>, viewport_width: usize) -> usize {
