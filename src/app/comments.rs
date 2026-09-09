@@ -610,10 +610,10 @@ impl App {
     }
 
     /// How many rows into its box the annotation at `idx` sits: 0 for the
-    /// first rendered row of a remote thread or review summary, 1 for the
-    /// next, and so on. The renderer's row accounting (`ui::row_height`)
-    /// resolves through this too, so the result indexes the box's
-    /// formatted lines.
+    /// first rendered row of a comment box — remote thread, review summary,
+    /// or a local/issue comment — 1 for the next, and so on. The renderer's
+    /// row accounting (`ui::row_height`) resolves through this too, so the
+    /// result indexes the box's formatted lines.
     pub fn annotation_repeat_row(&self, idx: usize) -> usize {
         let Some(annotation) = self.line_annotations.get(idx) else {
             return 0;
@@ -630,6 +630,38 @@ impl App {
                     AnnotatedLine::RemoteThreadLine { thread_idx: a },
                     AnnotatedLine::RemoteThreadLine { thread_idx: b },
                 ) => a == b,
+                (
+                    AnnotatedLine::ReviewComment { comment_idx: a },
+                    AnnotatedLine::ReviewComment { comment_idx: b },
+                )
+                | (
+                    AnnotatedLine::IssueComment { comment_idx: a },
+                    AnnotatedLine::IssueComment { comment_idx: b },
+                ) => a == b,
+                (
+                    AnnotatedLine::FileComment {
+                        file_idx: fa,
+                        comment_idx: a,
+                    },
+                    AnnotatedLine::FileComment {
+                        file_idx: fb,
+                        comment_idx: b,
+                    },
+                ) => fa == fb && a == b,
+                (
+                    AnnotatedLine::LineComment {
+                        file_idx: fa,
+                        line: la,
+                        side: sa,
+                        comment_idx: a,
+                    },
+                    AnnotatedLine::LineComment {
+                        file_idx: fb,
+                        line: lb,
+                        side: sb,
+                        comment_idx: b,
+                    },
+                ) => fa == fb && la == lb && sa == sb && a == b,
                 _ => false,
             })
             .count()
@@ -640,28 +672,165 @@ impl App {
     /// summary, or an issue comment. Local comments resolve through
     /// `comment_content_at_cursor` instead.
     pub fn remote_comment_content_at_cursor(&self) -> Option<String> {
-        let idx = self.diff_state.cursor_line;
+        self.remote_comment_box_at(self.diff_state.cursor_line)
+            .map(|(_, body)| body)
+    }
+
+    /// The remote comment box rendered at annotation row `idx`, as a
+    /// selection-stable key plus its markdown body. Consecutive rows of the
+    /// same box return equal keys, so a selection sweep can emit each box
+    /// once.
+    fn remote_comment_box_at(&self, idx: usize) -> Option<(CommentBoxKey, String)> {
         match self.line_annotations.get(idx)? {
             AnnotatedLine::RemoteThreadLine { thread_idx } => {
                 let thread = self.forge_review_threads.get(*thread_idx)?;
                 let row = self.annotation_repeat_row(idx);
-                thread.comment_at_row(row).map(|c| c.body.clone())
+                thread.comment_at_row(row).map(|c| {
+                    (
+                        CommentBoxKey::RemoteThread {
+                            thread_idx: *thread_idx,
+                            comment_id: c.id.clone(),
+                        },
+                        c.body.clone(),
+                    )
+                })
             }
-            AnnotatedLine::RemoteReviewSummaryLine { summary_idx } => self
-                .forge_review_summaries
-                .get(*summary_idx)
-                .map(|s| s.body.clone()),
+            AnnotatedLine::RemoteReviewSummaryLine { summary_idx } => {
+                self.forge_review_summaries.get(*summary_idx).map(|s| {
+                    (
+                        CommentBoxKey::Summary {
+                            summary_idx: *summary_idx,
+                        },
+                        s.body.clone(),
+                    )
+                })
+            }
             AnnotatedLine::IssueComment { comment_idx } => self
                 .pr_info
                 .as_ref()
                 .and_then(|info| info.issue_comments.get(*comment_idx))
-                .map(|c| c.body.clone()),
+                .map(|c| {
+                    (
+                        CommentBoxKey::Issue {
+                            comment_idx: *comment_idx,
+                        },
+                        c.body.clone(),
+                    )
+                }),
             _ => None,
         }
     }
 
+    /// The comment box — local or remote — rendered at annotation row `idx`,
+    /// as a selection-stable key plus its markdown content.
+    pub(in crate::app) fn comment_box_at(&self, idx: usize) -> Option<(CommentBoxKey, String)> {
+        if let Some(location) = self.comment_location_at(idx) {
+            let content = self.local_comment_content(&location)?;
+            return Some((CommentBoxKey::Local(location), content));
+        }
+        self.remote_comment_box_at(idx)
+    }
+
+    /// The comment-box content line rendered at annotation row `idx`: the
+    /// box's selection key, the line's index into its comment's content, and
+    /// the line's markdown. `None` on chrome rows — borders, badges, reply
+    /// separators, remembered code, collapsed markers — so a selection sweep
+    /// copies exactly the lines it covers.
+    pub(in crate::app) fn comment_line_at(
+        &self,
+        idx: usize,
+    ) -> Option<(CommentBoxKey, usize, String)> {
+        if let Some(location) = self.comment_location_at(idx) {
+            let comment = self.local_comment_at(&location)?;
+            let row = self.annotation_repeat_row(idx);
+            let line_idx = Self::comment_box_row_lines(
+                comment,
+                self.comment_box_width_for(&location),
+                self.thread_collapsed(comment),
+            )
+            .get(row)
+            .copied()
+            .flatten()?;
+            let text = comment.content.split('\n').nth(line_idx)?.to_string();
+            return Some((CommentBoxKey::Local(location), line_idx, text));
+        }
+        let row = self.annotation_repeat_row(idx);
+        match self.line_annotations.get(idx)? {
+            AnnotatedLine::RemoteThreadLine { thread_idx } => {
+                let thread = self.forge_review_threads.get(*thread_idx)?;
+                let (comment, line_idx) = thread.body_line_at_row(row)?;
+                let text = comment.body.split('\n').nth(line_idx)?.to_string();
+                Some((
+                    CommentBoxKey::RemoteThread {
+                        thread_idx: *thread_idx,
+                        comment_id: comment.id.clone(),
+                    },
+                    line_idx,
+                    text,
+                ))
+            }
+            // Summary boxes render one row per body line between the header
+            // and the closing rule, so the row maps to the line directly.
+            AnnotatedLine::RemoteReviewSummaryLine { summary_idx } => {
+                let summary = self.forge_review_summaries.get(*summary_idx)?;
+                let line_idx = row.checked_sub(1)?;
+                let text = summary.body.split('\n').nth(line_idx)?.to_string();
+                Some((
+                    CommentBoxKey::Summary {
+                        summary_idx: *summary_idx,
+                    },
+                    line_idx,
+                    text,
+                ))
+            }
+            AnnotatedLine::IssueComment { comment_idx } => {
+                let comment = self
+                    .pr_info
+                    .as_ref()
+                    .and_then(|info| info.issue_comments.get(*comment_idx))?;
+                // Mirrors `issue_comment_display_lines`: top border, body
+                // wrapped at viewport - 10, bottom border.
+                let content_area = self.diff_state.viewport_width.saturating_sub(10);
+                let line_idx =
+                    *crate::ui::comment_panel::body_row_lines(&comment.body, content_area)
+                        .get(row.checked_sub(1)?)?;
+                let text = comment.body.split('\n').nth(line_idx)?.to_string();
+                Some((
+                    CommentBoxKey::Issue {
+                        comment_idx: *comment_idx,
+                    },
+                    line_idx,
+                    text,
+                ))
+            }
+            _ => None,
+        }
+    }
+
+    /// Width the renderer (and the annotation builder) formats the box at
+    /// `location` with. Mirrors the `comment_display_lines_for_box` call
+    /// sites in `annotations.rs`.
+    fn comment_box_width_for(&self, location: &CommentLocation) -> usize {
+        match location {
+            CommentLocation::Review { .. } | CommentLocation::File { .. } => {
+                self.diff_state.viewport_width.saturating_sub(1)
+            }
+            CommentLocation::Line { path, side, .. } => {
+                let is_commit_message = self
+                    .diff_files
+                    .iter()
+                    .find(|f| f.display_path() == path)
+                    .is_some_and(|f| f.is_commit_message);
+                self.line_comment_box_width(*side, is_commit_message)
+            }
+        }
+    }
+
     fn find_comment_at_cursor(&self) -> Option<CommentLocation> {
-        let target = self.diff_state.cursor_line;
+        self.comment_location_at(self.diff_state.cursor_line)
+    }
+
+    fn comment_location_at(&self, target: usize) -> Option<CommentLocation> {
         let commit_set = self.selected_commit_set();
         match self.line_annotations.get(target) {
             Some(AnnotatedLine::ReviewComment { comment_idx }) => Some(CommentLocation::Review {
@@ -721,35 +890,26 @@ impl App {
     /// Resolves through the same lookup `dd` and `i` use, so `Y` yanks
     /// exactly the comment the cursor is sitting on.
     pub fn comment_content_at_cursor(&self) -> Option<String> {
-        match self.find_comment_at_cursor()? {
-            CommentLocation::Review { index } => self
-                .session
-                .review_comments
-                .get(index)
-                .map(|c| c.content.clone()),
-            CommentLocation::File { path, index } => self
-                .session
-                .files
-                .get(&path)
-                .and_then(|review| review.file_comments.get(index))
-                .map(|c| c.content.clone()),
-            CommentLocation::Line {
-                path,
-                line,
-                side,
-                index,
-            } => self
-                .session
-                .files
-                .get(&path)
-                .and_then(|review| review.line_comments.get(&line))
-                .and_then(|comments| comments.get(index))
-                // Same side guard as the delete path: the annotation index is
-                // absolute into the stored Vec, so confirm we landed on the
-                // side the cursor is actually showing.
-                .filter(|c| c.side.unwrap_or(LineSide::New) == side)
-                .map(|c| c.content.clone()),
+        let location = self.find_comment_at_cursor()?;
+        self.local_comment_content(&location)
+    }
+
+    fn local_comment_content(&self, location: &CommentLocation) -> Option<String> {
+        self.local_comment_at(location).map(|c| c.content.clone())
+    }
+
+    /// The local comment at `location`, guarding line locations the same way
+    /// the delete path does: the annotation index is absolute into the
+    /// stored Vec, so confirm we landed on the side the cursor is actually
+    /// showing.
+    fn local_comment_at(&self, location: &CommentLocation) -> Option<&Comment> {
+        let comment = self.comment_at_location(location)?;
+        if let CommentLocation::Line { side, .. } = location
+            && comment.side.unwrap_or(LineSide::New) != *side
+        {
+            return None;
         }
+        Some(comment)
     }
 
     /// Delete the comment at the current cursor position, if any

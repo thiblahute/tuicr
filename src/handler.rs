@@ -1885,14 +1885,14 @@ fn handle_shared_normal_action(app: &mut App, action: Action) {
             app.search_word_under_cursor(false);
         }
         Action::EnterVisualMode => {
-            if app.get_line_at_cursor().is_some() {
+            if app.cursor_can_anchor_selection() {
                 app.enter_visual_char_mode_at_cursor();
             } else {
                 app.set_message("Move cursor to a diff line to start visual selection");
             }
         }
         Action::EnterVisualLineMode => {
-            if app.get_line_at_cursor().is_some() {
+            if app.cursor_can_anchor_selection() {
                 app.enter_visual_mode_at_cursor();
             } else {
                 app.set_message("Move cursor to a diff line to start visual selection");

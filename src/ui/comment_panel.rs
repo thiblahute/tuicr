@@ -453,6 +453,21 @@ fn forge_badge_label(kind: Option<ForgeKind>) -> &'static str {
     }
 }
 
+/// Which body line each wrapped body row renders: `wrap_segments` row
+/// counts flattened, in the order `markdown_body_lines` emits them. Row
+/// accounting and row-to-line resolution both read this, so they cannot
+/// drift.
+pub(crate) fn body_row_lines(body: &str, content_area: usize) -> Vec<usize> {
+    let mut rows = Vec::new();
+    for (i, line) in body.split('\n').enumerate() {
+        rows.extend(std::iter::repeat_n(
+            i,
+            wrap_segments(line, content_area).len(),
+        ));
+    }
+    rows
+}
+
 /// Render `content` as markdown-highlighted, pre-wrapped lines. Colors come
 /// from the active syntect theme.
 pub(crate) fn markdown_body_lines(

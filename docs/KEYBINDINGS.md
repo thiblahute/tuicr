@@ -316,6 +316,6 @@ Mouse support is on by default. Disable with `mouse = false` in config.
 | Click on a directory | Expand or collapse it |
 | Click on a diff line | Position the cursor on that line |
 | Click on a commit | Toggle selection (or expand the row to load more) |
-| Drag in diff | Highlight a range; press `y` to copy the selected source lines |
+| Drag in diff | Highlight a range; press `y` to copy the selected source lines — comment rows in the range contribute the comment lines they show |
 
 For full native terminal selection across the UI, hold your terminal's bypass modifier while dragging (usually **Shift** or **Option/Alt**, depending on the terminal).

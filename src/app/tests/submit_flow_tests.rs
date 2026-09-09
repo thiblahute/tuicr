@@ -1196,6 +1196,102 @@ fn should_yank_nothing_when_cursor_is_not_on_a_comment() {
 }
 
 #[test]
+fn should_include_local_comment_content_once_in_a_visual_selection() {
+    // given — a comment on the added line and a selection sweeping from the
+    // first diff line across the whole comment box
+    let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+    let mut comment = line_comment(LineSide::New, Some(11), None);
+    comment.content = "yanked comment".to_string();
+    add_line_comment(&mut app, "src/lib.rs", 11, comment);
+    app.rebuild_annotations();
+
+    let first_diff_row = app
+        .line_annotations
+        .iter()
+        .position(|a| matches!(a, AnnotatedLine::DiffLine { .. }))
+        .expect("expected a diff line annotation");
+    let last_comment_row = app
+        .line_annotations
+        .iter()
+        .rposition(|a| matches!(a, AnnotatedLine::LineComment { .. }))
+        .expect("expected a LineComment annotation");
+    app.visual_selection = Some(VisualSelection {
+        anchor: SelPoint {
+            annotation_idx: first_diff_row,
+            char_offset: 0,
+            side: LineSide::New,
+        },
+        head: SelPoint {
+            annotation_idx: last_comment_row,
+            char_offset: 0,
+            side: LineSide::New,
+        },
+        kind: VisualKind::Line,
+    });
+
+    // when/then — both diff lines come out, and the comment box collapses
+    // to its content exactly once however many rows it spans
+    assert_eq!(
+        app.visual_selection_text().as_deref(),
+        Some("a\nb\nyanked comment")
+    );
+
+    // and — visual mode can anchor on the comment box (keyboard v/V),
+    // like it can on a diff line, but not on chrome such as a file header
+    app.diff_state.cursor_line = last_comment_row;
+    assert!(app.cursor_can_anchor_selection());
+    let header_row = app
+        .line_annotations
+        .iter()
+        .position(|a| matches!(a, AnnotatedLine::FileHeader { .. }))
+        .expect("expected a file header annotation");
+    app.diff_state.cursor_line = header_row;
+    assert!(!app.cursor_can_anchor_selection());
+}
+
+#[test]
+fn should_yank_only_the_covered_lines_of_a_local_comment() {
+    // given — a two-line comment at a real viewport width, so the box is
+    // deterministic: top border, "first line", "second line", bottom border
+    let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+    app.diff_state.viewport_width = 80;
+    let mut comment = line_comment(LineSide::New, Some(11), None);
+    comment.content = "first line\nsecond line".to_string();
+    add_line_comment(&mut app, "src/lib.rs", 11, comment);
+    app.rebuild_annotations();
+    let first_row = app
+        .line_annotations
+        .iter()
+        .position(|a| matches!(a, AnnotatedLine::LineComment { .. }))
+        .expect("expected a LineComment annotation");
+    let select_row = |app: &mut App, row: usize| {
+        app.visual_selection = Some(VisualSelection {
+            anchor: SelPoint {
+                annotation_idx: row,
+                char_offset: 0,
+                side: LineSide::New,
+            },
+            head: SelPoint {
+                annotation_idx: row,
+                char_offset: 0,
+                side: LineSide::New,
+            },
+            kind: VisualKind::Line,
+        });
+    };
+
+    // when/then — one body row yields exactly its markdown line
+    select_row(&mut app, first_row + 2);
+    assert_eq!(app.visual_selection_text().as_deref(), Some("second line"));
+
+    // and — the borders yield nothing
+    select_row(&mut app, first_row);
+    assert_eq!(app.visual_selection_text(), None);
+    select_row(&mut app, first_row + 3);
+    assert_eq!(app.visual_selection_text(), None);
+}
+
+#[test]
 fn should_submit_settled_threads_even_when_they_are_hidden_from_the_diff() {
     // Folding the diff is a reading aid. What goes to the forge is a fact
     // about the review, so `:threads hide` must not quietly drop a settled

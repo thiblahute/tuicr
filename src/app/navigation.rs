@@ -1558,17 +1558,26 @@ impl App {
         box_width: usize,
         collapsed: bool,
     ) -> usize {
+        Self::comment_box_row_lines(comment, box_width, collapsed).len()
+    }
+
+    /// For each display row of a comment box, the content line it renders:
+    /// `Some(i)` for a row showing (part of) content line `i`, `None` for
+    /// chrome — the borders, the remembered-code block, a collapsed
+    /// thread's marker. Row order mirrors `format_comment_lines`: top
+    /// border, remembered code, wrapped body, bottom border.
+    pub(crate) fn comment_box_row_lines(
+        comment: &Comment,
+        box_width: usize,
+        collapsed: bool,
+    ) -> Vec<Option<usize>> {
         if collapsed {
-            return 1;
+            return vec![None];
         }
         // Mirrors the content_area calculation in format_comment_lines:
         // border_prefix(7) + safety_margin(2) = 9
         let content_area = box_width.saturating_sub(9);
-        let visual_lines: usize = comment
-            .content
-            .split('\n')
-            .map(|line| crate::ui::comment_panel::wrap_segments(line, content_area).len())
-            .sum();
+        let mut rows = vec![None]; // top border
         // A detached comment carries the code it was written about — the line
         // and its neighbours — which no longer exists in the diff. The
         // renderer emits those rows, so the model counts them through the same
@@ -1576,7 +1585,14 @@ impl App {
         let remembered = crate::ui::comment_panel::remembered_code(comment)
             .map(|code| code.rows())
             .unwrap_or(0);
-        2 + visual_lines + remembered // borders + body + remembered code
+        rows.extend(std::iter::repeat_n(None, remembered));
+        rows.extend(
+            crate::ui::comment_panel::body_row_lines(&comment.content, content_area)
+                .into_iter()
+                .map(Some),
+        );
+        rows.push(None); // bottom border
+        rows
     }
 
     /// Width `format_comment_lines` is called with for a line comment on

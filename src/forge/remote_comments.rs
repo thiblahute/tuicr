@@ -159,6 +159,25 @@ impl RemoteReviewThread {
         }
         self.comments.last()
     }
+
+    /// The body line rendered at display row `row`: the comment it belongs
+    /// to and the line's index into that comment's body. `None` for chrome
+    /// rows — the header, reply separators, and the closing rule. Same row
+    /// accounting as `comment_at_row`.
+    pub fn body_line_at_row(&self, row: usize) -> Option<(&RemoteReviewComment, usize)> {
+        let mut consumed = 0;
+        for comment in &self.comments {
+            if row == consumed {
+                return None; // header or separator
+            }
+            let body_start = consumed + 1;
+            consumed = body_start + comment.body.split('\n').count();
+            if row < consumed {
+                return Some((comment, row - body_start));
+            }
+        }
+        None // closing rule
+    }
 }
 
 /// User-controlled visibility for remote review comments in PR mode.

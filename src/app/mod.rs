@@ -1843,6 +1843,7 @@ pub struct SummaryState {
 }
 
 /// Represents a comment location for deletion
+#[derive(PartialEq)]
 enum CommentLocation {
     Review {
         index: usize,
@@ -1856,6 +1857,24 @@ enum CommentLocation {
         line: u32,
         side: LineSide,
         index: usize,
+    },
+}
+
+/// Identity of one rendered comment box, local or remote. Rows of the same
+/// box compare equal, so a selection sweep over annotations can emit each
+/// box's content exactly once.
+#[derive(PartialEq)]
+pub(in crate::app) enum CommentBoxKey {
+    Local(CommentLocation),
+    RemoteThread {
+        thread_idx: usize,
+        comment_id: String,
+    },
+    Summary {
+        summary_idx: usize,
+    },
+    Issue {
+        comment_idx: usize,
     },
 }
 
