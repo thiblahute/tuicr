@@ -2,21 +2,49 @@ use super::*;
 
 impl App {
     pub fn copy_visual_selection(&mut self) -> Result<usize> {
-        let Some(sel) = self.visual_selection else {
+        let Some(out) = self.visual_selection_text() else {
             return Ok(0);
         };
+        let count = out.chars().count();
+        crate::output::copy_text_to_clipboard(&out)
+            .map_err(|e| TuicrError::Clipboard(format!("{e}")))?;
+        Ok(count)
+    }
+
+    /// The text a yank of the current selection produces. Diff rows are
+    /// sliced character-precise; comment rows contribute the markdown lines
+    /// the sweep actually covers, one line per covered row — a source line
+    /// wrapped over several rows comes out once, and chrome rows (borders,
+    /// badges, separators) contribute nothing. Selection points carry no
+    /// column inside a box, so lines come out whole. `Y` stays the
+    /// whole-comment gesture.
+    pub fn visual_selection_text(&self) -> Option<String> {
+        let sel = self.visual_selection?;
         let (start, end) = sel.ordered();
         let side = sel.anchor.side;
         let mut out = String::new();
         let mut emitted = 0usize;
+        let mut last_line: Option<(CommentBoxKey, usize)> = None;
         for idx in start.annotation_idx..=end.annotation_idx {
             let snippet = if let Some(content) = self.content_for_side(idx, side) {
+                last_line = None;
                 let total = content.chars().count();
                 let (lo, hi) = sel.char_range(idx, total);
                 char_slice(content, lo, Some(hi)).to_string()
+            } else if let Some((key, line_idx, text)) = self.comment_line_at(idx) {
+                let entry = (key, line_idx);
+                if last_line.as_ref() == Some(&entry) {
+                    continue;
+                }
+                last_line = Some(entry);
+                text
             } else if let Some(text) = self.atomic_text_for_annotation(idx) {
+                last_line = None;
                 text
             } else {
+                // Comment chrome rows land here too: they emit nothing but
+                // don't break the wrapped-line dedupe either — a box's rows
+                // are contiguous, so the same line never recurs past chrome.
                 continue;
             };
             if emitted > 0 {
@@ -25,13 +53,14 @@ impl App {
             out.push_str(&snippet);
             emitted += 1;
         }
-        if out.is_empty() {
-            return Ok(0);
-        }
-        let count = out.chars().count();
-        crate::output::copy_text_to_clipboard(&out)
-            .map_err(|e| TuicrError::Clipboard(format!("{e}")))?;
-        Ok(count)
+        if out.is_empty() { None } else { Some(out) }
+    }
+
+    /// Whether visual mode can start from the cursor row: a diff line or a
+    /// comment box row — the two kinds of rows a selection yank emits.
+    pub fn cursor_can_anchor_selection(&self) -> bool {
+        self.get_line_at_cursor().is_some()
+            || self.comment_box_at(self.diff_state.cursor_line).is_some()
     }
 
     pub fn enter_visual_mode_at_cursor(&mut self) {

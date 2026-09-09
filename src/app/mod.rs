@@ -1943,6 +1943,24 @@ pub struct SummaryState {
     pub(crate) selection_needs_scroll: bool,
 }
 
+/// Identity of one rendered comment box, local or remote. Rows of the same
+/// box compare equal, so a selection sweep over annotations can emit each
+/// box's content exactly once.
+#[derive(PartialEq)]
+pub(in crate::app) enum CommentBoxKey {
+    Local(CommentLocation),
+    RemoteThread {
+        thread_idx: usize,
+        comment_id: String,
+    },
+    Summary {
+        summary_idx: usize,
+    },
+    Issue {
+        comment_idx: usize,
+    },
+}
+
 /// What `detect_vcs` needs to open a backend. Bundled because these two
 /// always travel together: they are chosen once at startup and then replayed
 /// verbatim by the diff-watch worker when it opens its own backend.

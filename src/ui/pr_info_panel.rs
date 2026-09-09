@@ -274,12 +274,7 @@ pub fn issue_comment_display_lines(
     viewport_width: usize,
 ) -> usize {
     let content_area = viewport_width.saturating_sub(10);
-    let visual_lines: usize = comment
-        .body
-        .split('\n')
-        .map(|line| comment_panel::wrap_segments(line, content_area).len())
-        .sum();
-    2 + visual_lines
+    2 + comment_panel::body_row_lines(&comment.body, content_area).len()
 }
 
 fn format_issue_comment_lines(

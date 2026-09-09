@@ -193,6 +193,100 @@ fn should_yank_the_thread_comment_under_the_cursor() {
 }
 
 #[test]
+fn should_include_thread_comments_once_in_a_visual_selection() {
+    // given — a thread with one reply anchored on the added line, and a
+    // selection sweeping from that diff line across the whole thread box
+    let mut app = make_pr_app("src/lib.rs");
+    let mut thread = inline_thread("T1", 11);
+    thread.comments.push(RemoteReviewComment {
+        id: "T1-reply".to_string(),
+        author: Some("bob".to_string()),
+        body: "Reply body".to_string(),
+        created_at: None,
+        in_reply_to: Some("T1-root".to_string()),
+        database_id: None,
+        url: "https://example.com/2".to_string(),
+    });
+    app.forge_review_threads = vec![thread];
+    app.rebuild_annotations();
+    let diff_row = app
+        .line_annotations
+        .iter()
+        .position(
+            |a| matches!(a, AnnotatedLine::DiffLine { line_idx, .. } if *line_idx == 1), // "b"
+        )
+        .expect("expected the added diff line");
+    let last_thread_row = app
+        .line_annotations
+        .iter()
+        .rposition(|a| matches!(a, AnnotatedLine::RemoteThreadLine { .. }))
+        .expect("thread rows should be annotated");
+    app.visual_selection = Some(VisualSelection {
+        anchor: SelPoint {
+            annotation_idx: diff_row,
+            char_offset: 0,
+            side: LineSide::New,
+        },
+        head: SelPoint {
+            annotation_idx: last_thread_row,
+            char_offset: 0,
+            side: LineSide::New,
+        },
+        kind: VisualKind::Line,
+    });
+
+    // when/then — the diff line comes out sliced, each thread comment once
+    assert_eq!(
+        app.visual_selection_text().as_deref(),
+        Some("b\nCan this be simplified?\nReply body")
+    );
+}
+
+#[test]
+fn should_yank_only_the_covered_lines_of_a_thread_comment() {
+    // given — a root with a two-line body: row 0 header, row 1 line one,
+    // row 2 line two, row 3 closing rule
+    let mut app = make_pr_app("src/lib.rs");
+    let mut thread = inline_thread("T1", 11);
+    thread.comments[0].body = "Root line one\nRoot line two".to_string();
+    app.forge_review_threads = vec![thread];
+    app.rebuild_annotations();
+    let first_row = app
+        .line_annotations
+        .iter()
+        .position(|a| matches!(a, AnnotatedLine::RemoteThreadLine { .. }))
+        .expect("thread rows should be annotated");
+    let select_row = |app: &mut App, row: usize| {
+        app.visual_selection = Some(VisualSelection {
+            anchor: SelPoint {
+                annotation_idx: row,
+                char_offset: 0,
+                side: LineSide::New,
+            },
+            head: SelPoint {
+                annotation_idx: row,
+                char_offset: 0,
+                side: LineSide::New,
+            },
+            kind: VisualKind::Line,
+        });
+    };
+
+    // when/then — one body row yields exactly its line
+    select_row(&mut app, first_row + 2);
+    assert_eq!(
+        app.visual_selection_text().as_deref(),
+        Some("Root line two")
+    );
+
+    // and — chrome rows yield nothing: the header and the closing rule
+    select_row(&mut app, first_row);
+    assert_eq!(app.visual_selection_text(), None);
+    select_row(&mut app, first_row + 3);
+    assert_eq!(app.visual_selection_text(), None);
+}
+
+#[test]
 fn should_yank_a_remote_review_summary_body() {
     // given — one review summary rendered in the review-scope area
     let mut app = make_pr_app("src/lib.rs");

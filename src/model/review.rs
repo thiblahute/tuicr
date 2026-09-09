@@ -14,6 +14,7 @@ pub enum ClearScope {
     CommentsAndReviewed,
 }
 
+#[derive(PartialEq)]
 pub(crate) enum CommentLocation {
     Review {
         index: usize,
