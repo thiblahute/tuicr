@@ -611,6 +611,32 @@ impl App {
         }
     }
 
+    /// How many rows into its box the annotation at `idx` sits: 0 for the
+    /// first rendered row of a remote thread or review summary, 1 for the
+    /// next, and so on. The renderer's row accounting (`ui::row_height`)
+    /// resolves through this too, so the result indexes the box's
+    /// formatted lines.
+    pub fn annotation_repeat_row(&self, idx: usize) -> usize {
+        let Some(annotation) = self.line_annotations.get(idx) else {
+            return 0;
+        };
+        self.line_annotations[..idx]
+            .iter()
+            .rev()
+            .take_while(|candidate| match (candidate, annotation) {
+                (
+                    AnnotatedLine::RemoteReviewSummaryLine { summary_idx: a },
+                    AnnotatedLine::RemoteReviewSummaryLine { summary_idx: b },
+                ) => a == b,
+                (
+                    AnnotatedLine::RemoteThreadLine { thread_idx: a, .. },
+                    AnnotatedLine::RemoteThreadLine { thread_idx: b, .. },
+                ) => a == b,
+                _ => false,
+            })
+            .count()
+    }
+
     fn find_comment_at_cursor(&self) -> Option<CommentLocation> {
         let target = self.diff_state.cursor_line;
         let commit_set = self.selected_commit_set();

@@ -485,7 +485,9 @@ fn handle_export(app: &mut App) {
 
 /// Copy just the comment under the cursor (`Y`). Unlike `y`, the rest of the
 /// review stays out of the clipboard, so a single comment can go straight into
-/// a chat message or an agent prompt.
+/// a chat message or an agent prompt. Remote rows yank too: a thread row
+/// gives the root or reply the cursor sits on, a review summary or issue
+/// comment its body.
 fn handle_copy_comment_at_cursor(app: &mut App) {
     let Some(content) = app
         .comment_content_at_cursor()
