@@ -59,8 +59,17 @@ impl App {
         // Source of truth for the diff: when the inline commit selector is
         // showing a strict subset, `range_diff_files` carries the merged
         // subset diff; otherwise `diff_files` is canonical.
+        //
+        // The commit-message file is the exception: it exists only in the
+        // narrowed `diff_files`, so walking the range alone would drop a
+        // comment written on it without saying so.
         let files: Vec<&DiffFile> = match self.range_diff_files.as_ref() {
-            Some(range) => range.iter().collect(),
+            Some(range) => self
+                .diff_files
+                .iter()
+                .filter(|file| file.is_commit_message)
+                .chain(range.iter())
+                .collect(),
             None => self.diff_files.iter().collect(),
         };
 

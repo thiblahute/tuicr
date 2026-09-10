@@ -197,8 +197,7 @@ fn full_row_text(app: &App, annotation: &AnnotatedLine) -> String {
         // the outer wrap pass counts the same rows the renderer emits.
         AnnotatedLine::PrInfoLine { line_idx: pr_line } => {
             let body: String = app
-                .pr_info
-                .as_ref()
+                .pr_info_for_render()
                 .and_then(|info| {
                     crate::ui::pr_info_panel::build_pr_info_lines(
                         info,

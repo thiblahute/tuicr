@@ -220,3 +220,150 @@ fn should_keep_pr_info_annotations_in_sync_with_rendered_lines_at_wrap_boundary(
         "PrInfoLine annotation count must equal the rendered PR-info line count"
     );
 }
+
+/// Build the PR commit list the selector would get from a forge: three
+/// commits, newest-first (the order `pr_open` hands over).
+fn pr_commits() -> Vec<crate::forge::traits::PullRequestCommit> {
+    vec![
+        crate::forge::traits::PullRequestCommit {
+            oid: "ccc3333".to_string(),
+            short_oid: "ccc3333".to_string(),
+            summary: "third: newest".to_string(),
+            body: Some("Body of the newest commit.".to_string()),
+            author: "alice".to_string(),
+            timestamp: None,
+        },
+        crate::forge::traits::PullRequestCommit {
+            oid: "bbb2222".to_string(),
+            short_oid: "bbb2222".to_string(),
+            summary: "second: middle".to_string(),
+            body: None,
+            author: "alice".to_string(),
+            timestamp: None,
+        },
+        crate::forge::traits::PullRequestCommit {
+            oid: "aaa1111".to_string(),
+            short_oid: "aaa1111".to_string(),
+            summary: "first: oldest".to_string(),
+            body: Some("Body of the oldest commit.".to_string()),
+            author: "alice".to_string(),
+            timestamp: None,
+        },
+    ]
+}
+
+fn pr_app_with_commits() -> App {
+    let mut app = build_pr_app();
+    app.apply_pr_commit_selector(pr_commits(), Default::default());
+    app
+}
+
+fn commit_message_text(app: &App) -> String {
+    let file = app.diff_files.first().expect("at least one file").clone();
+    assert!(file.is_commit_message, "first file must be the message");
+    file.hunks
+        .iter()
+        .flat_map(|hunk| hunk.lines.iter())
+        .map(|line| line.content.clone())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn should_show_the_selected_commits_message_instead_of_the_pr_description() {
+    // given a three-commit PR, narrowed to the oldest commit. `pr_commits` is
+    // newest-first, so the oldest is the last index — the assertion catches a
+    // reversed read of the selection range.
+    let mut app = pr_app_with_commits();
+    app.commit_selection_range = Some((2, 2));
+
+    // when
+    app.insert_commit_message_if_single();
+    app.sort_files_by_directory(true);
+    app.rebuild_annotations();
+
+    // then the message on screen is that commit's, and the PR description is
+    // not rendered alongside it.
+    let text = commit_message_text(&app);
+    assert!(text.contains("first: oldest"), "got: {text}");
+    assert!(text.contains("Body of the oldest commit."), "got: {text}");
+    assert_eq!(
+        app.diff_files[0].display_path(),
+        &PathBuf::from("Commit Message (aaa1111)")
+    );
+    assert!(app.pr_info_for_render().is_none());
+    assert_eq!(crate::ui::pr_info_panel::pr_info_render_height(&app), 0);
+    assert!(
+        !app.line_annotations
+            .iter()
+            .any(|line| matches!(line, crate::app::AnnotatedLine::PrInfoLine { .. })),
+        "no PR-info rows may be annotated while the panel is hidden"
+    );
+}
+
+#[test]
+fn should_restore_the_pr_description_when_the_selection_widens_again() {
+    let mut app = pr_app_with_commits();
+    app.commit_selection_range = Some((1, 1));
+    app.insert_commit_message_if_single();
+    app.sort_files_by_directory(true);
+    assert!(app.pr_info_for_render().is_none());
+
+    // when the selection covers the whole PR again
+    app.commit_selection_range = Some((0, 2));
+    app.insert_commit_message_if_single();
+    app.sort_files_by_directory(true);
+    app.rebuild_annotations();
+
+    // then the message file is gone and the description is back
+    assert!(app.diff_files.iter().all(|file| !file.is_commit_message));
+    assert!(app.pr_info_for_render().is_some());
+    assert!(crate::ui::pr_info_panel::pr_info_render_height(&app) > 0);
+}
+
+#[test]
+fn should_keep_the_pr_description_for_a_multi_commit_subrange() {
+    // Two commits selected is still a PR-shaped review, not a commit review.
+    let mut app = pr_app_with_commits();
+    app.commit_selection_range = Some((1, 2));
+    app.insert_commit_message_if_single();
+    app.sort_files_by_directory(true);
+
+    assert!(app.diff_files.iter().all(|file| !file.is_commit_message));
+    assert!(app.pr_info_for_render().is_some());
+}
+
+#[test]
+fn should_send_a_commit_message_comment_to_the_review_body() {
+    use crate::forge::submit::{
+        CommentAnchor, MappedComment, SubmitContext, UnmappableReason, map_comment,
+    };
+    use crate::model::comment::Comment;
+
+    let mut app = pr_app_with_commits();
+    app.commit_selection_range = Some((2, 2));
+    app.insert_commit_message_if_single();
+    app.sort_files_by_directory(true);
+    let file = app.diff_files[0].clone();
+
+    let forge = crate::config::ForgeConfig::default();
+    let ctx = SubmitContext::new(&forge, &app.comment_types);
+    let comment = Comment::new(
+        "reword this".to_string(),
+        crate::model::CommentType::None,
+        None,
+    );
+
+    // when
+    let mapped = map_comment(&comment, CommentAnchor::FileLevel, &file, ctx);
+
+    // then it is never sent as an inline comment against a path no forge knows
+    match mapped {
+        MappedComment::Unmappable { reason, .. } => {
+            assert_eq!(reason, UnmappableReason::CommitMessage);
+        }
+        MappedComment::Inline(inline) => {
+            panic!("commit-message comment went inline at {:?}", inline.path)
+        }
+    }
+}

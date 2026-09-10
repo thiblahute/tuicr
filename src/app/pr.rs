@@ -75,6 +75,10 @@ impl App {
             Self::is_strict_commit_selection(self.commit_selection_range, self.pr_commits.len());
         Self::register_diff_files(&mut self.session, &self.diff_files, preserve_hunks);
 
+        // A persisted single-commit selection would otherwise show the PR
+        // description for the one frame before the range re-fetch below lands
+        // and replaces it.
+        self.insert_commit_message_if_single();
         self.sort_files_by_directory(true);
         self.expand_all_dirs();
         self.rebuild_annotations();
@@ -217,6 +221,28 @@ impl App {
     /// Returns `None` outside PR mode, when the selection is empty, or
     /// when the resolved parent isn't available — in that case the
     /// caller falls back to the cached cumulative PR diff.
+    /// The PR header block to render, or `None` while the review is narrowed
+    /// to a single commit.
+    ///
+    /// A narrowed review is about that one commit, so its message stands where
+    /// the PR's own description would be — the same thing a local review of a
+    /// single commit shows. Keyed on the commit-message file actually being
+    /// present (`sort_files_by_directory` always leaves it first) so the panel
+    /// and the file can never both appear. Every consumer of the panel — the
+    /// renderer, the height counter, the annotation builder and search — must
+    /// read it through here, or the annotation list desyncs from the rendered
+    /// lines and cursor↔line mapping drifts for every row below.
+    pub fn pr_info_for_render(&self) -> Option<&crate::forge::traits::PullRequestInfo> {
+        if self
+            .diff_files
+            .first()
+            .is_some_and(|file| file.is_commit_message)
+        {
+            return None;
+        }
+        self.pr_info.as_ref()
+    }
+
     pub fn pr_range_sha_pair(&self) -> Option<(String, String)> {
         let DiffSource::PullRequest(ref pr) = self.diff_source else {
             return None;
@@ -277,6 +303,9 @@ impl App {
         for file in &self.diff_files {
             self.session.add_diff_file(file);
         }
+        // Drops the commit-message file when the selection widens back out,
+        // which is what brings the PR description back with it.
+        self.insert_commit_message_if_single();
         self.sort_files_by_directory(true);
         self.expand_all_dirs();
         self.rebuild_annotations();
@@ -434,6 +463,9 @@ impl App {
         // Range diffs can hide hunks that are still reviewed in the broader
         // PR session, so registration must not prune them.
         Self::register_diff_files(&mut self.session, &self.diff_files, true);
+        // Before the sort and the annotation rebuild: the cursor anchor
+        // restored below counts rows, and the message file adds some.
+        self.insert_commit_message_if_single();
         self.sort_files_by_directory(true);
         self.expand_all_dirs();
         self.rebuild_annotations();
