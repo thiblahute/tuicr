@@ -186,6 +186,10 @@ pub enum UnmappableReason {
     /// for line comments authored through tuicr today, but we keep the
     /// variant so the resolver can surface a clear message if it ever does.
     LineNotInDiff,
+    /// Written on the synthetic commit-message file. No forge has a path to
+    /// hang it on, so it goes in the review body rather than becoming an
+    /// inline comment against a file name that does not exist.
+    CommitMessage,
 }
 
 impl UnmappableReason {
@@ -196,6 +200,7 @@ impl UnmappableReason {
             UnmappableReason::BinaryFile => "binary file",
             UnmappableReason::TooLargeFile => "file too large",
             UnmappableReason::LineNotInDiff => "line not in current diff",
+            UnmappableReason::CommitMessage => "commit message has no line on the forge",
         }
     }
 }
@@ -307,6 +312,15 @@ pub fn map_comment(
 ) -> MappedComment {
     let path = file.display_path().clone();
 
+    // The commit-message file is tuicr's own row, not a file in the diff.
+    // Sending it inline would address a path the forge has never heard of.
+    if file.is_commit_message {
+        return MappedComment::Unmappable {
+            comment: Box::new(comment.clone()),
+            file: path,
+            reason: UnmappableReason::CommitMessage,
+        };
+    }
     if file.is_binary {
         return MappedComment::Unmappable {
             comment: Box::new(comment.clone()),

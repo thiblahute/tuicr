@@ -145,7 +145,7 @@ impl App {
             overrides: &self.thread_display_overrides,
         };
 
-        if let Some(info) = &self.pr_info {
+        if let Some(info) = self.pr_info_for_render() {
             let pr_line_count = crate::ui::pr_info_panel::build_pr_info_lines(
                 info,
                 crate::ui::pr_info_panel::pr_info_content_width(self.diff_state.viewport_width),

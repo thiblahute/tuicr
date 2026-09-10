@@ -450,7 +450,7 @@ impl App {
     }
 
     fn pr_info_search_lines(&self) -> Vec<String> {
-        let Some(info) = self.pr_info.as_ref() else {
+        let Some(info) = self.pr_info_for_render() else {
             return Vec::new();
         };
         crate::ui::pr_info_panel::build_pr_info_lines(
