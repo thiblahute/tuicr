@@ -28,9 +28,30 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
+    run_command_output_with_env(program, current_dir, args, &[])
+}
+
+/// [`run_command_output`] with extra environment variables set on the child.
+///
+/// Chiefly for commands that must never block on a prompt: a subprocess that
+/// stops to ask for a password has nowhere to ask from under a TUI, and hangs
+/// the program behind a screen the user cannot see.
+pub fn run_command_output_with_env<I, S>(
+    program: &str,
+    current_dir: Option<&Path>,
+    args: I,
+    envs: &[(&str, &str)],
+) -> CommandOutputResult<String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
     let mut command = Command::new(program);
     if let Some(current_dir) = current_dir {
         command.current_dir(current_dir);
+    }
+    for (key, value) in envs {
+        command.env(key, value);
     }
 
     let output = command.args(args).output().map_err(|err| {
