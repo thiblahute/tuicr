@@ -547,6 +547,38 @@ pub trait ForgeBackend {
         None
     }
 
+    /// The ref on the forge that holds a pull request's head commit, e.g.
+    /// `refs/pull/12/head`. `None` when the forge publishes no such ref, which
+    /// leaves [`Self::ensure_local_commits`] a no-op for that backend.
+    fn pull_request_head_ref(&self, _number: u64) -> Option<String> {
+        None
+    }
+
+    /// Bring a PR's commits into the local checkout when they are not already
+    /// there, so the local fast paths — commit-range diffs, gap expansion,
+    /// line counts — can serve them without the API. For GitLab the range
+    /// diff has no API fallback at all, so a review of someone else's MR
+    /// cannot be narrowed to a commit until this has run.
+    ///
+    /// Best effort by contract: no checkout, no published ref, no network, no
+    /// matching remote, or a rejected fetch all leave the checkout untouched
+    /// and every caller on its existing forge path.
+    fn ensure_local_commits(&self, pr: &PullRequestDetails) {
+        let Some(root) = self.local_checkout_path() else {
+            return;
+        };
+        let Some(remote_ref) = self.pull_request_head_ref(pr.number) else {
+            return;
+        };
+        crate::forge::fetch_pr_commits_into_checkout(
+            &root,
+            &pr.repository,
+            pr.number,
+            &pr.head_sha,
+            &remote_ref,
+        );
+    }
+
     /// Create a review on the PR. The payload-building details (event field
     /// mapping, comment serialization) are the backend's responsibility — the
     /// caller only supplies the high-level inputs. Returns a minimal response

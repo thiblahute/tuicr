@@ -358,6 +358,10 @@ where
         self.local_checkout.clone()
     }
 
+    fn pull_request_head_ref(&self, number: u64) -> Option<String> {
+        Some(format!("refs/pull/{number}/head"))
+    }
+
     fn list_pull_request_commits(&self, pr: &PullRequestDetails) -> Result<Vec<PullRequestCommit>> {
         // GitHub paginates `pulls/<num>/commits` at 250 commits per page (max
         // per_page=100; PRs are capped at 250 commits via the API). Paginate
@@ -1100,6 +1104,15 @@ mod tests {
     use std::cell::RefCell;
 
     use super::*;
+
+    #[test]
+    fn publishes_the_pull_request_head_ref() {
+        let backend = GitHubGhBackend::new(None);
+        assert_eq!(
+            backend.pull_request_head_ref(125).as_deref(),
+            Some("refs/pull/125/head")
+        );
+    }
     use crate::forge::traits::ForgeBackend;
 
     const PR_LIST_JSON: &str = r##"

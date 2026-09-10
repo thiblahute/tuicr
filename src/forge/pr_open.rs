@@ -84,6 +84,10 @@ pub fn open_pull_request(
 pub fn fetch_pr_data(backend: &dyn ForgeBackend, target: PullRequestTarget) -> Result<PrFetchData> {
     let pr_info = backend.get_pull_request_info(target)?;
     let details = pr_info.details.clone();
+    // Before anything reads a commit: with the objects local, narrowing to a
+    // commit and expanding context are answered by git rather than the API —
+    // and on GitLab, narrowing is answered at all.
+    backend.ensure_local_commits(&details);
     let patches = backend.get_pull_request_diff(&details)?;
     let commits = backend
         .list_pull_request_commits(&details)

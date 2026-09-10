@@ -410,6 +410,10 @@ where
         self.local_checkout.clone()
     }
 
+    fn pull_request_head_ref(&self, number: u64) -> Option<String> {
+        Some(format!("refs/merge-requests/{number}/head"))
+    }
+
     fn list_pull_request_commits(&self, pr: &PullRequestDetails) -> Result<Vec<PullRequestCommit>> {
         let project = gl_project_path(&pr.repository.owner, &pr.repository.name);
         let mut commits: Vec<PullRequestCommit> = Vec::new();
@@ -1271,6 +1275,15 @@ mod tests {
     use std::cell::RefCell;
 
     use super::*;
+
+    #[test]
+    fn publishes_the_merge_request_head_ref() {
+        let backend = GitLabGlabBackend::new(None);
+        assert_eq!(
+            backend.pull_request_head_ref(12465).as_deref(),
+            Some("refs/merge-requests/12465/head")
+        );
+    }
     use crate::forge::submit::{DiffAnchor, GhSide, InlineComment, RangeAnchors};
     use crate::forge::traits::{
         CreateReviewRequest, ForgeRepository, PullRequestDetails, PullRequestListQuery,
