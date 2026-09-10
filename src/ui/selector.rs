@@ -562,7 +562,17 @@ fn render_target_selector_footer(frame: &mut Frame, app: &App, area: Rect) {
         _ => 0,
     };
 
-    let (right_span, right_width) = if app.message.is_some() {
+    // A PR open that has to fetch commits first sits on the row spinner for
+    // seconds with nothing saying why; the footer is where that goes.
+    let activity = crate::forge::current_activity();
+    let (right_span, right_width) = if let Some((message, elapsed)) = activity.as_ref() {
+        let content = format!(" {} {message}\u{2026} ", pr_open_spinner_glyph(*elapsed));
+        let width = content.chars().count();
+        (
+            Span::styled(content, Style::default().fg(theme.fg_secondary)),
+            width,
+        )
+    } else if app.message.is_some() {
         status_bar::build_message_span(app.message.as_ref(), theme)
     } else if selected_count > 0 {
         let text = format!(" {selected_count} selected ");
@@ -571,7 +581,7 @@ fn render_target_selector_footer(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         (Span::raw(""), 0)
     };
-    let (left_spans, right_span, right_width) = if app.message.is_some() {
+    let (left_spans, right_span, right_width) = if app.message.is_some() && activity.is_none() {
         // Render the message next to the mode label so selector hints cannot
         // push it beyond the visible footer.
         (vec![mode_span, right_span], Span::raw(""), 0)
