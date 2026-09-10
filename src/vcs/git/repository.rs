@@ -3,6 +3,7 @@ use git2::{BranchType, Oid, Repository};
 use std::collections::HashMap;
 
 use crate::error::{Result, TuicrError};
+use crate::vcs::traits::parse_commit_message;
 use crate::vcs::{ResolvedRevisionRange, RevisionDiffTarget};
 
 use super::RevisionExpression;
@@ -16,24 +17,6 @@ pub struct CommitInfo {
     pub body: Option<String>,
     pub author: String,
     pub time: DateTime<Utc>,
-}
-
-/// Parse a full commit message into (summary, optional body).
-/// The summary is the first line; the body is everything after the first blank line, trimmed.
-fn parse_commit_message(message: &str) -> (String, Option<String>) {
-    let mut lines = message.lines();
-    let summary = lines.next().unwrap_or("(no message)").to_string();
-    // Skip blank separator line(s) between summary and body
-    let body_text: String = lines
-        .skip_while(|l| l.trim().is_empty())
-        .collect::<Vec<_>>()
-        .join("\n");
-    let body = if body_text.trim().is_empty() {
-        None
-    } else {
-        Some(body_text)
-    };
-    (summary, body)
 }
 
 fn get_branch_tip_names(repo: &Repository) -> HashMap<Oid, Vec<String>> {

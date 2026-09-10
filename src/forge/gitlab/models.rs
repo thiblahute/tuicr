@@ -9,6 +9,7 @@ use crate::forge::traits::{
 };
 use crate::model::{FilePatch, FileStatus};
 use crate::vcs::git::raw::is_binary_patch;
+use crate::vcs::traits::parse_commit_message;
 
 /// One entry from GitLab's merge-request diffs API.
 #[derive(Debug, Deserialize)]
@@ -204,6 +205,10 @@ pub struct GlabCommit {
     pub short_id: String,
     #[serde(default)]
     pub title: String,
+    /// Full commit message. GitLab returns it alongside `title` on the MR
+    /// commits endpoint; `title` alone is only the subject line.
+    #[serde(default)]
+    pub message: String,
     #[serde(default)]
     pub author_name: String,
     #[serde(default)]
@@ -217,10 +222,18 @@ impl GlabCommit {
         } else {
             self.short_id.clone()
         };
+        // `message` carries the whole thing; fall back to `title` when the
+        // endpoint omitted it.
+        let (summary, body) = if self.message.trim().is_empty() {
+            (self.title, None)
+        } else {
+            parse_commit_message(&self.message)
+        };
         PullRequestCommit {
             oid: self.id,
             short_oid,
-            summary: self.title,
+            summary,
+            body,
             author: self.author_name,
             timestamp: self.committed_date,
         }
@@ -385,6 +398,39 @@ mod tests {
 
     fn gitlab_repo() -> ForgeRepository {
         ForgeRepository::gitlab("gitlab.com", "owner", "repo")
+    }
+
+    #[test]
+    fn mr_commit_carries_the_message_body_not_just_the_title() {
+        // given: GitLab returns both `title` (subject only) and `message`
+        // (the whole thing) on the MR commits endpoint.
+        let json = r#"{
+            "id": "abc1234def",
+            "short_id": "abc1234",
+            "title": "gst: fix the leak",
+            "message": "gst: fix the leak\n\nThe pad probe held a ref it never dropped.\n",
+            "author_name": "Someone"
+        }"#;
+
+        // when
+        let commit: GlabCommit = serde_json::from_str(json).expect("parse");
+        let commit = commit.into_pull_request_commit();
+
+        // then
+        assert_eq!(commit.summary, "gst: fix the leak");
+        assert_eq!(
+            commit.body.as_deref(),
+            Some("The pad probe held a ref it never dropped.")
+        );
+    }
+
+    #[test]
+    fn mr_commit_falls_back_to_title_when_message_is_absent() {
+        let json = r#"{"id": "abc", "short_id": "abc", "title": "only a subject"}"#;
+        let commit: GlabCommit = serde_json::from_str(json).expect("parse");
+        let commit = commit.into_pull_request_commit();
+        assert_eq!(commit.summary, "only a subject");
+        assert_eq!(commit.body, None);
     }
 
     #[test]

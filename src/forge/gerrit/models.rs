@@ -217,10 +217,17 @@ impl GerritChange {
         let timestamp = at(&self.updated);
         let summary = self.subject.clone();
         match self.current() {
-            Some((sha, _)) => vec![PullRequestCommit {
+            Some((sha, revision)) => vec![PullRequestCommit {
                 oid: sha.clone(),
                 short_oid: sha.chars().take(8).collect(),
                 summary,
+                // A Gerrit change is one commit, so its body is that commit's
+                // message minus the subject line.
+                body: revision
+                    .commit
+                    .as_ref()
+                    .map(|c| commit_body(&c.message))
+                    .filter(|body| !body.is_empty()),
                 author,
                 timestamp,
             }],
