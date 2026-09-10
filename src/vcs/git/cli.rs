@@ -15,6 +15,7 @@ use crate::vcs::git::raw::{
     pair_metadata_with_patch, parse_raw_metadata_from_patch_output, parse_raw_patch_output,
     patch_text_from_raw_patch_output, split_patch_blocks,
 };
+use crate::vcs::traits::parse_commit_message;
 use crate::vcs::{
     ChangeKind, CommitInfo, DiffWhitespaceMode, ResolvedRevisionRange, RevisionDiffTarget,
     VcsBackend, VcsChangeStatus, VcsInfo,
@@ -1170,21 +1171,6 @@ fn parse_commit_record(
         author,
         time,
     })
-}
-
-fn parse_commit_message(message: &str) -> (String, Option<String>) {
-    let mut lines = message.lines();
-    let summary = lines.next().unwrap_or("(no message)").to_string();
-    let body_text: String = lines
-        .skip_while(|l| l.trim().is_empty())
-        .collect::<Vec<_>>()
-        .join("\n");
-    let body = if body_text.trim().is_empty() {
-        None
-    } else {
-        Some(body_text)
-    };
-    (summary, body)
 }
 
 fn parent_rev_or_empty(workdir: &Path, commit_id: &str) -> String {

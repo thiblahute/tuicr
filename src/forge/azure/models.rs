@@ -12,6 +12,7 @@ use crate::forge::remote_comments::{RemoteCommentSide, RemoteReviewComment, Remo
 use crate::forge::traits::{
     ForgeRepository, PullRequestCommit, PullRequestDetails, PullRequestSummary,
 };
+use crate::vcs::traits::parse_commit_message;
 
 /// Azure DevOps list envelope: `{ "count": N, "value": [ ... ] }`.
 ///
@@ -205,7 +206,7 @@ pub struct AzGitUserDate {
 impl AzGitCommitRef {
     pub fn into_pull_request_commit(self) -> PullRequestCommit {
         let short_oid = self.commit_id.chars().take(8).collect();
-        let summary = self.comment.lines().next().unwrap_or_default().to_string();
+        let (summary, body) = parse_commit_message(&self.comment);
         let (author, timestamp) = match self.author {
             Some(a) => (a.name, a.date),
             None => (String::new(), None),
@@ -214,6 +215,7 @@ impl AzGitCommitRef {
             oid: self.commit_id,
             short_oid,
             summary,
+            body,
             author,
             timestamp,
         }

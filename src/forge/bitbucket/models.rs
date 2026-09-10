@@ -25,6 +25,7 @@ use crate::forge::traits::{
 };
 use crate::model::FileStatus;
 use crate::vcs::git::raw::FileMetadata;
+use crate::vcs::traits::parse_commit_message;
 
 #[derive(Debug, Deserialize, Default)]
 pub struct BbDiffStatFile {
@@ -319,17 +320,12 @@ impl BbCommitAuthor {
 impl BbCommit {
     pub fn into_pull_request_commit(self) -> PullRequestCommit {
         let short_oid: String = self.hash.chars().take(7).collect();
-        let summary = self
-            .message
-            .lines()
-            .next()
-            .unwrap_or_default()
-            .trim()
-            .to_string();
+        let (summary, body) = parse_commit_message(&self.message);
         PullRequestCommit {
             oid: self.hash,
             short_oid,
-            summary,
+            summary: summary.trim().to_string(),
+            body,
             author: self.author.map(|author| author.label()).unwrap_or_default(),
             timestamp: self.date,
         }

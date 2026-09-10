@@ -400,6 +400,10 @@ pub struct PullRequestCommit {
     pub oid: String,
     pub short_oid: String,
     pub summary: String,
+    /// Everything past the summary's blank separator, `None` for a bare
+    /// subject. Carried so a PR review narrowed to one commit can show that
+    /// commit's message the way a local commit review does.
+    pub body: Option<String>,
     pub author: String,
     pub timestamp: Option<DateTime<Utc>>,
 }

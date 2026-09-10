@@ -8,6 +8,7 @@ use crate::forge::traits::{
 };
 use crate::model::FileStatus;
 use crate::vcs::git::raw::FileMetadata;
+use crate::vcs::traits::parse_commit_message;
 
 /// Machine-readable entry from the pull-request files REST endpoint.
 #[derive(Debug, Deserialize)]
@@ -206,7 +207,7 @@ pub struct GhCommitAuthor {
 
 impl GhPrCommit {
     pub fn into_pull_request_commit(self) -> PullRequestCommit {
-        let summary = self.commit.message.lines().next().unwrap_or("").to_string();
+        let (summary, body) = parse_commit_message(&self.commit.message);
         let (author, timestamp) = match self.commit.author {
             Some(a) => (
                 a.name.or(a.email).unwrap_or_else(|| "unknown".to_string()),
@@ -219,6 +220,7 @@ impl GhPrCommit {
             oid: self.sha,
             short_oid,
             summary,
+            body,
             author,
             timestamp,
         }

@@ -72,6 +72,26 @@ pub struct CommitInfo {
     pub time: DateTime<Utc>,
 }
 
+/// Split a full commit message into `(summary, body)`. The summary is the
+/// first line; the body is everything past the blank separator, `None` when
+/// the message is a bare subject. Shared by every backend that hands tuicr a
+/// whole message — the git backends and each forge's PR commit listing.
+pub fn parse_commit_message(message: &str) -> (String, Option<String>) {
+    let mut lines = message.lines();
+    let summary = lines.next().unwrap_or("(no message)").to_string();
+    // Skip blank separator line(s) between summary and body
+    let body_text: String = lines
+        .skip_while(|l| l.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let body = if body_text.trim().is_empty() {
+        None
+    } else {
+        Some(body_text)
+    };
+    (summary, body)
+}
+
 /// ResolvedRevisionRange is the VCS boundary's parsed form of a user-provided
 /// revision expression.
 ///
