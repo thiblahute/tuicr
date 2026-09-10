@@ -19,6 +19,8 @@ pub mod traits;
 
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use git2::Repository;
 
@@ -153,6 +155,45 @@ pub fn detect_forge_repository(repo_root: &Path) -> Option<ForgeRepository> {
         .find_map(|url| parse_any_remote_url(url))
 }
 
+/// What the forge layer is doing right now, or `None` when it is idle.
+///
+/// A side channel on purpose. The work worth announcing — fetching a pull
+/// request's commits — happens several frames deep inside a background thread
+/// that only reports its final result, and threading a progress sink through
+/// every backend and call site to carry one string would cost more than it
+/// explains. One slot is enough because tuicr runs one PR open at a time.
+static ACTIVITY: Mutex<Option<(String, Instant)>> = Mutex::new(None);
+
+/// The forge layer's current activity and how long it has been running, for a
+/// status bar to render with an animated spinner. `None` when idle.
+pub fn current_activity() -> Option<(String, Duration)> {
+    let slot = ACTIVITY.lock().ok()?;
+    let (message, started) = slot.as_ref()?;
+    Some((message.clone(), started.elapsed()))
+}
+
+/// Publishes an activity for as long as it is alive. Clearing on `Drop` is
+/// what keeps a stale label off the screen when the work it describes returns
+/// early, fails, or panics.
+struct Activity;
+
+impl Activity {
+    fn new(message: String) -> Self {
+        if let Ok(mut slot) = ACTIVITY.lock() {
+            *slot = Some((message, Instant::now()));
+        }
+        Self
+    }
+}
+
+impl Drop for Activity {
+    fn drop(&mut self) {
+        if let Ok(mut slot) = ACTIVITY.lock() {
+            *slot = None;
+        }
+    }
+}
+
 /// Name of the remote in `root` that serves `repository`, `origin` preferred
 /// when several match. `None` outside a repo or when no remote points there.
 fn remote_name_for_repo(root: &Path, repository: &ForgeRepository) -> Option<String> {
@@ -173,6 +214,15 @@ fn remote_name_for_repo(root: &Path, repository: &ForgeRepository) -> Option<Str
         .flatten()
         .find(|name| matches(name))
         .map(str::to_string)
+}
+
+/// How a forge writes a pull request's number: GitLab merge requests are
+/// `!12465`, everyone else's pull requests are `#125`.
+fn pr_label(repository: &ForgeRepository, number: u64) -> String {
+    match repository.kind {
+        crate::forge::traits::ForgeKind::GitLab => format!("!{number}"),
+        _ => format!("#{number}"),
+    }
 }
 
 /// True when `rev` names a commit that is already readable in `root`.
@@ -218,6 +268,13 @@ pub fn fetch_pr_commits_into_checkout(
         repository.host, repository.owner, repository.name
     );
     let refspec = format!("+{remote_ref}:{local_ref}");
+    // Held across the fetch below, which is the only part of this that takes
+    // long enough for someone to wonder what the program is doing.
+    let _activity = Activity::new(format!(
+        "Fetching {} commits for {}",
+        repository.kind.display_name(),
+        pr_label(repository, number)
+    ));
     let args = [
         "fetch",
         "--no-tags",
@@ -255,6 +312,25 @@ pub fn local_checkout_for_repo(root: &Path, target_repo: &ForgeRepository) -> Op
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pr_label_follows_each_forge_s_own_notation() {
+        // GitLab writes merge requests with a bang; everyone else uses a hash.
+        assert_eq!(
+            pr_label(
+                &ForgeRepository::gitlab("gitlab.freedesktop.org", "gstreamer", "gstreamer"),
+                12465
+            ),
+            "!12465"
+        );
+        assert_eq!(
+            pr_label(
+                &ForgeRepository::github("github.com", "agavra", "tuicr"),
+                125
+            ),
+            "#125"
+        );
+    }
 
     #[test]
     fn remote_name_prefers_origin_over_another_matching_remote() {

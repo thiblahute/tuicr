@@ -385,6 +385,24 @@ fn truncate_status(text: &str, max_chars: usize) -> String {
 }
 
 fn status_right_span(app: &App, theme: &Theme) -> (Span<'static>, usize) {
+    // Ahead of the PR spinners below: those name the operation the user asked
+    // for, this names the slower thing being done inside it, and while a fetch
+    // is running that is the more useful of the two.
+    if let Some((activity, elapsed)) = crate::forge::current_activity() {
+        let glyph = crate::ui::selector::pr_open_spinner_glyph(elapsed);
+        let content = format!(" {glyph} {activity}\u{2026} ");
+        let width = content.chars().count();
+        return (
+            Span::styled(
+                content,
+                Style::default()
+                    .fg(theme.message_info_fg)
+                    .bg(theme.message_info_bg)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            width,
+        );
+    }
     if app.message.is_some() {
         build_message_span(app.message.as_ref(), theme)
     } else if let Some(reply) = app.pr_reply_state.as_ref() {
