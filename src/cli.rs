@@ -367,6 +367,47 @@ pub enum ReviewCommand {
         content: Option<String>,
     },
 
+    /// Rewrite an existing local draft comment in a persisted session.
+    ///
+    /// Changes the text, and the type when `--type` is given. Everything else
+    /// about the comment — who wrote it, what it is anchored to, whether its
+    /// thread is settled — is left alone, matching what editing it in the TUI
+    /// does.
+    Edit {
+        /// Session slug from `tuicr review list` (local or PR), or path to a
+        /// session JSON file.
+        #[arg(long, value_name = "SESSION")]
+        session: String,
+
+        /// Id of the comment to rewrite, from `tuicr review comments`. An
+        /// unambiguous prefix works, like a short SHA in git.
+        #[arg(long = "comment-id", value_name = "ID")]
+        comment_id: Option<String>,
+
+        /// JSON payload. Use literal JSON, @path/to/file.json, or - for stdin.
+        #[arg(long, value_name = "JSON|@FILE|-")]
+        input: Option<String>,
+
+        /// Repo selector used to resolve a local session slug (path or
+        /// `owner/repo`). PR slugs and JSON paths resolve without it.
+        #[arg(long, value_name = "PATH|OWNER/REPO", default_value = ".")]
+        repo: PathBuf,
+
+        /// New classification. Omit to keep the type the comment already has;
+        /// pass `none` to strip it.
+        #[arg(long = "type", value_name = "TYPE", value_parser = non_empty_comment_type)]
+        comment_type: Option<String>,
+
+        /// Replacement text.
+        #[arg(
+            value_name = "COMMENT",
+            required_unless_present = "input",
+            value_parser = non_empty_comment_text,
+            allow_hyphen_values = true
+        )]
+        content: Option<String>,
+    },
+
     /// Mark a comment's thread resolved, or reopen it with --unresolve.
     Resolve {
         /// Session slug from `tuicr review list` (local or PR), or path to a

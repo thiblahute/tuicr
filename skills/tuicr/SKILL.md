@@ -347,6 +347,29 @@ Rules for the loop:
 `in_reply_to`) alongside `content`, which is convenient for batching a round of
 replies from a script.
 
+### Editing your own comments
+
+`edit` rewrites a comment you already wrote, instead of adding another one:
+
+```bash
+tuicr review edit --repo /path/to/repo --session <slug> \
+  --comment-id 79c9b3e1 \
+  "Rewritten: this also covers the one-element case."
+```
+
+Use it to correct something you got wrong or said badly — a wrong path, a claim
+that turned out false, a note you can now make precise. Do not use it to answer
+a reply: an edit is silent, and the user may have already read the old text and
+moved on. A new message belongs in a reply, where they will see it.
+
+Never edit the user's comments. `author` tells you whose is whose; rewriting
+theirs puts words in their mouth, and they have no way to tell it happened.
+
+Only the text changes, plus the type when you pass `--type`. Omitting `--type`
+keeps the one it has. A comment already pushed to the forge is refused — reply
+to it instead. `--input` takes the same JSON as `review add`, with `comment_id`
+and an optional `type`.
+
 ### After you change the code
 
 When you have rewritten, amended, or added commits under a review the user has

@@ -113,6 +113,21 @@ impl ReviewStore {
         Ok(comment)
     }
 
+    pub fn edit_comment(
+        &self,
+        session_ref: &SessionRef,
+        comment_id: &str,
+        content: String,
+        comment_type: Option<CommentType>,
+    ) -> Result<Comment> {
+        let reviews_dir = self.reviews_dir()?;
+        let (_session, comment) =
+            storage::update_session_in_dir(session_ref.path(), &reviews_dir, |session| {
+                edit_comment(session, comment_id, content, comment_type)
+            })?;
+        Ok(comment)
+    }
+
     /// Read-modify-write a session under the store lock, so two writers
     /// touching different parts of the same review do not overwrite each
     /// other. Whole-session `save_review` cannot promise that.
@@ -520,6 +535,52 @@ pub fn set_thread_resolved(
     )))
 }
 
+/// Rewrite a comment's text, and its type when `comment_type` is given.
+///
+/// Deliberately narrow: everything else the comment carries — author, anchor,
+/// thread membership, resolved state, creation time — is what makes it the
+/// same comment, and an edit is not a new one. This mirrors what editing in
+/// the TUI writes, so the two entry points cannot drift.
+///
+/// A comment already on the forge is refused rather than silently diverging
+/// from the copy the forge shows.
+pub fn edit_comment(
+    session: &mut ReviewSession,
+    comment_id: &str,
+    content: String,
+    comment_type: Option<CommentType>,
+) -> Result<Comment> {
+    let mut buckets: Vec<&mut Vec<Comment>> = vec![&mut session.review_comments];
+    for review in session.files.values_mut() {
+        buckets.push(&mut review.file_comments);
+        for comments in review.line_comments.values_mut() {
+            buckets.push(comments);
+        }
+    }
+
+    for bucket in buckets {
+        let Some(comment) = bucket.iter_mut().find(|c| c.id == comment_id) else {
+            continue;
+        };
+        if comment.is_locked() {
+            return Err(TuicrError::InvalidInput(format!(
+                "comment {comment_id} is already on the forge and read-only here"
+            )));
+        }
+        comment.content = content;
+        if let Some(comment_type) = comment_type {
+            comment.comment_type = comment_type;
+        }
+        let edited = comment.clone();
+        session.updated_at = Utc::now();
+        return Ok(edited);
+    }
+
+    Err(TuicrError::InvalidInput(format!(
+        "session has no comment with id {comment_id}"
+    )))
+}
+
 fn file_review_mut<'a>(
     session: &'a mut ReviewSession,
     path: &Path,
@@ -703,6 +764,115 @@ mod tests {
             },
         )
         .unwrap()
+    }
+
+    #[test]
+    fn should_rewrite_a_comment_and_keep_everything_that_identifies_it() {
+        let mut session = test_session(PathBuf::from("/repo"));
+        let original = line_comment(&mut session, "handle the empty case", "user");
+
+        let edited = edit_comment(
+            &mut session,
+            &original.id,
+            "handle the empty case and the one-element case".to_string(),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(
+            edited.content,
+            "handle the empty case and the one-element case"
+        );
+        // Omitting the type leaves the one the comment already had.
+        assert_eq!(edited.comment_type, CommentType::from_id("issue"));
+        // An edit is the same comment, not a new one.
+        assert_eq!(edited.id, original.id);
+        assert_eq!(edited.author, original.author);
+        assert_eq!(edited.created_at, original.created_at);
+        assert_eq!(edited.side, original.side);
+        assert_eq!(edited.resolved, original.resolved);
+    }
+
+    #[test]
+    fn should_change_the_type_only_when_one_is_given() {
+        let mut session = test_session(PathBuf::from("/repo"));
+        let original = line_comment(&mut session, "why this order?", "user");
+
+        let edited = edit_comment(
+            &mut session,
+            &original.id,
+            "why this order?".to_string(),
+            Some(CommentType::from_id("question")),
+        )
+        .unwrap();
+
+        assert_eq!(edited.comment_type, CommentType::from_id("question"));
+    }
+
+    #[test]
+    fn should_rewrite_a_review_level_comment() {
+        let mut session = test_session(PathBuf::from("/repo"));
+        let original = add_comment_to_session(
+            &mut session,
+            AddCommentRequest::new(
+                CommentTarget::Review,
+                "looks fine".to_string(),
+                CommentType::None,
+                "user".to_string(),
+            ),
+        )
+        .unwrap();
+
+        let edited = edit_comment(
+            &mut session,
+            &original.id,
+            "looks fine, one nit below".to_string(),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(edited.content, "looks fine, one nit below");
+        assert_eq!(
+            session.review_comments[0].content,
+            "looks fine, one nit below"
+        );
+    }
+
+    #[test]
+    fn should_refuse_to_rewrite_a_comment_that_is_already_on_the_forge() {
+        let mut session = test_session(PathBuf::from("/repo"));
+        let original = line_comment(&mut session, "pushed already", "user");
+        for comments in session
+            .files
+            .get_mut(&PathBuf::from("src/main.rs"))
+            .unwrap()
+            .line_comments
+            .values_mut()
+        {
+            for comment in comments.iter_mut() {
+                comment.lifecycle_state = crate::model::comment::CommentLifecycleState::Submitted;
+            }
+        }
+
+        let err = edit_comment(
+            &mut session,
+            &original.id,
+            "trying to change it".to_string(),
+            None,
+        )
+        .unwrap_err();
+
+        assert!(matches!(err, TuicrError::InvalidInput(_)));
+        // The stored text is untouched, not half-written.
+        let stored = &session.files[&PathBuf::from("src/main.rs")].line_comments[&42][0];
+        assert_eq!(stored.content, "pushed already");
+    }
+
+    #[test]
+    fn should_report_an_unknown_comment_id() {
+        let mut session = test_session(PathBuf::from("/repo"));
+        let err = edit_comment(&mut session, "nope", "text".to_string(), None).unwrap_err();
+        assert!(matches!(err, TuicrError::InvalidInput(_)));
     }
 
     #[test]

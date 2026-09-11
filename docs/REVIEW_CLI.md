@@ -31,6 +31,7 @@ tuicr review list --all                               # every session across all
 tuicr review comments --session agavra/tuicr@main/worktree
 tuicr review comments --session gh:slatedb/slatedb/pr/1745
 tuicr review reply --session agavra/tuicr@main/worktree --comment-id <ID> "Fixed."
+tuicr review edit --session agavra/tuicr@main/worktree --comment-id <ID> "Reworded."
 tuicr review resolve --session agavra/tuicr@main/worktree --comment-id <ID>
 tuicr review watch --session agavra/tuicr@main/worktree
 tuicr review update --session agavra/tuicr@main/worktree --message "fixed both, rebased"
@@ -162,6 +163,39 @@ is the agent handing it back. An open TUI polls the session file anyway, so it
 raises the message on its next tick — verbatim, which is why a real sentence
 beats "updated". The reviewer then runs `:reload`, which re-resolves the review's
 revision expression and re-anchors the comments.
+
+## Edit Comments
+
+`edit` rewrites a comment you already wrote, rather than adding another one:
+
+```bash
+tuicr review edit --session agavra/tuicr@main/worktree --comment-id 79c9b3e1 \
+    "handle the empty case and the one-element case"
+tuicr review edit --session agavra/tuicr@main/worktree --comment-id 79c9b3e1 \
+    --type question "why this order?"
+```
+
+Only the text changes, and the type when `--type` is given. Omitting `--type`
+keeps the type the comment already has; pass `none` to strip it. Everything that
+makes it the same comment — its id, author, creation time, what it is anchored
+to, whether its thread is settled — is left alone, which is exactly what editing
+it in the TUI does.
+
+`--comment-id` takes an unambiguous prefix, like a short SHA in git. `--input`
+accepts the same JSON as `review add`, with `comment_id` and an optional `type`:
+
+```bash
+tuicr review edit --session agavra/tuicr@main/worktree --input - <<'JSON'
+{"comment_id": "79c9b3e1", "content": "reworded", "type": "issue"}
+JSON
+```
+
+A comment already pushed to the forge is refused: the forge holds the copy
+people are reading, and rewriting the local one would only make the two
+disagree. Reply to it instead.
+
+An open TUI picks the new text up on its next tick, the same way it picks up a
+comment added from the CLI.
 
 ## Resolve Threads
 

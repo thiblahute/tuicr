@@ -68,6 +68,24 @@ fn run_with_writer(command: ReviewCommand, out: &mut impl Write) -> Result<()> {
             },
             out,
         ),
+        ReviewCommand::Edit {
+            session,
+            comment_id,
+            input,
+            repo,
+            comment_type,
+            content,
+        } => edit_comment(
+            &session,
+            &repo,
+            EditOptions {
+                comment_id,
+                input,
+                comment_type,
+                content,
+            },
+            out,
+        ),
         ReviewCommand::Resolve {
             session,
             comment_id,
@@ -172,6 +190,24 @@ struct ReplyOptions {
     input: Option<String>,
     username: Option<String>,
     content: Option<String>,
+}
+
+struct EditOptions {
+    comment_id: Option<String>,
+    input: Option<String>,
+    comment_type: Option<String>,
+    content: Option<String>,
+}
+
+/// Payload accepted by `tuicr review edit --input`.
+#[derive(Debug, Deserialize)]
+struct EditPayload {
+    comment_id: Option<String>,
+    content: Option<String>,
+    /// Named `type` in JSON to match the flag; `comment_type` is accepted too
+    /// so a `review comments` entry can be edited and fed straight back.
+    #[serde(rename = "type", alias = "comment_type")]
+    comment_type: Option<String>,
 }
 
 /// Payload accepted by `tuicr review reply --input`.
@@ -316,6 +352,87 @@ fn reply_to_comment(
         .find(|c| c.id == reply.id)
         .ok_or_else(|| {
             TuicrError::InvalidInput("reply was not found in the saved session".to_string())
+        })?;
+    serde_json::to_writer_pretty(&mut *out, &output)?;
+    writeln!(out)?;
+    Ok(())
+}
+
+/// Rewrite an existing comment's text, and its type when one is given.
+///
+/// Both storage shapes have to be handled: a migrated repository keeps
+/// comments in the per-commit store, everything else in the session file.
+/// Same split as `reply` and `resolve`.
+fn edit_comment(
+    session: &str,
+    repo: &Path,
+    options: EditOptions,
+    out: &mut impl Write,
+) -> Result<()> {
+    let EditOptions {
+        mut comment_id,
+        input,
+        mut comment_type,
+        mut content,
+    } = options;
+
+    if let Some(input) = input {
+        let raw = read_json_input(&input)?;
+        let payload: EditPayload = serde_json::from_str(&raw)
+            .map_err(|err| TuicrError::InvalidInput(format!("invalid edit JSON: {err}")))?;
+        comment_id = comment_id.or(payload.comment_id);
+        content = content.or(payload.content);
+        comment_type = comment_type.or(payload.comment_type);
+    }
+
+    let wanted_id = comment_id
+        .map(|id| id.trim().to_string())
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| {
+            TuicrError::InvalidInput("edit needs --comment-id (or a JSON comment_id)".to_string())
+        })?;
+    let content = content
+        .map(|text| text.trim().to_string())
+        .filter(|text| !text.is_empty())
+        .ok_or_else(|| TuicrError::InvalidInput("comment cannot be empty".to_string()))?;
+
+    // `None` means "leave the type alone", which is why this is not the
+    // `--type none` default `review add` uses — that would quietly strip the
+    // type off every comment edited without the flag.
+    let config = config::load_config()
+        .ok()
+        .and_then(|outcome| outcome.config);
+    let comment_type = comment_type.map(|id| CommentType::from_id(&id));
+    if let Some(comment_type) = comment_type.as_ref()
+        && let Some(warning) = unknown_comment_type_warning(comment_type, config.as_ref())
+    {
+        eprintln!("{warning}");
+    }
+
+    let store = ReviewStore::new();
+    let session_ref = resolve_session_ref(&store, repo, session)?;
+    let session_data = store.get_review(&session_ref)?;
+    let edited = match store_for(&session_data) {
+        Some(cstore) => {
+            let id = resolve_stored_comment_id(&cstore, &session_data, &wanted_id)?;
+            store_edit_comment(&cstore, &id, content, comment_type)?
+        }
+        None => {
+            let id = resolve_comment_id(&session_data, &wanted_id)?;
+            store.edit_comment(&session_ref, &id, content, comment_type)?
+        }
+    };
+
+    // Re-read so the printed comment carries its anchor, the way `comments`
+    // shows it.
+    let session_data = store.get_review(&session_ref)?;
+    let output = collect_comments(&session_data)
+        .into_iter()
+        .find(|c| c.id == edited.id)
+        .ok_or_else(|| {
+            TuicrError::InvalidInput(
+                "edited comment was not found in the saved session".to_string(),
+            )
         })?;
     serde_json::to_writer_pretty(&mut *out, &output)?;
     writeln!(out)?;
@@ -1120,6 +1237,31 @@ fn store_reply(
 }
 
 /// Settle or reopen a whole thread in the store.
+fn store_edit_comment(
+    cstore: &crate::persistence::comment_store::CommentStore,
+    id: &str,
+    content: String,
+    comment_type: Option<CommentType>,
+) -> Result<Comment> {
+    let target = cstore
+        .find(id)?
+        .ok_or_else(|| TuicrError::InvalidInput(format!("no comment with id `{id}`")))?;
+    if target.is_locked() {
+        return Err(TuicrError::InvalidInput(format!(
+            "comment {id} is already on the forge and read-only here"
+        )));
+    }
+    cstore.update_comment(id, |stored| {
+        stored.content = content;
+        if let Some(comment_type) = comment_type {
+            stored.comment_type = comment_type;
+        }
+    })?;
+    cstore
+        .find(id)?
+        .ok_or_else(|| TuicrError::InvalidInput("edited comment vanished".to_string()))
+}
+
 fn store_set_thread_resolved(
     cstore: &crate::persistence::comment_store::CommentStore,
     id: &str,
@@ -1632,6 +1774,91 @@ mod tests {
         );
         session.add_file(PathBuf::from("src/main.rs"), FileStatus::Modified, 0);
         session
+    }
+
+    /// The migrated-repository path: comments live in the per-commit store,
+    /// not the session file, and `store_edit_comment` is what runs there.
+    fn stored_comment(
+        dir: &Path,
+        state: crate::model::comment::CommentLifecycleState,
+    ) -> (crate::persistence::comment_store::CommentStore, Comment) {
+        use crate::model::{CommentAnchor, CommentScope, LineSide};
+        let store = crate::persistence::comment_store::CommentStore::new(dir, "agavra/tuicr");
+        let scope = CommentScope::commit("aaaa1111");
+        let mut comment = Comment::new(
+            "first version".to_string(),
+            CommentType::from_id("issue"),
+            Some(LineSide::New),
+        );
+        comment.anchor = Some(CommentAnchor::line(
+            scope.clone(),
+            "src/main.rs",
+            42,
+            LineSide::New,
+        ));
+        comment.lifecycle_state = state;
+        store.add(&scope, None, comment.clone()).unwrap();
+        (store, comment)
+    }
+
+    #[test]
+    fn should_rewrite_a_comment_held_in_the_comment_store() {
+        let dir = tempdir().unwrap();
+        let (store, original) = stored_comment(
+            dir.path(),
+            crate::model::comment::CommentLifecycleState::LocalDraft,
+        );
+
+        let edited =
+            store_edit_comment(&store, &original.id, "rewritten".to_string(), None).unwrap();
+
+        assert_eq!(edited.content, "rewritten");
+        // No `--type` given, so the type it was created with survives.
+        assert_eq!(edited.comment_type, CommentType::from_id("issue"));
+        assert_eq!(edited.id, original.id);
+        assert_eq!(edited.author, original.author);
+        // And it is on disk, not only in the returned copy.
+        assert_eq!(
+            store.find(&original.id).unwrap().unwrap().content,
+            "rewritten"
+        );
+    }
+
+    #[test]
+    fn should_change_a_stored_comment_s_type_when_asked() {
+        let dir = tempdir().unwrap();
+        let (store, original) = stored_comment(
+            dir.path(),
+            crate::model::comment::CommentLifecycleState::LocalDraft,
+        );
+
+        let edited = store_edit_comment(
+            &store,
+            &original.id,
+            "rewritten".to_string(),
+            Some(CommentType::from_id("question")),
+        )
+        .unwrap();
+
+        assert_eq!(edited.comment_type, CommentType::from_id("question"));
+    }
+
+    #[test]
+    fn should_refuse_to_rewrite_a_stored_comment_that_is_on_the_forge() {
+        let dir = tempdir().unwrap();
+        let (store, original) = stored_comment(
+            dir.path(),
+            crate::model::comment::CommentLifecycleState::Submitted,
+        );
+
+        let err = store_edit_comment(&store, &original.id, "nope".to_string(), None).unwrap_err();
+
+        assert!(matches!(err, TuicrError::InvalidInput(_)));
+        assert_eq!(
+            store.find(&original.id).unwrap().unwrap().content,
+            "first version",
+            "a refused edit must not have written anything"
+        );
     }
 
     #[test]
